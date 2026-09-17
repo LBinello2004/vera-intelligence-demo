@@ -1,0 +1,393 @@
+metadata:
+  name: VI Data Map Forever21 V1
+  version: 1.0.0
+  client: Forever 21
+  model_target: Gemini 3.7
+  generated_at: '2026-09-08'
+  scope: Sólo seis vistas dashboard_v2 de Forever 21 (`vw_forever_21_*`). El tenant ('Forever 21') es fijo
+    para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: "clientes/Canaima/Forever 21/checklist (Langfuse, label production, v2 — creado/actualizado 2026-09-04)"
+    insights_prompt: "clientes/Canaima/Forever 21/insights (Langfuse, label production, v2 — creado/actualizado 2026-09-04)"
+    note: 'Grupo Canaima (marca paraguas de Shoe Box y Forever 21 Shoes — el checklist se autodenomina
+      "auditor del protocolo de venta de Forever 21 Shoes de Grupo Canaima" y el insights dice
+      textualmente "interacciones de venta asistida de tiendas Shoe Box y F21 Shoes", confirmando el mismo
+      paraguas ya documentado para Shoe Box). Checklist propio (NO es un gemelo carácter por carácter de
+      Shoe Box, a diferencia de roberts/mens_fashion o maga/farma24): comparte los 13 campos de Shoe Box más
+      UNO adicional propio de moda femenina, `VendedorOrientoSegunOcasionYEstilo` (dentro de
+      OrientacionDeEstilo, junto a VendedorPresentoOpcionPrincipalPertinente) — evalúa si el vendedor usó
+      explícitamente ocasión/estilo/look para orientar la recomendación, distinto de sólo presentar una
+      opción compatible. El dominio es moda femenina/calzado con foco en estilo/ocasión/look (vs. venta
+      asistida de calzado genérica en Shoe Box). Insights: mismo formato liviano que Shoe Box (3 booleanos
+      generales + 2 campos por producto), sin demografía de cliente, sin motivador de visita, sin
+      premiumización. `config.promptId` = `25x1jZRenKSMpKLrtYlE`, idéntico en checklist e insights (mismo
+      patrón que otros clientes: un solo promptId de Langfuse agrupa ambos prompts de un cliente).'
+  known_findings_v1:
+  - 'ADVERTENCIA CRÍTICA DE VOLUMEN — la más severa de todo el proyecto: este Data Map se construyó con
+      **1 (UNA) conversación total** en Postgres (verificado 2026-09-08, las 6 vistas dan 1 fila cada una,
+      todas con el mismo conversation_id). Es menos volumen que Shoe Box (7 filas, ya calificado "bajo").
+      NINGÚN porcentaje, tasa o generalización de este cliente es válido — cualquier cifra es literalmente
+      "0 de 1" o "1 de 1". El agente debe responder cada pregunta describiendo el caso puntual, nunca como
+      tendencia, patrón o performance del equipo.'
+  - 'HALLAZGO ADICIONAL, más grave que el de volumen: la única fila existente tiene señales fuertes de ser
+      una grabación de PRUEBA/onboarding, no una conversación real de venta. `filename` =
+      "HQ-prueba.vera-c433e796-c747-4ee1-a20c-c362fd66a05a.m4a" (contiene literalmente "prueba"),
+      `employee_full_name` = "Prueba Vera" (nombre de empleado ficticio, no un vendedor real), `store_id`/
+      `store_name`/`sector_id`/`sector_name` = "BB MGTA 2022" (mismo valor repetido en las 4 columnas de
+      ubicación, típico de un dato de prueba/placeholder, no de una jerarquía tienda/sector real),
+      `duration_seconds` = 72 (interacción muy corta). NO SE PUDO CONFIRMAR con certeza que sea una prueba
+      (no hay un flag explícito is_test en el schema), pero la combinación de señales es fuerte. Documentado
+      explícitamente como riesgo: si es una grabación de prueba, este Data Map completo (y cualquier
+      respuesta del agente sobre Forever 21) describe un caso sintético, no producción real. El agente debe
+      poder mencionar esta duda si se le pregunta por la naturaleza de los datos disponibles.'
+  - 'CONSECUENCIA DE LO ANTERIOR: no se recomienda habilitar Forever 21 para uso real de negocio todavía.
+      Este onboarding deja el cliente técnicamente construido y verificado (mismo nivel de rigor que el
+      resto del proyecto) pero el grado "bajo" refleja tanto volumen mínimo como la duda sobre si el único
+      dato disponible es real. Reauditar en cuanto haya volumen genuino de conversaciones de tienda.'
+  - 'Con una sola fila no se detectaron (ni se pueden descartar) problemas de casing, columnas muertas o
+      dual-source — no hay volumen suficiente para que esos patrones se manifiesten o se descarten con
+      confianza (mismo criterio aplicado a Shoe Box con n=7).'
+  - 'No hay tabla demography con campos de perfil de cliente (género, tipo, necesidad, decisión, precio,
+      urgencia): vw_forever_21_demografia sólo tiene tipointeraccion además de las columnas genéricas
+      (idéntico a Shoe Box). Este Data Map no puede responder preguntas de demografía del cliente.'
+  - 'RAG no está conectado a VI para este cliente: el prompt de checklist no declara
+      geminiFileSearchStoreName (a diferencia de Farma24/Maga). Existe un store de RAG confirmado en
+      Langfuse para el prompt separado "clientes/Canaima/Forever 21/feedback"
+      (fileSearchStores/centralfeedbackcanaimafried-nrhv7ua1e53n, el MISMO store físico que usa Shoe Box),
+      pero ese prompt es para el feature de feedback/coaching de vendedores, no para checklist/insights —
+      no aplica a este agente en este MVP. Ver config.yaml.'
+decision_flow:
+- 'ANTES DE RESPONDER CUALQUIER PREGUNTA: recordar que la base de este cliente es de sólo 1 conversación
+  total (ver known_findings_v1), posiblemente una grabación de prueba/onboarding y no un caso real de
+  venta. Cualquier respuesta debe describir explícitamente ese caso puntual, nunca como tasa o tendencia,
+  y puede mencionar la duda sobre si es un dato de prueba si resulta relevante para la pregunta.'
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: sólo resultado de la interacción (tipointeraccion); no hay perfil de cliente
+    avoid: no inventar campos de género/necesidad/decisión que no existen en esta vista para este cliente
+  performance:
+    questions: los 14 criterios del checklist (saludo, descubrimiento x2, escucha, orientación x2
+      -opción pertinente y orientación según ocasión/estilo-, argumentación, validación, alternativas,
+      manejo de objeciones A.C.E., venta complementaria, cierre, despedida x2)
+    avoid: no tratar N/A como incumplimiento; no confundir "presentó opción pertinente" con "orientó según
+      ocasión y estilo" (son criterios distintos, ver semantic_dependencies.orientacion_estilo)
+  categorical_insights:
+    questions: falta de stock, ofrecimiento de alternativa, ofrecimiento de complementario (sólo 3 booleanos
+      generales, sin motivador de visita ni premiumización)
+    avoid: no inventar campos que no existen en este insights (mucho más chico que el de retail estándar
+      del proyecto)
+  descriptive_insights:
+    questions: resumen de la conversación (un solo campo de texto libre)
+    avoid: no agrupar ni calcular frecuencia de texto
+  categorical_product_insights:
+    questions: rol del producto (principal/alternativo/complementario) y si se compró
+    avoid: no afirmar ventas transaccionales sin evidencia
+  descriptive_product_insights:
+    questions: producto mencionado, marca/modelo, talla, color (todo texto libre observado, no un enum cerrado)
+    avoid: no inferir marca/talla/color por conocimiento externo del catálogo
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions: [store_id, store_name, sector_id, sector_name, employee_id, employee_full_name]
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Forever 21') sobre seller_id en cada fuente.
+  time: Filtrar profiles.standard_conversation.date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: 'cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null. Con n=1, cualquier "tasa" es 0% o 100% sobre un único caso -declarar siempre que es
+    un único caso, nunca presentarlo como porcentaje sin esa aclaración-.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  low_volume_warning: 'Ver known_findings_v1. Con n=1, toda cifra debe presentarse como el caso puntual
+    observado (ej. "en la única conversación disponible, ...") y no como una tasa o patrón del negocio.'
+  posible_dato_de_prueba: 'Ver known_findings_v1. La única fila disponible tiene señales de ser una
+    grabación de prueba (filename con "prueba", empleado "Prueba Vera", duración de 72s). No se debe
+    afirmar con certeza que sea una prueba -no hay flag explícito para confirmarlo- pero tampoco se debe
+    ignorar la señal si la pregunta del usuario roza el tema de la naturaleza de los datos.'
+  ace_method: 'vendedormanejoobjecionesconace sólo es "Sí" si el vendedor cumple las 3 funciones del método
+    A.C.E. (Aceptar, Clarificar, Explicar/Explorar) ante una objeción real. No exige las palabras literales,
+    pero las tres funciones deben estar presentes.'
+  orientacion_estilo: 'VendedorPresentoOpcionPrincipalPertinente (¿la opción presentada es compatible con la
+    necesidad?) y VendedorOrientoSegunOcasionYEstilo (¿el vendedor usó explícitamente ocasión/estilo/look
+    para orientar?) son criterios distintos y pueden divergir dentro de la misma conversación -de hecho
+    divergen en la única fila disponible: presentoopcionprincipalpertinente=No pero
+    orientosegunocasionyestilo=Sí, ver preguntas doradas q08-. No usar uno como proxy del otro.'
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys: [conversation_id]
+    cardinality: conversation_to_conversation
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys: [conversation_id, producto_index]
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_forever_21_demografia
+    use_when: Resultado de la interacción (compra/no compra). Única dimensión disponible en esta vista para
+      este cliente.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [compra, no_compra]
+        observed_values: [compra]
+        type: text
+        nullable: false
+        description: 'Resultado de la interacción según el insights: compra si y sólo si al menos un
+          producto tiene resultado_producto=comprado. Verificado con la única fila disponible: compra
+          (n=1, no interpretar como tasa de conversión del negocio).'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_forever_21_rendimiento_vendedor
+    use_when: Los 14 criterios del checklist de venta asistida de moda femenina/calzado.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Campos en sentido positivo. "Sí" = conducta realizada correctamente. "No" =
+      situación evaluable con oportunidad real y el vendedor no la realizó o insuficiente. "N/A" = sin
+      oportunidad real o disparador fuera del audio.'
+    fields:
+      vendedorsaludoyofrecioayuda:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Saludo y disponibilidad. Sí requiere AMBOS componentes: saludo/bienvenida cordial Y
+          ofrecimiento de ayuda/orientación. Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedorrealizotrespreguntasutiles:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Descubrimiento. Sí: ≥3 preguntas útiles (ocasión, talla, tipo, estilo, color, ajuste,
+          altura, presupuesto, look) ANTES de la primera recomendación. No cuenta información espontánea del
+          cliente. Verificado (n=1): No.'
+        operations: [filter, group, compare]
+      vendedorrealizopreguntaabierta:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Descubrimiento. Sí: al menos una pregunta abierta (invita a desarrollar, no es de
+          filtro tipo "¿qué talla?"). Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedorreformulooconfirmolanecesidad:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Escucha y confirmación. Sí: resume/reformula/confirma la necesidad identificada antes
+          de recomendar. Verificado (n=1): No.'
+        operations: [filter, group, compare]
+      vendedorpresentoopcionprincipalpertinente:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Orientación. Sí: presenta al menos una opción compatible con la necesidad conocida
+          (no exige múltiples opciones). Verificado (n=1): No -distinto de
+          vendedororientosegunocasionyestilo=Sí en la misma fila, ver semantic_dependencies.orientacion_estilo-.'
+        operations: [filter, group, compare]
+      vendedororientosegunocasionyestilo:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Orientación de estilo (campo propio de Forever 21, no existe en Shoe Box). Sí: la
+          ocasión/estilo/look expresados por el cliente influyen explícitamente en la orientación del
+          vendedor (no alcanza con "está bonito"/"está de moda"). Verificado (n=1): Sí -ver
+          semantic_dependencies.orientacion_estilo, diverge de vendedorpresentoopcionprincipalpertinente en
+          esta misma fila-.'
+        operations: [filter, group, compare]
+      vendedorofrecioalternativascuandoaplicaba:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Validación/alternativas. Sí: ofrece una segunda opción ante falta de stock,
+          duda/rechazo del cliente, pedido explícito de comparar, o necesidad no específica. Verificado
+          (n=1): No.'
+        operations: [filter, group, compare]
+      vendedorconectobeneficioconnecesidad:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Argumentación de valor. Sí: conecta explícitamente una característica/beneficio con
+          la necesidad conocida. Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedorpreguntocomolequedaoquecambiaria:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Validación. Sí: pregunta activamente por ajuste/comodidad/opinión durante o después de
+          la prueba. Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedormanejoobjecionesconace:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Manejo de objeciones. Sí sólo si cumple las 3 funciones A.C.E. (Aceptar, Clarificar,
+          Explicar/Explorar) ante una objeción real. Ver semantic_dependencies.ace_method. Verificado (n=1):
+          No -hubo objeción real (precio por encima de presupuesto, ver resumen_conversacion) y el vendedor
+          no cumplió el método completo-.'
+        operations: [filter, group, compare]
+      vendedorofrecioventacomplementariapertinente:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Venta complementaria. Sí: propone activamente un producto adicional (no reemplazo) una
+          vez resuelta o encaminada la necesidad principal. Verificado (n=1): No.'
+        operations: [filter, group, compare]
+      vendedorrealizopreguntaexplicitadecierre:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Cierre. Sí: pregunta/propuesta explícita de avanzar ante una señal clara de decisión
+          (no basta con mencionar precio o "le queda bien"). Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedoragradecioysedespidio:
+        configured_values: *si_no_na
+        observed_values: [Sí]
+        type: text
+        nullable: false
+        description: 'Despedida. Sí requiere AMBOS componentes: agradecimiento Y despedida cordial.
+          Verificado (n=1): Sí.'
+        operations: [filter, group, compare]
+      vendedorinvitoaregresar:
+        configured_values: *si_no_na
+        observed_values: ['No']
+        type: text
+        nullable: false
+        description: 'Despedida y relación. Sí: invita explícitamente al cliente a regresar durante la
+          despedida (compartir un canal de contacto no cuenta por sí solo). Verificado (n=1): No.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_forever_21_insights_categoricos_generales
+    use_when: Falta de stock, ofrecimiento de alternativa, ofrecimiento de complementario a nivel conversación.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      hubo_falta_stock:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false]
+        nullable: false
+        description: 'true sólo si se indica explícitamente que talla/color/modelo/marca/variante no está
+          disponible (ante duda, false). Verificado (n=1): false.'
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_alternativa:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false]
+        nullable: false
+        description: 'true si el vendedor propone activamente otra opción para la misma necesidad (ante
+          duda, false). Verificado (n=1): false -coherente con vendedorofrecioalternativascuandoaplicaba=No
+          en performance-.'
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_complementario:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false]
+        nullable: false
+        description: 'true si el vendedor propone activamente un producto adicional que complementa (no
+          reemplaza) la necesidad principal. Verificado (n=1): false -coherente con
+          vendedorofrecioventacomplementariapertinente=No en performance-.'
+        operations: [filter, group, compare]
+  descriptive_insights:
+    source: dashboard_v2.vw_forever_21_insights_descriptivos_generales
+    use_when: Resumen textual de la conversación.
+    grain: Una fila por conversación; texto libre no agregable.
+    profile: standard_conversation
+    fields:
+      resumen_conversacion:
+        type: text
+        nullable: true
+        description: 'Resume qué buscaba el cliente, qué opciones fueron relevantes, qué ocurrió durante la
+          atención y si hubo compra observable. No atribuye motivos no expresados. Verificado (n=1): la
+          clienta buscaba zapatos para fiesta, talla 37, negro/plateado, tacón no muy alto; el vendedor
+          recomendó un modelo negro; hubo objeción de precio ($1800 vs. presupuesto de $1500) y finalmente
+          compró.'
+        operations: [select_evidence]
+  categorical_product_insights:
+    source: dashboard_v2.vw_forever_21_insights_categoricos_por_producto
+    use_when: Rol del producto en la conversación y si se compró.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: 'Índice del producto dentro de la conversación. Clave de join con
+          descriptive_product_insights. Verificado (n=1 fila de producto): producto_index=1.'
+        operations: [join_key, filter]
+      rol_producto:
+        configured_values: [alternativo, complementario, no_claro, principal]
+        observed_values: [principal]
+        type: text
+        nullable: false
+        description: 'principal: centro de la necesidad. alternativo: reemplazo/competidor de otro
+          producto. complementario: se agrega a un producto principal. no_claro: rol no determinable.
+          Verificado (n=1): principal.'
+        operations: [filter, group, compare]
+      resultado_producto:
+        configured_values: [comprado, no_claro, no_comprado]
+        observed_values: [comprado]
+        type: text
+        nullable: false
+        description: 'comprado: evidencia observable suficiente de compra. no_comprado: descartado/rechazado
+          con evidencia clara. no_claro: desenlace abierto. Verificado (n=1): comprado -pese a la objeción
+          de precio, la clienta finalmente se lo llevó, ver resumen_conversacion-.'
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_forever_21_insights_descriptivos_por_producto
+    use_when: Producto mencionado, marca/modelo, talla y color por producto — todo texto libre observado.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto; unir con la vista
+        categórica usando conversation_id + producto_index. Verificado (n=1) - producto_index=1.,
+        operations: [join_key, filter]}
+      producto_mencionado: {type: text, nullable: true, description: 'Descripción breve del producto
+        (ej. "tenis para correr", "sandalias"). NULL si no puede identificarse razonablemente. Verificado
+        (n=1) - "zapatos para fiesta".', operations: [select_evidence]}
+      marca_modelo: {type: text, nullable: true, description: Marca y/o modelo verbalizados. Nunca
+        completado por conocimiento externo del catálogo. NULL si no se menciona. Verificado (n=1) - NULL
+        (no se verbalizó marca/modelo en la única conversación disponible)., operations: [select_evidence]}
+      talla: {type: text, nullable: true, description: Talla verbalizada, sin conversión de sistemas salvo
+        que la conversación lo haga explícito. NULL si no aparece. Verificado (n=1) - "37"., operations:
+        [select_evidence]}
+      color: {type: text, nullable: true, description: Color verbalizado. Nunca inferido por modelo o
+        marca. NULL si no aparece. Verificado (n=1) - "negro" (la clienta pidió negro o plateado; el
+        vendedor recomendó y se compró el modelo negro)., operations: [select_evidence]}
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL, la más severa del proyecto: este Data Map se construyó con **una sola
+  conversación** (ver metadata.known_findings_v1), con señales fuertes (aunque no confirmadas al 100%) de
+  ser una grabación de prueba/onboarding, no un caso real de venta. Ningún patrón de este mapa (ej. "no
+  reformula la necesidad", "no maneja bien las objeciones A.C.E.") debe presentarse como comportamiento
+  típico del equipo de venta de Forever 21 -es la lectura literal de un único caso, posiblemente sintético-.
+  Reauditar completamente cuando exista volumen real y confirmado de conversaciones de tienda.'
+- No existe información de demografía del cliente (género, necesidad, decisión, precio, urgencia) para
+  este cliente — la vista demography sólo expone tipointeraccion.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.
+- No se puede confirmar ni descartar con SQL si la única fila disponible es una grabación de prueba -no
+  existe un campo is_test en el schema-; se documenta como duda razonable basada en filename, nombre de
+  empleado y duración, no como hecho verificado.

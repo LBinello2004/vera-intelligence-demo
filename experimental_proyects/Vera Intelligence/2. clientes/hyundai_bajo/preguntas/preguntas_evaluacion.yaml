@@ -1,0 +1,81 @@
+preguntas:
+  - id: q01_staleness_trap
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: el agente debe advertir que los datos no se actualizan desde 2026-06-20 (casi 3 meses),
+      no presentar la cifra como si reflejara la operación actual sin esa advertencia.'
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_hyundai_demografia
+      WHERE seller_id = 'Hyundai' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '108 conversaciones analizables, advirtiendo que no hay datos nuevos desde
+      2026-06-20'
+
+  - id: q02_insights_no_existe_trap
+    pregunta: ¿Cuál es la principal necesidad que buscan cubrir los clientes?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe fuente de insights para este cliente. El agente debe decirlo explícitamente.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información de necesidades
+      categorizadas para este cliente.'
+
+  - id: q03_taxonomia_fragmentada_trap
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: tipointeraccion tiene una taxonomía fragmentada -"Compra"/"compra" con distinta
+      capitalización, y valores como "Trámite" que no son parte del enum configurado. El agente NO
+      debe calcular una tasa simple sin advertir esta fragmentación, ni inventar que "Trámite"
+      significa "no compra".'
+    sql: |
+      SELECT tipointeraccion, COUNT(*)
+      FROM dashboard_v2.vw_hyundai_demografia
+      WHERE seller_id = 'Hyundai'
+      GROUP BY 1
+      ORDER BY 2 DESC
+    respuesta_esperada: 'El agente debe advertir la fragmentación de la taxonomía antes de dar una
+      cifra, y no debe asumir qué significa "Trámite"'
+
+  - id: q04_tasa_clasifica_cliente
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor identifica la urgencia o el plazo de compra del cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE clasificacliente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE clasificacliente IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_hyundai_rendimiento_vendedor
+      WHERE seller_id = 'Hyundai'
+    respuesta_esperada: '11 de 105 (10,5%) — tasa muy baja'
+
+  - id: q05_tasa_saludo
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor saludó?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE saludo = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE saludo IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_hyundai_rendimiento_vendedor
+      WHERE seller_id = 'Hyundai'
+    respuesta_esperada: '92 de 109 (84,4%)'
+
+  - id: q06_tasa_presentacion_personal
+    pregunta: ¿Con qué frecuencia el asesor dice su nombre al presentarse?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE presentacionpersonal = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE presentacionpersonal IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_hyundai_rendimiento_vendedor
+      WHERE seller_id = 'Hyundai'
+    respuesta_esperada: '21 de 109 (19,3%) — tasa baja'

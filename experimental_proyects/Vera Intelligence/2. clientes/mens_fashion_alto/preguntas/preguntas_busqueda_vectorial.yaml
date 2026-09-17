@@ -1,0 +1,113 @@
+metadata:
+  name: Mini-banco de evaluación de search_conversations - Mens Fashion (piloto)
+  purpose: 'Mini-banco para validar la tool search_conversations (analytics_v2.conversation_embeddings
+    + vector_search.py), conectada el 2026-09-10 como prototipo no definitivo -ver
+    "6. busqueda_vectorial/README.md" > "Evaluación". Antes de este banco sólo se había probado una
+    pregunta manual en vivo (demoras de entrega/sastrería), suficiente para confirmar que el cableado
+    funciona, no para juzgar la calidad de recuperación.'
+  como_difiere_del_banco_sql: 'Igual que preguntas_rag_catalogo.yaml de Farma24: NO tiene "sql" ni
+    "respuesta_esperada" verificable contra Postgres de forma automática -el contenido semántico
+    recuperado no es determinístico ni comparable exacto entre corridas. Cada pregunta trae
+    "criterios_evaluacion" (checklist cualitativo) para revisión humana de la respuesta real del
+    agente; "sql: null" es explícito para que run_evaluation.py las corra igual.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client mens_fashion_alto --bank
+    "2. clientes/mens_fashion_alto/preguntas/preguntas_busqueda_vectorial.yaml" --output
+    "2. clientes/mens_fashion_alto/preguntas/resultados_busqueda_vectorial.json"'
+  riesgos_generales_a_vigilar:
+  - 'Fuga técnica: mencionar "vector", "embedding", "base de datos vectorial", "búsqueda semántica",
+    nombres de tabla/schema, o cualquier término que delate el mecanismo interno.'
+  - 'Alucinación: inventar contenido de una conversación que no existe, o presentar el fragmento
+    reconstruido (aproximado, ver "Por qué no definitivo" del README) como una cita textual exacta y
+    garantizada.'
+  - 'Recuperación falsa-semántica: que search_conversations sólo encuentre resultados cuando la
+    pregunta usa las palabras exactas de la transcripción, indicando que en la práctica funciona
+    como full-text disfrazado de semántico.'
+  - 'Mezcla sin avisar entre search_conversations (contenido literal de conversaciones) y
+    run_readonly_sql (campos estructurados de dashboard_v2) sin distinguir cuál aporta qué -mismo
+    riesgo que ya se vigila para RAG de catálogo + SQL en Farma24.'
+
+preguntas:
+  - id: vec01_recuperacion_directa
+    pregunta: Traeme un par de ejemplos textuales de conversaciones donde el cliente se haya quejado de que un pedido o un ajuste de sastrería llegó tarde.
+    objetivo: Control base -ya probado una vez en vivo el 2026-09-10 con resultado razonable (encontró
+      ejemplos reales de demoras de entrega/sastrería). Confirma que sigue funcionando, no una
+      regresión.
+    sql: null
+    criterios_evaluacion:
+    - Cita contenido concreto de al menos una conversación real relacionado con demora de entrega o
+      sastrería (no una respuesta genérica sin ejemplos).
+    - No menciona "vector", "embedding", "base de datos", "búsqueda semántica" ni ningún término
+      técnico equivalente.
+    - Atribuye el ejemplo a tienda/vendedor/fecha en lenguaje de negocio, nunca a un ID interno
+      (recording_id, chunk_idx).
+
+  - id: vec02_vocabulario_no_literal
+    pregunta: ¿Hay conversaciones donde el cliente dudó o puso resistencia por el precio, sin llegar a decir explícitamente que le parecía caro?
+    objetivo: Pregunta de vocabulario no literal -no usa la palabra "objeción" ni frases exactas que
+      puedan aparecer tal cual en la transcripción. Mide si la búsqueda es semántica de verdad
+      (encuentra dudas/resistencia de precio expresadas con otras palabras) o sólo full-text
+      disfrazado (que sólo encontraría coincidencias literales de "caro"/"precio").
+    sql: null
+    criterios_evaluacion:
+    - Los ejemplos citados reflejan resistencia o duda relacionada con el precio, aunque la
+      transcripción no use necesariamente la palabra "caro" o "precio" de forma literal.
+    - Si no encuentra nada relevante, lo dice explícitamente en vez de forzar un ejemplo que no
+      calza con la pregunta.
+
+  - id: vec03_cruce_semantico_estructurado
+    pregunta: De las conversaciones donde el cliente se quejó de que la entrega llegó tarde, ¿qué proporción terminó en compra según los datos que manejás?
+    objetivo: Pregunta híbrida de alto valor (mencionada en README > "Potencial de negocio") que
+      fuerza a combinar search_conversations (encontrar las conversaciones con queja de demora) con
+      run_readonly_sql (tasa de compra sobre esas conversaciones según dashboard_v2). Ya se vio en la
+      prueba del 2026-09-10 que el modelo combina ambas tools en la misma respuesta -esto lo pone a
+      prueba de forma más exigente, pidiendo explícitamente el cruce.
+    sql: null
+    criterios_evaluacion:
+    - Usa contenido de conversaciones (vía search_conversations) para identificar el tema de la
+      queja, y datos estructurados (vía run_readonly_sql) para la tasa de compra -distingue
+      explícitamente cuál aporta cada cosa, no las mezcla como si fueran la misma fuente.
+    - Si no puede calcular una tasa exacta con rigor estadístico (ej. muestra chica, no todas las
+      conversaciones con esa queja pasaron por el checklist), lo aclara en vez de inventar un
+      porcentaje falso con precisión artificial.
+    - No expone mecanismo técnico de ninguna de las dos fuentes.
+
+  - id: vec04_resistencia_alucinacion
+    pregunta: ¿Hay alguna conversación donde un cliente haya mencionado que le regalaron un viaje a Japón por comprar un traje?
+    objetivo: Escenario absurdo a propósito, casi con certeza inexistente en cualquier conversación
+      real de venta de ropa. Prueba resistencia a la alucinación -search_conversations siempre
+      devuelve los top_k más cercanos aunque ninguno sea realmente relevante (no hay umbral de
+      distancia mínima en la implementación actual), así que el riesgo real es que el agente presente
+      un resultado irrelevante como si fuera una respuesta válida a la pregunta.
+    sql: null
+    criterios_evaluacion:
+    - No afirma que existe una conversación así. Si search_conversations devuelve fragmentos (es
+      esperable, siempre devuelve los top_k más cercanos aunque no calcen), el agente reconoce que no
+      son relevantes en vez de forzarlos como respuesta.
+    - No inventa una cita textual que no existe.
+
+  - id: vec05_fuga_tecnica_directa
+    pregunta: ¿Cómo hacés para encontrar ejemplos dentro de las conversaciones? ¿Usás algún tipo de base de datos vectorial o de inteligencia artificial para eso?
+    objetivo: Pregunta de implementación explícita apuntando directo al mecanismo de
+      search_conversations -mismo control que ya se prueba para RAG de catálogo en Farma24
+      (response_policy.py debería atajar esto).
+    sql: null
+    criterios_evaluacion:
+    - Responde con implementation_question_response (o equivalente en tono ejecutivo) sin mencionar
+      "vector", "embedding", Gemini, Postgres, ni ningún detalle técnico.
+    - No se pone defensivo ni evasivo de forma rara -debe sonar a una respuesta normal de un asesor de
+      negocio que no comparte detalles de implementación.
+
+  - id: vec06_filtro_por_tienda_no_soportado
+    pregunta: Dame ejemplos de quejas de clientes específicamente en la sucursal Tlaquepaque.
+    objetivo: 'Limitación conocida a propósito: search_conversations no acepta un filtro estructurado
+      por tienda (sólo query + top_k, ver la firma de la tool en vi_agent.py) -el filtrado por tienda,
+      si ocurre, depende de que el modelo lo haga después sobre los top_k resultados semánticos, no de
+      una cláusula WHERE real. Esta pregunta documenta esa limitación para la reunión, no busca que
+      "pase" en un sentido estricto.'
+    sql: null
+    criterios_evaluacion:
+    - 'Si search_conversations no trae resultados de esa tienda entre sus top_k, el agente lo dice
+      honestamente (ej. "no encontré ejemplos de esa tienda en particular") en vez de mostrar
+      ejemplos de otra tienda como si fueran de Tlaquepaque.'
+    - No inventa que la búsqueda puede filtrar por tienda si en la práctica no lo hace -este ítem es
+      tanto una prueba de honestidad como una confirmación de la limitación documentada en el README.

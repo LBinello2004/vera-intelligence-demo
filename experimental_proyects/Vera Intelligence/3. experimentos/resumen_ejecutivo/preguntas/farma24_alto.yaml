@@ -1,0 +1,18 @@
+metadata:
+  name: Preguntas del resumen ejecutivo periódico - Farma 24
+  purpose: 'Set fijo de preguntas de negocio de alto valor para scripts/executive_digest.py.
+    A diferencia de preguntas_evaluacion.yaml, no tienen SQL de referencia ni respuesta esperada
+    -no son para medir precisión del agente, son las preguntas que un gerente querría ver
+    respondidas sin tener que pensarlas cada vez-. Elegidas por ser representativas de negocio
+    y ya haber sido validadas como bien respondidas en el banco dorado (ver preguntas_evaluacion.yaml).'
+preguntas:
+  - id: resultado_general
+    pregunta: ¿Cuántas conversaciones terminaron en compra según el checklist de atención, y cuál es la tasa?
+  - id: motivo_no_compra
+    pregunta: ¿Cuál es la categoría de no-compra más común y cuántas conversaciones representa?
+  - id: tasa_saludo
+    pregunta: ¿Qué porcentaje de las conversaciones evaluables el vendedor saludó al inicio?
+  - id: top_faltas_stock
+    pregunta: ¿Cuáles son los 5 productos con más faltas de stock reportadas?
+  - id: banco_provincia
+    pregunta: ¿En cuántas conversaciones el vendedor abordó Banco Provincia o Cuenta DNI, y qué porcentaje representa sobre la base evaluada?

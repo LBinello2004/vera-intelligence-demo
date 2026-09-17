@@ -1,0 +1,934 @@
+metadata:
+  name: VI Data Map Mens Fashion V1
+  version: 1.0.0-draft
+  client: Mens Fashion
+  generated_at: '2026-08-28'
+  generated_from: VI Data Map V12.yaml + information_schema
+  scope: Sólo dashboard_v2 de Mens Fashion. Diseñado para entregar completo en el contexto del cliente.
+routing:
+  demografía: demography
+  criterios_cumplimiento_desempeño: performance
+  resultados_motivos_flags_generales: categorical_insights
+  explicaciones_evidencia_general: descriptive_insights
+  atributos_resultados_por_producto: categorical_product_insights
+  explicaciones_evidencia_por_producto: descriptive_product_insights
+sql_contract:
+  scope: Usar exclusivamente las seis fuentes dashboard_v2 declaradas abajo; ninguna fuente transversal ni vista de otro cliente.
+  safety: Generar un único SELECT o WITH...SELECT read-only; sin DDL/DML; parámetros psycopg %(nombre)s; LIMIT 200 sólo para
+    detalle.
+  tenant: El tenant exacto proviene de la sesión. Aplicarlo sobre physical_context.tenant antes de agrupar o limitar; no inferir
+    ni cambiar mayúsculas.
+  time: Aplicar fechas sólo si la pregunta lo pide, sobre physical_context.date y con parámetros. No inventar períodos.
+  physical_names: Usar literalmente source, physical_context, common_fields y business_fields; no traducir nombres físicos.
+  categorical_values: Para filtros usar sólo observed_values con tipo, mayúsculas y acentos exactos. Si el mapeo es ambiguo,
+    devolver distribución; no inventar literales.
+  not_applicable: Excluir null, N/A, n/a y no_aplica de rankings o motivos salvo pedido explícito; mostrarlos aparte sólo
+    si aportan contexto.
+  enabling_flags: Para motivos o detalles condicionados, aplicar primero la bandera booleana habilitante de la misma fuente
+    cuando exista.
+  grain: Población de conversación = COUNT(DISTINCT conversation_id). Población de producto = COUNT(DISTINCT (conversation_id,
+    producto_index)).
+  performance: Convertir únicamente los business_fields de performance a filas criterio/valor. Cumplimiento y base se calculan
+    con conversaciones distintas sobre valores evaluables; excluir N/A y null.
+  descriptive_text: Devolver texto como evidencia con row_key y fecha; no hacer GROUP BY ni frecuencia de textos libres.
+  joins: 'Unir fuentes sólo por claves compartidas declaradas: conversation_id y, para producto, producto_index. Prohibido
+    CROSS JOIN de textos y agregados.'
+sources:
+  demography:
+    source: dashboard_v2.vw_mens_fashion_demografia
+    purpose: 'Características de las conversaciones y clientes: interacción, género, destinatario, tipo, necesidad, decisión,
+      precio y urgencia.'
+    grain: Una fila por conversación.
+    physical_context:
+      row_key: conversation_id
+      date: uploaded_at_local
+      tenant: seller_id
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      seller_id:
+        meaning: Cliente autorizado.
+        type: text
+      store_id:
+        meaning: Tienda.
+        type: text
+      store_name:
+        meaning: Nombre de tienda.
+        type: text
+      sector_id:
+        meaning: Sector.
+        type: text
+      sector_name:
+        meaning: Nombre de sector.
+        type: text
+      employee_id:
+        meaning: Empleado o vendedor.
+        type: text
+      employee_full_name:
+        meaning: Nombre del empleado, sujeto al rol autorizado.
+        type: text
+      duration_seconds:
+        meaning: Duración de la grabación.
+        type: numeric
+      uploaded_at_local:
+        meaning: Columna física exacta de fecha y hora local; usarla para filtros temporales en vistas cliente salvo regla
+          más específica.
+        type: timestamp without time zone
+      usefulforanalysis:
+        meaning: Columna física exacta que indica si la conversación sirve para análisis; no escribir useful_for_analysis
+          en estas vistas.
+        type: boolean
+      is_rendimiento_window:
+        meaning: Indica pertenencia al alcance temporal de rendimiento.
+        type: boolean
+      is_insights_window:
+        meaning: Indica pertenencia al alcance temporal de insights.
+        type: boolean
+    business_fields:
+      tipointeraccion:
+        meaning: Tipo de interacción
+        observed_values:
+        - cambio
+        - compra
+        - no_compra
+        - queja
+        type: text
+      genero_cliente:
+        meaning: Género del cliente
+        observed_values:
+        - femenino
+        - masculino
+        - no_claro
+        type: text
+      cliente_compra_para:
+        meaning: Destinatario u objetivo de compra
+        observed_values:
+        - no_claro
+        - regalo
+        - si_mismo
+        - tercero
+        type: text
+      tipo_cliente:
+        meaning: Tipo de cliente
+        observed_values:
+        - no_claro
+        - nuevo
+        - recurrente
+        type: text
+      perfil_necesidad:
+        meaning: Perfil necesidad
+        observed_values:
+        - casual
+        - evento
+        - exploracion
+        - no_claro
+        - reposicion
+        - trabajo
+        type: text
+      nivel_decision_cliente:
+        meaning: Nivel decision cliente
+        observed_values:
+        - comparando
+        - decidido
+        - indeciso
+        - no_claro
+        type: text
+      sensibilidad_precio_general:
+        meaning: Sensibilidad precio general
+        observed_values: &id002
+        - alta
+        - baja
+        - media
+        - no_claro
+        type: text
+      urgencia_general:
+        meaning: Urgencia general
+        observed_values: &id005
+        - inmediata
+        - no_claro
+        - planeada
+        type: text
+  performance:
+    source: dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+    purpose: Criterios estructurados de desempeño del vendedor.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    physical_context:
+      row_key: conversation_id
+      date: uploaded_at_local
+      tenant: seller_id
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      seller_id:
+        meaning: Cliente autorizado.
+        type: text
+      store_id:
+        meaning: Tienda.
+        type: text
+      store_name:
+        meaning: Nombre de tienda.
+        type: text
+      sector_id:
+        meaning: Sector.
+        type: text
+      sector_name:
+        meaning: Nombre de sector.
+        type: text
+      employee_id:
+        meaning: Empleado o vendedor.
+        type: text
+      employee_full_name:
+        meaning: Nombre del empleado, sujeto al rol autorizado.
+        type: text
+      duration_seconds:
+        meaning: Duración de la grabación.
+        type: numeric
+      uploaded_at_local:
+        meaning: Columna física exacta de fecha y hora local; usarla para filtros temporales en vistas cliente salvo regla
+          más específica.
+        type: timestamp without time zone
+      usefulforanalysis:
+        meaning: Columna física exacta que indica si la conversación sirve para análisis; no escribir useful_for_analysis
+          en estas vistas.
+        type: boolean
+      is_rendimiento_window:
+        meaning: Indica pertenencia al alcance temporal de rendimiento.
+        type: boolean
+      is_insights_window:
+        meaning: Indica pertenencia al alcance temporal de insights.
+        type: boolean
+    business_fields:
+      vendedoramable:
+        meaning: ¿ El vendedor fue amable?
+        configured_values: Sí|No|N/A
+        observed_values: &id001
+        - N/A
+        - 'No'
+        - Sí
+        type: text
+      vendedorsepresenta:
+        meaning: ¿El vendedor se presentó , mencionó su nombre y el de la marca?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedorrealizocierrecompra:
+        meaning: '¿El vendedor realizó preguntas o comentarios para cerrar la compra? (Ej: “Licenciado no se lo merece?” “Con
+          que te vas a consentir”?)'
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorofrecioasistencia:
+        meaning: ¿El vendedor ofreció asistencia? Dijo algo similar a “si necesitas asistencia o alguna recomendación hazmelo
+          saber”?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedorofreciotomarmedidas:
+        meaning: ¿Se ofreció tomar medidas para saber talla?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedormuestraprendas:
+        meaning: ¿ El vendedor mostró prendas y ofreció probarlas?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionadescuentos:
+        meaning: ¿El vendedor menciona descuentos o promociones vigentes?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedoragradecioeinvitovolver:
+        meaning: ¿El vendedor agradeció la visita e invitó a volver?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedorexplicoprogramadelealtad:
+        meaning: ¿El vendedor explicó correctamente en qué consiste el programa de lealtad?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorconfirmoenvioticketemail:
+        meaning: ¿El vendedor confirmó que el ticket de compra se enviaría por correo electrónico?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedorofreciomesessinintereses:
+        meaning: ¿Se ofreció meses sin intereses?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionoprogramadelealtad:
+        meaning: '¿El vendedor mencionó el programa de lealtad de la marca (Ej: Puntos Robert’s)?'
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorsugiriocomplementos:
+        meaning: ¿El vendedor sugirió prendas complementarias para el outfit?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorpreguntaocasionuso:
+        meaning: ¿Se preguntó la ocasión de uso, tipo de evento, suceso?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionobeneficiosprendas:
+        meaning: ¿El vendedro mencionó los beneficios de las prendas?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionoconfeccionamedida:
+        meaning: ¿Se mencionó que se pueden elaborar prendas a la medida?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorinvitoaencuestasatisfaccion:
+        meaning: ¿El vendedor invitó al cliente a responder la encuesta de satisfacción?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionanuevoslanzamientos:
+        meaning: ¿El vendedor menciona nuevos lanzamientos?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedormencionotrescomplementos:
+        meaning: ¿El vendedor mencionó al menos 3 complementos para el outfit?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      conocimientosuficiente:
+        meaning: ¿El vendedor tenía suficiente conocimiento sobre los productos?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorrecomiendasegunocasionuso:
+        meaning: ¿Se brindaron recomendaciones de acuerdo a la ocasión de uso?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedordestacaventajasconfeccionmedida:
+        meaning: ¿Se destacaron las ventajas de confeccionar un producto a medida?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorpreguntapreferenciascliente:
+        meaning: ¿Se preguntó color, talla o estilo de preferencia del cliente?
+        configured_values: Sí|No|N/A
+        observed_values: *id001
+        type: text
+      vendedorofrecesolucionantefaltadeproducto:
+        meaning: ¿El vendedor ofreció “Busca, Consigue, Entrega”?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorofrecebeneficiosanteobjeccionprecio:
+        meaning: ¿Se ofrecieron beneficios, descuentos, promociones o meses sin interés ante objeciones de precio?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorofrecesolucionanteobjeccioncomosevesiente:
+        meaning: ¿Se ofrecieron soluciones ante objeciones de cómo se ve/siente la prenda?
+        configured_values: Sí|No
+        observed_values: *id001
+        type: text
+      vendedorinformocashback20porciento:
+        meaning: ¿El vendedor informo el cashback del 20%?
+        configured_values: Sí|No|N/A
+        type: text
+  categorical_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+    purpose: Resultados y hallazgos categóricos generales de la conversación.
+    grain: Una fila por conversación.
+    physical_context:
+      row_key: conversation_id
+      date: uploaded_at_local
+      tenant: seller_id
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      seller_id:
+        meaning: Cliente autorizado.
+        type: text
+      store_id:
+        meaning: Tienda.
+        type: text
+      store_name:
+        meaning: Nombre de tienda.
+        type: text
+      sector_id:
+        meaning: Sector.
+        type: text
+      sector_name:
+        meaning: Nombre de sector.
+        type: text
+      employee_id:
+        meaning: Empleado o vendedor.
+        type: text
+      employee_full_name:
+        meaning: Nombre del empleado, sujeto al rol autorizado.
+        type: text
+      duration_seconds:
+        meaning: Duración de la grabación.
+        type: numeric
+      uploaded_at_local:
+        meaning: Columna física exacta de fecha y hora local; usarla para filtros temporales en vistas cliente salvo regla
+          más específica.
+        type: timestamp without time zone
+      usefulforanalysis:
+        meaning: Columna física exacta que indica si la conversación sirve para análisis; no escribir useful_for_analysis
+          en estas vistas.
+        type: boolean
+      is_rendimiento_window:
+        meaning: Indica pertenencia al alcance temporal de rendimiento.
+        type: boolean
+      is_insights_window:
+        meaning: Indica pertenencia al alcance temporal de insights.
+        type: boolean
+    business_fields:
+      tipo_interaccion:
+        meaning: Tipo interaccion
+        observed_values:
+        - cambio
+        - compra
+        - no_compra
+        type: text
+      resultado_general:
+        meaning: Resultado general
+        observed_values:
+        - cambio
+        - compra_parcial
+        - compra_total
+        - no_compra
+        type: text
+      motivador_visita:
+        meaning: Motivador visita
+        observed_values:
+        - aparador
+        - ecommerce
+        - necesidad_especifica
+        - no_claro
+        - promocion
+        - recomendacion
+        - redes_sociales
+        - referencia_externa
+        type: text
+      origen_inspiracion_cliente:
+        meaning: Origen inspiracion cliente
+        observed_values:
+        - ecommerce_propio
+        - no_claro
+        - redes_sociales
+        - referencia_externa
+        type: text
+      intencion_compra_inicial:
+        meaning: Intencion compra inicial
+        observed_values: *id002
+        type: text
+      primer_mencion_cashback:
+        meaning: Primer mencion cashback
+        observed_values:
+        - no_mencionado
+        type: text
+      cliente_llega_con_cashback_para_usar:
+        meaning: Cliente llega con cashback para usar
+        type: boolean
+        observed_values:
+        - 'false'
+      conducta_vendedor_cashback:
+        meaning: Conducta vendedor cashback
+        observed_values:
+        - no_menciona
+        type: text
+      hubo_mencion_competencia:
+        meaning: Hubo mencion competencia
+        type: boolean
+        observed_values: &id003
+        - 'false'
+        - 'true'
+      hubo_mencion_a_medida:
+        meaning: Hubo mencion a medida
+        type: boolean
+        observed_values: *id003
+      hubo_ofrecimiento_a_medida:
+        meaning: Hubo ofrecimiento a medida
+        type: boolean
+        observed_values: *id003
+      hubo_ofrecimiento_complementarios:
+        meaning: Hubo ofrecimiento complementarios
+        type: boolean
+        observed_values: *id003
+      hubo_ofrecimiento_paquete:
+        meaning: Hubo ofrecimiento paquete
+        type: boolean
+        observed_values: *id003
+      hubo_pregunta_ocasion_de_uso:
+        meaning: Hubo pregunta ocasion de uso
+        type: boolean
+        observed_values: *id003
+      atencion_pasiva_vendedor:
+        meaning: Atencion pasiva vendedor
+        type: boolean
+        observed_values: *id003
+      falta_cierre_vendedor:
+        meaning: Falta cierre vendedor
+        type: boolean
+        observed_values: *id003
+      no_ofrece_solucion_completa:
+        meaning: No ofrece solucion completa
+        type: boolean
+        observed_values: *id003
+      hubo_venta_perdida:
+        meaning: Hubo venta perdida
+        type: boolean
+        observed_values: *id003
+      motivo_principal_venta_perdida:
+        meaning: Motivo principal venta perdida
+        observed_values:
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - fit
+        - inventario
+        - no_aplica
+        - precio
+        - tiempo_entrega
+        type: text
+      cantidad_productos_mencionados:
+        meaning: Cantidad productos mencionados
+        type: integer
+        observed_values:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+        - '5'
+        - '6'
+        - '7'
+        - '8'
+      cantidad_productos_comprados:
+        meaning: Cantidad productos comprados
+        type: integer
+        observed_values:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+        - '5'
+  descriptive_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_descriptivos_generales
+    purpose: Explicaciones y evidencia textual general de la conversación.
+    grain: Una fila por conversación; texto libre no agregable como categoría.
+    physical_context:
+      row_key: conversation_id
+      date: date
+      tenant: seller
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      date:
+        type: timestamp without time zone
+      seller:
+        type: text
+    business_fields:
+      resumen_ejecutivo_conversacion:
+        meaning: Resumen ejecutivo conversacion
+        type: text
+      que_quiere_el_cliente_y_que_tenemos:
+        meaning: Que quiere el cliente y que tenemos
+        type: text
+      que_no_estamos_resolviendo:
+        meaning: Que no estamos resolviendo
+        type: text
+      por_que_llega_y_por_que_compra:
+        meaning: Por que llega y por que compra
+        type: text
+      rol_de_a_medida_en_la_conversacion:
+        meaning: Rol de a medida en la conversacion
+        type: text
+      evaluacion_ejecucion_vendedor:
+        meaning: Evaluacion ejecucion vendedor
+        type: text
+      mejores_practicas_detectadas:
+        meaning: Mejores practicas detectadas
+        type: text
+      errores_principales_detectados:
+        meaning: Errores principales detectados
+        type: text
+      insight_cruzado_principal:
+        meaning: Insight cruzado principal
+        type: text
+      accion_sugerida:
+        meaning: Accion sugerida
+        type: text
+  categorical_product_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+    purpose: Atributos y resultados categóricos por producto mencionado.
+    grain: Una fila por conversation_id + producto_index.
+    physical_context:
+      row_key: conversation_id
+      date: uploaded_at_local
+      tenant: seller_id
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      seller_id:
+        meaning: Cliente autorizado.
+        type: text
+      store_id:
+        meaning: Tienda.
+        type: text
+      store_name:
+        meaning: Nombre de tienda.
+        type: text
+      sector_id:
+        meaning: Sector.
+        type: text
+      sector_name:
+        meaning: Nombre de sector.
+        type: text
+      employee_id:
+        meaning: Empleado o vendedor.
+        type: text
+      employee_full_name:
+        meaning: Nombre del empleado, sujeto al rol autorizado.
+        type: text
+      duration_seconds:
+        meaning: Duración de la grabación.
+        type: numeric
+      uploaded_at_local:
+        meaning: Columna física exacta de fecha y hora local; usarla para filtros temporales en vistas cliente salvo regla
+          más específica.
+        type: timestamp without time zone
+      usefulforanalysis:
+        meaning: Columna física exacta que indica si la conversación sirve para análisis; no escribir useful_for_analysis
+          en estas vistas.
+        type: boolean
+      is_rendimiento_window:
+        meaning: Indica pertenencia al alcance temporal de rendimiento.
+        type: boolean
+      is_insights_window:
+        meaning: Indica pertenencia al alcance temporal de insights.
+        type: boolean
+    business_fields:
+      producto_index:
+        meaning: Producto index
+        type: integer
+        observed_values:
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+        - '5'
+        - '6'
+      producto_index_relacionado:
+        meaning: Producto index relacionado
+        type: integer
+        observed_values:
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      producto:
+        meaning: Producto
+        observed_values:
+        - abrigo
+        - accesorios
+        - blazer_y_saco
+        - calzado
+        - camisa
+        - chamarra_y_chaleco
+        - jeans
+        - otro
+        - pantalon
+        - polos_y_playeras
+        - separ_pantalon
+        - separ_saco
+        - sweater
+        - traje
+        type: text
+      rol_producto_en_conversacion:
+        meaning: Rol producto en conversacion
+        observed_values:
+        - alternativo
+        - complementario
+        - no_claro
+        - principal
+        type: text
+      ocasion_de_uso:
+        meaning: Ocasion de uso
+        observed_values:
+        - boda
+        - casual
+        - evento
+        - no_claro
+        - regalo
+        - trabajo
+        type: text
+      fit_buscado:
+        meaning: Fit buscado
+        observed_values:
+        - no_claro
+        - regular
+        - relaxed
+        - slim
+        type: text
+      color_solicitado_producto:
+        meaning: Color solicitado producto
+        observed_values:
+        - amarillo_naranja
+        - azul
+        - blanco_hueso
+        - cafe_beige
+        - gris
+        - multicolor_otros
+        - negro
+        - rojo_vino
+        - rosa_morado
+        - verde
+        type: text
+      color_comprado_producto:
+        meaning: Color comprado producto
+        observed_values:
+        - azul
+        - blanco_hueso
+        - cafe_beige
+        - gris
+        - multicolor_otros
+        - negro
+        - rojo_vino
+        - rosa_morado
+        - verde
+        type: text
+      color_o_diseno_relevante:
+        meaning: Color o diseno relevante
+        observed_values:
+        - 'no'
+        - si
+        type: text
+      talla_solicitada_producto:
+        meaning: Talla solicitada producto
+        observed_values: &id004
+        - a_medida
+        - chica_34-36
+        - dos_extra_grande_50+
+        - extra_grande_44-46-48
+        - grande_42
+        - mediana_38-40
+        type: text
+      talla_comprada_producto:
+        meaning: Talla comprada producto
+        observed_values: *id004
+        type: text
+      percepcion_calidad:
+        meaning: Percepcion calidad
+        observed_values:
+        - confeccion
+        - marca
+        - multiples
+        - no_claro
+        - relacion_valor_precio
+        - tela
+        type: text
+      se_compro:
+        meaning: Se compro
+        type: boolean
+        observed_values: *id003
+      resultado_producto:
+        meaning: Resultado producto
+        observed_values:
+        - comprado
+        - no_comprado
+        - pendiente
+        - reemplazado
+        type: text
+      motivo_venta_perdida_producto:
+        meaning: Motivo venta perdida producto
+        observed_values:
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - falta_color
+        - falta_modelo
+        - falta_talla
+        - fit
+        - no_claro
+        - precio
+        - tiempo_entrega
+        type: text
+      urgencia_cliente:
+        meaning: Urgencia cliente
+        observed_values: *id005
+        type: text
+      sensibilidad_precio:
+        meaning: Sensibilidad precio
+        observed_values: *id002
+        type: text
+      objecion_principal:
+        meaning: Objecion principal
+        observed_values:
+        - calidad
+        - estilo_diseno
+        - fit
+        - precio
+        - tiempo_entrega
+        - urgencia
+        type: text
+      hubo_manejo_objecion:
+        meaning: Hubo manejo objecion
+        type: boolean
+        observed_values: *id003
+      resultado_manejo_objecion:
+        meaning: Resultado manejo objecion
+        observed_values:
+        - exitoso
+        - fallido
+        - no_aplica
+        - parcial
+        type: text
+      solucion_ante_falta:
+        meaning: Solucion ante falta
+        observed_values:
+        - ajuste_sastreria
+        - a_medida
+        - busqueda_otra_tienda
+        - no_aplica
+        - sin_solucion
+        - sustitucion_funciona
+        - sustitucion_no_funciona
+        type: text
+      hubo_ofrecimiento_complementario:
+        meaning: Hubo ofrecimiento complementario
+        type: boolean
+        observed_values: *id003
+      hubo_ofrecimiento_a_medida:
+        meaning: Hubo ofrecimiento a medida
+        type: boolean
+        observed_values: *id003
+      resultado_a_medida:
+        meaning: Resultado a medida
+        observed_values:
+        - cierra_venta
+        - no_aplica
+        - no_cierra_venta
+        type: text
+      disparador_de_cierre:
+        meaning: Disparador de cierre
+        observed_values:
+        - a_medida
+        - asesoria_vendedor
+        - fit_correcto
+        - paquete_completo
+        - promocion
+        type: text
+  descriptive_product_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_descriptivos_por_producto
+    purpose: Evidencia y explicación textual por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    physical_context:
+      row_key: conversation_id
+      date: uploaded_at_local
+      tenant: seller_id
+    common_fields:
+      recording_id:
+        meaning: Grabación única.
+        type: text
+      conversation_id:
+        meaning: Conversación única cuando está disponible.
+        type: text
+      seller_id:
+        meaning: Cliente autorizado.
+        type: text
+      store_id:
+        meaning: Tienda.
+        type: text
+      store_name:
+        meaning: Nombre de tienda.
+        type: text
+      sector_id:
+        meaning: Sector.
+        type: text
+      sector_name:
+        meaning: Nombre de sector.
+        type: text
+      employee_id:
+        meaning: Empleado o vendedor.
+        type: text
+      employee_full_name:
+        meaning: Nombre del empleado, sujeto al rol autorizado.
+        type: text
+      duration_seconds:
+        meaning: Duración de la grabación.
+        type: numeric
+      uploaded_at_local:
+        meaning: Columna física exacta de fecha y hora local; usarla para filtros temporales en vistas cliente salvo regla
+          más específica.
+        type: timestamp without time zone
+      usefulforanalysis:
+        meaning: Columna física exacta que indica si la conversación sirve para análisis; no escribir useful_for_analysis
+          en estas vistas.
+        type: boolean
+      is_rendimiento_window:
+        meaning: Indica pertenencia al alcance temporal de rendimiento.
+        type: boolean
+      is_insights_window:
+        meaning: Indica pertenencia al alcance temporal de insights.
+        type: boolean
+    business_fields:
+      producto_index:
+        meaning: Producto index
+        type: integer
+      resumen_producto:
+        meaning: Resumen producto
+        type: text
+      preferencias_cliente_producto:
+        meaning: Preferencias cliente producto
+        type: text
+      brechas_de_inventario_producto:
+        meaning: Brechas de inventario producto
+        type: text
+      sensibilidad_precio_y_umbral_producto:
+        meaning: Sensibilidad precio y umbral producto
+        type: text
+      objeciones_y_respuesta_vendedor_producto:
+        meaning: Objeciones y respuesta vendedor producto
+        type: text
+      complementarios_y_paquete_producto:
+        meaning: Complementarios y paquete producto
+        type: text
+      rol_de_a_medida_producto:
+        meaning: Rol de a medida producto
+        type: text
+      resultado_final_producto:
+        meaning: Resultado final producto
+        type: text
+      accion_sugerida_producto:
+        meaning: Accion sugerida producto
+        type: text
+limitations:
+- Las señales de compra describen lo detectado en conversaciones; no sustituyen ventas transaccionales.
+- Los valores observados ayudan a construir filtros físicos, pero pueden cambiar con nuevas cargas.
+- El mapa no contiene dominios transversales, organización, conectividad, gamificación, roleplays ni datos de otros clientes.

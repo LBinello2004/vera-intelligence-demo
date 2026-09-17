@@ -1,0 +1,190 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_demografia
+      WHERE seller_id = 'Huerpel' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '5.046 conversaciones analizables (de 5.609 totales)'
+
+  - id: q02_tasa_bienvenida
+    pregunta: ¿En qué porcentaje de las recepciones la hostess da la bienvenida al cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE dalabienvenida = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE dalabienvenida IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '3.422 de 5.296 (64,6%)'
+
+  - id: q03_conecta_vs_presenta_trap
+    pregunta: ¿En qué porcentaje de las conversaciones la hostess presenta formalmente al cliente con su asesor?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no confundir presentaAsesor (presentación verbal explícita, Sí=1.387/4.767=29,1%)
+      con conectaConAsesor (sólo gestionar la conexión, Sí=2.770/5.154=53,7%) -son campos
+      distintos del checklist. La pregunta pide específicamente la presentación formal, no la
+      conexión.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE presentaasesor = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE presentaasesor IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '1.387 de 4.767 (29,1%) -no debe confundirse con la tasa de conexión
+      con el asesor (53,7%), que es un paso distinto y anterior'
+
+  - id: q04_resultado_no_existe_trap
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: demography.tipointeraccion está 100% NULL para esta sub-marca (campo muerto,
+      verificado). El agente debe indicar que no puede determinar el resultado de la
+      interacción para Huerpel Hostess -ese dato no existe para esta sub-marca, sólo para
+      Huerpel Ventas- y no debe inventar un porcentaje.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información de resultado de
+      la interacción (compra/no compra) para esta sub-marca -el campo existe en el esquema
+      pero nunca se puebla, es la asesoría de venta (otra sub-marca) la que define el
+      resultado comercial-.'
+
+  - id: q05_tipo_visita
+    pregunta: ¿Cómo se distribuyen las visitas entre nuevas (Fresh Up) y de seguimiento (Be Back)?
+    fuentes_requeridas: [conversation_insights]
+    requisitos:
+    - Debe reportar los 3 valores del enum (incluido No Identificado), no sólo Fresh Up/Be Back.
+    sql: |
+      SELECT tipo_visita, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY tipo_visita
+    respuesta_esperada: 'Fresh Up=2.660 (47,4%), No Identificado=1.548 (27,6%), Be Back=1.400
+      (25,0%)'
+
+  - id: q06_medio_publicitario_top
+    pregunta: ¿Cuáles son los principales medios por los que los clientes conocen la agencia?
+    fuentes_requeridas: [conversation_insights]
+    requisitos:
+    - Debe advertir que "No Identificado" es la categoría mayoritaria (no se debe omitir ni
+      presentar el ranking como si excluyera esa categoría).
+    sql: |
+      SELECT medio_publicitario_categoria, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY medio_publicitario_categoria
+      ORDER BY total DESC
+    respuesta_esperada: 'No Identificado=3.903 (69,6%, mayoría), Redes sociales=613 (10,9%),
+      Publicidad en agencia/Impresa=420 (7,5%), Recompra/Base de datos=133 (2,4%),
+      Servicio=128 (2,3%), el resto <2% cada uno'
+
+  - id: q07_intencion_toma_no_vs_no_identificado_trap
+    pregunta: ¿Qué porcentaje de los clientes dice explícitamente que NO trae vehículo para toma?
+    fuentes_requeridas: [conversation_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no confundir "No" (660 casos, el cliente dijo explícitamente que no) con "No
+      Identificado" (4.694 casos, no se preguntó o no quedó claro). Son conceptos distintos.'
+    sql: |
+      SELECT intencion_toma, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY intencion_toma
+    respuesta_esperada: '"No" explícito = 660 de 5.609 (11,8%). No Identificado=4.694 (83,7%,
+      mayoría, distinto de un "No" explícito), Si=254 (4,5%)'
+
+  - id: q08_genero_cliente
+    pregunta: ¿Cómo se distribuye el género de los clientes atendidos?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Reportar los 3 valores, incluyendo la mayoría "No Identificado".
+    sql: |
+      SELECT generocliente, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_demografia
+      WHERE seller_id = 'Huerpel'
+      GROUP BY generocliente
+    respuesta_esperada: 'No Identificado=2.514 (44,8%), Masculino=2.308 (41,1%),
+      Femenino=786 (14,0%)'
+
+  - id: q09_captura_datos
+    pregunta: ¿Con qué frecuencia la hostess solicita o actualiza algún dato de contacto del cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE capturaactualizadatos = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE capturaactualizadatos IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '3.343 de 5.176 (64,6%)'
+
+  - id: q10_toma_vehiculo_baja_tasa
+    pregunta: ¿Qué tan seguido pregunta la hostess si el cliente trae un vehículo para toma?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL. Es la tasa de cumplimiento más baja del
+      checklist -debe presentarse como tal, no como un valor cualquiera-.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE preguntositraevehiculoparatoma = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE preguntositraevehiculoparatoma IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '739 de 4.030 (18,3%) -la tasa de cumplimiento más baja del checklist'
+
+  - id: q11_una_tienda_trap
+    pregunta: ¿Cuál de las tiendas de Huerpel Hostess tiene mejor desempeño en la bienvenida al cliente?
+    fuentes_requeridas: [performance, demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: Huerpel Hostess opera en una única tienda (store_name), no hay múltiples
+      tiendas para comparar en esta sub-marca (a diferencia de Huerpel Ventas, que sí tiene
+      10). El agente debe aclarar esto en vez de inventar un ranking entre tiendas.'
+    sql: |
+      SELECT COUNT(DISTINCT store_name) AS tiendas
+      FROM dashboard_v2.vw_huerpel_hostess_demografia
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: 'Una sola tienda -no hay comparación posible entre tiendas para esta
+      sub-marca-'
+
+  - id: q12_cierre_cordial
+    pregunta: ¿En qué porcentaje de las conversaciones la hostess cierra cordialmente su intervención?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE cierrecordial = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE cierrecordial IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '2.222 de 5.203 (42,7%)'
+
+  - id: q13_tipo_operacion_dominante_trap
+    pregunta: ¿Cuál es la forma de operación/pago más mencionada por los clientes?
+    fuentes_requeridas: [conversation_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA de framing de denominador (mismo patrón que huerpel_hostess_seminuevos q11 y
+      Farma24 q16): "No Mencionado" es la categoría ampliamente mayoritaria (95,8%). El agente
+      no debe titular "Financiamiento" como la forma de operación más frecuente calculando la
+      moda sólo sobre el subconjunto que sí mencionó una forma de pago -debe calcular la moda
+      sobre la población total, igual que ya exige sql_rules.categorical_rate_general_rule del
+      Data Map para campos Sí/No/N/A-.'
+    sql: |
+      SELECT tipo_operacion, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY tipo_operacion
+      ORDER BY total DESC
+    respuesta_esperada: 'No Mencionado=5.371 (95,8%, mayoría absoluta), Financiamiento=198
+      (3,5%), Contado=29 (0,5%), Banco=10 (0,2%), 1 NULL. El agente debe reportar "No
+      Mencionado" como el valor más frecuente, no "Financiamiento".'

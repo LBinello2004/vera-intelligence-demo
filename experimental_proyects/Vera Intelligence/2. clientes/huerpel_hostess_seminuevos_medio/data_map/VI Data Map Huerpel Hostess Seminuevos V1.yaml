@@ -1,0 +1,370 @@
+metadata:
+  name: VI Data Map Huerpel Hostess Seminuevos V1
+  version: 1.0.0
+  client: Huerpel Hostess Seminuevos
+  model_target: Gemini 3.7
+  generated_at: '2026-09-08'
+  scope: Tres vistas dashboard_v2 de la sub-marca Hostess Seminuevos de Huerpel
+    (demografia + rendimiento_vendedor + insights_categoricos). El tenant ('Huerpel') es
+    fijo. Cubre exclusivamente la recepción inicial en la unidad de vehículos SEMINUEVOS/
+    usados certificados (marca comercial interna "Nami"), no la recepción de autos nuevos
+    (huerpel_hostess) ni la asesoría comercial de piso (huerpel_ventas).
+  source_of_truth:
+    checklist_prompt: clientes/Huerpel/Hostess Seminuevos/checklist (Langfuse, label
+      production, v4 al construir este mapa, promptId idVHo0KCaHXS67SxqvVf)
+    insights_prompt: clientes/Huerpel/Hostess Seminuevos/insights (Langfuse, label
+      production, v4 al construir este mapa, mismo promptId idVHo0KCaHXS67SxqvVf)
+    note: 'Ver clientes/huerpel_hostess_alto/data_map/VI Data Map Huerpel Hostess
+      V1.yaml para el contexto completo del grupo Huerpel (3 sub-marcas, 8 vistas
+      reales en Postgres, por qué se onboardearon como 3 clientes separados). Verificado
+      cruzando dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor.prompt_id
+      (idVHo0KCaHXS67SxqvVf, 673 filas, 100% de la vista) contra el promptId del prompt
+      de Langfuse: coincide exacto.'
+  known_findings_v1:
+  - 'VOLUMEN MENOR que Hostess y Ventas: 673 conversaciones totales, 609 analizables
+      (90,5%), 2026-06-08 a 2026-09-07, tienda única, 7 hostess/host distintos. Da señal
+      real pero menos robusta que Hostess (5.609) o Ventas (1.707); bases de 600 filas
+      son razonablemente interpretables pero conviene presentar cifras absolutas junto
+      a los porcentajes en preguntas segmentadas.'
+  - 'ROL DE RECEPCIÓN, NO DE VENTA: el checklist evalúa a quien hace la recepción
+      inicial de seminuevos (saludo institucional, perfilamiento, datos de contacto,
+      asignación de APV), no al asesor que vende la unidad. No atribuir tasas de cierre
+      de venta a este Data Map.'
+  - 'CAMPO MUERTO VERIFICADO (mismo hallazgo que Hostess): demography.tipointeraccion es
+      100% NULL (673 de 673 filas). No usar para "resultado de la interacción"; no
+      existe otra fuente de resultado comercial en este Data Map.'
+  - 'demography.generocliente SÍ está poblado (673 de 673, 0 NULL): Masculino=295
+      (43,8%), No Identificado=279 (41,5%), Femenino=99 (14,7%).'
+  - 'Enum estándar Sí/No/N/A con mayúscula inicial en los 14 campos del checklist -
+      verificado con SELECT DISTINCT en cada uno-. A diferencia del checklist de Hostess
+      (10 campos), este tiene 14, organizados en 5 secciones: Abordaje y Bienvenida (2),
+      Perfilamiento Estratégico (4), Datos de Contacto y Validación (4), Identificación
+      de Origen (2), Asignación y Experiencia (2).'
+  - 'insights_categoricos usa snake_case en minúsculas para valores (a diferencia de
+      Hostess/Ventas que usan PascalCase con tilde, ej. "Fresh Up") -verificado en el
+      prompt: "tipo_visita" usa "fresh up"/"be back"/"no identificado" en minúsculas,
+      no "Fresh Up". Particularidad propia de este prompt, documentada para no asumir
+      el mismo casing que las otras 2 sub-marcas al construir SQL con comparaciones de
+      texto.'
+  - 'registro_completo=true sólo en 81 de 673 (12,0%) -exige las 8 preguntas
+      obligatorias del registro completas (nombre, teléfono, correo, unidad buscada,
+      medio publicitario, intención de toma, forma de pago, presupuesto). aplica_
+      registro_completo=true en 470 de 673 (69,8%, el resto son Be-Back donde no
+      corresponde exigir registro completo). Tasa de registro completo cuando aplica:
+      81/470 = 17,2% -bajo, documentado como hallazgo real, no corregido (es una
+      medición honesta del cumplimiento, no un error del Data Map).'
+decision_flow:
+- Identificar si la pregunta es sobre la RECEPCIÓN de seminuevos (este Data Map) o
+  sobre autos nuevos (huerpel_hostess) / venta de piso (huerpel_ventas) -clientes
+  distintos-.
+- Si pide "resultado de la interacción", advertir que demography.tipointeraccion está
+  100% sin poblar para esta sub-marca.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE,
+  GROUP BY o cálculo.
+routing:
+  demography:
+    questions: género del cliente. NO resultado de la interacción (campo muerto).
+    avoid: no usar tipointeraccion, está 100% NULL.
+  performance:
+    questions: criterios del protocolo de recepción de seminuevos (saludo
+      institucional, perfilamiento de marca/modelo/año, vehículo para toma, forma de
+      pago, presupuesto, datos de contacto, verificación de atención previa, origen,
+      cita/promoción, presentación del asesor, amenidad).
+    avoid: no tratar N/A como incumplimiento; en Be-Back la mayoría de los campos de
+      perfilamiento/datos/origen son N/A por diseño (ver reglas del prompt).
+  conversation_insights:
+    questions: tipo y forma de llegada, vehículo buscado (marca/segmento/color),
+      medio publicitario, intención de toma, forma de pago estimada, completitud del
+      registro de datos.
+    avoid: no confundir aplica_registro_completo (si correspondía exigir el registro)
+      con registro_completo (si efectivamente se completó).
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a
+      conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200
+    para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Huerpel') sobre el tenant_field
+    de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con
+    valor Sí o No; excluir N/A y null.
+  categorical_rate_general_rule: Para cualquier campo categórico con semántica
+    Sí/No/N/A o equivalente, la base evaluada excluye explícitamente "no identificado/
+    no aplica" salvo que la pregunta pida esa categoría específicamente.
+  dominant_category_rule: 'HALLAZGO REAL (verificado 2026-09-08, primera corrida del
+    banco dorado, q11): al reportar "cuál es el valor/categoría más frecuente" de un
+    campo categórico, calcular la moda sobre la POBLACIÓN TOTAL (incluyendo "no
+    mencionado"/"no identificado"/"no aplica" si resulta ser la categoría mayoritaria),
+    nunca sólo sobre el subconjunto de valores declarados/identificados -salvo que la
+    pregunta pida explícitamente "entre los que sí declararon X". En la primera corrida,
+    el agente tituló forma_pago_estimada como "la forma de pago más mencionada es
+    crédito" (149 de 673, 22,1%) cuando la categoría real mayoritaria es "no
+    mencionado" (384 de 673, 57,1%) -la tabla completa que acompañaba la respuesta era
+    correcta, pero el titular condicionaba implícitamente sobre el subconjunto
+    declarado sin decirlo. Mismo tipo de hallazgo que la ambigüedad de denominador
+    documentada para "cashback" en Mens Fashion V4 y para q16 de Farma24.'
+sources:
+  demography:
+    source: dashboard_v2.vw_huerpel_hostess_seminuevos_demografia
+    use_when: Género del cliente. NO usar para resultado de la interacción.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      generocliente:
+        configured_values: [Masculino, Femenino, No Identificado]
+        observed_values: [Masculino, Femenino, No Identificado]
+        type: text
+        nullable: false
+        description: 'Masculino=295 (43,8%), No Identificado=279 (41,5%),
+          Femenino=99 (14,7%).'
+        operations: [filter, group]
+      tipointeraccion:
+        type: text
+        nullable: true
+        description: 'CAMPO MUERTO: 100% NULL (673 de 673 filas). No usar. Ver
+          known_findings_v1.'
+        operations: []
+  performance:
+    source: dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor
+    use_when: Criterios del protocolo de recepción de seminuevos.
+    grain: Una fila por conversación con múltiples columnas de criterios, más prompt_id.
+    profile: standard_conversation
+    decision_semantics: 'Los 14 criterios admiten Sí/No/N/A. En Be-Back/asesor ya
+      asignado, la mayoría de perfilamiento/datos/origen son N/A por diseño salvo
+      evidencia de que correspondía actualizar (ver reglas completas en
+      get_business_rules(sales_evaluation)).'
+    fields:
+      realizosaludooficialmultimarca:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Saludo con referencia institucional clara (ej. "Nami", "Nissan
+          Nami", "multimarca") -un saludo genérico ("Hola", "Buenos días") NO
+          alcanza-. Sí=206 (30,6%), No=292 (43,4%), N/A=175 (26,0%) -tasa de
+          cumplimiento más baja del checklist, exigencia estricta del criterio-.'
+        operations: [filter, group, compare]
+      preguntosibuscaalgoespecificoocompara:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Identifica si busca unidad concreta o compara opciones.
+          Sí=296 (44,0%), No=165 (24,5%), N/A=212 (31,5%).'
+        operations: [filter, group, compare]
+      indagomarcamodeloanodeinteres:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta/confirma al menos UNA de marca/modelo/año (basta una).
+          Sí=281 (41,8%), No=157 (23,3%), N/A=235 (34,9%).'
+        operations: [filter, group, compare]
+      preguntositraevehiculoparatoma:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta si tiene vehículo para toma/cambio/parte de pago.
+          Sí=251 (37,3%), No=192 (28,5%), N/A=230 (34,2%).'
+        operations: [filter, group, compare]
+      consultoformadepagoestimada:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta/confirma forma estimada de pago. Sí=300 (44,6%),
+          No=151 (22,4%), N/A=222 (33,0%).'
+        operations: [filter, group, compare]
+      indagorangodepresupuesto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta/confirma rango de presupuesto/inversión.
+          Sí=147 (21,8%), No=262 (38,9%), N/A=264 (39,2%) -tasa de cumplimiento
+          más baja del bloque de perfilamiento-.'
+        operations: [filter, group, compare]
+      solicitonombrecompleto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Solicita/confirma nombre completo. Sí=394 (58,5%), No=109
+          (16,2%), N/A=170 (25,3%) -tasa de cumplimiento más alta del checklist-.'
+        operations: [filter, group, compare]
+      solicitonumerodecontacto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Solicita/confirma teléfono. Sí=350 (52,0%), No=121 (18,0%),
+          N/A=202 (30,0%).'
+        operations: [filter, group, compare]
+      solicitocorreoelectronico:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Solicita/confirma correo. Sí=296 (44,0%), No=156 (23,2%),
+          N/A=221 (32,8%).'
+        operations: [filter, group, compare]
+      verificosiyafueatendidopreviamente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Verifica si ya visitó/fue atendido/tiene APV asignado.
+          Sí=338 (50,2%), No=170 (25,3%), N/A=165 (24,5%).'
+        operations: [filter, group, compare]
+      indagocanalespecificodeorigen:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Identifica canal concreto de origen. Sí=251 (37,3%),
+          No=205 (30,5%), N/A=217 (32,2%).'
+        operations: [filter, group, compare]
+      validosivieneporcitaopromocion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Valida cita O promoción (basta una). Sí=140 (20,8%), No=315
+          (46,8%), N/A=218 (32,4%) -tasa de cumplimiento más baja del bloque de
+          origen-.'
+        operations: [filter, group, compare]
+      presentoformalmentealasesor:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación verbal explícita al APV (no basta indicar
+          nombre o señalar). Sí=211 (31,4%), No=203 (30,2%), N/A=259 (38,5%).'
+        operations: [filter, group, compare]
+      ofrecioamenidad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Ofrece amenidad/cortesía. Sí=284 (42,2%), No=210 (31,2%),
+          N/A=179 (26,6%).'
+        operations: [filter, group, compare]
+      prompt_id:
+        type: text
+        nullable: false
+        description: 'Identificador técnico interno. No usar en respuestas de
+          negocio. 100% de las filas corresponden al promptId vigente
+          (idVHo0KCaHXS67SxqvVf), sin discrepancia detectada.'
+        operations: []
+  conversation_insights:
+    source: dashboard_v2.vw_huerpel_hostess_seminuevos_insights_categoricos
+    use_when: Tipo/forma de llegada, vehículo buscado, medio publicitario, intención de
+      toma, forma de pago, completitud del registro.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    decision_semantics: 'A diferencia de Hostess (autos nuevos), este prompt usa
+      snake_case en minúsculas para TODOS los valores categóricos (ej. "fresh up",
+      "walk-in", "no identificado"), salvo la sección de género/tipo de interacción que
+      no está materializada en esta vista (vive en demography con su propio casing).'
+    fields:
+      tipo_visita:
+        configured_values: [fresh up, be back, no identificado]
+        observed_values: [fresh up, no identificado, be back]
+        type: text
+        nullable: true
+        description: 'fresh up=445 (66,1%), no identificado=129 (19,2%),
+          be back=99 (14,7%).'
+        operations: [filter, group]
+      tipo_llegada:
+        configured_values: [cita, llamada, walk-in, no identificado]
+        observed_values: [walk-in, no identificado, cita, llamada]
+        type: text
+        nullable: true
+        description: 'walk-in=511 (75,9%, mayoría -llegada espontánea a piso-),
+          no identificado=116 (17,2%), cita=44 (6,5%), llamada=2 (0,3%).'
+        operations: [filter, group]
+      auto_solicitado_marca:
+        type: text
+        nullable: true
+        description: Marca del vehículo buscado (multimarca, no exclusivo Nissan a
+          diferencia de Hostess/Ventas -texto libre según el prompt-).
+        operations: [filter, group]
+      auto_solicitado_segmento:
+        configured_values: [sedan, suv/crossover, pickup, hatchback, minivan,
+          comercial, otro]
+        type: text
+        nullable: true
+        description: Segmento del vehículo buscado.
+        operations: [filter, group]
+      medio_publicitario_categoria:
+        configured_values: [redes sociales, pagina web, publicidad en agencia /
+          publicidad impresa, caravana, plaza comercial, prospeccion, radio,
+          recomendacion, recompra / base de datos, servicio, television, cliente
+          cotizando, ningun medio, no identificado]
+        type: text
+        nullable: true
+        description: Canal por el que el cliente conoció la unidad de seminuevos
+          (mismo criterio de clasificación que Hostess, valores en minúsculas).
+        operations: [filter, group]
+      intencion_toma:
+        configured_values: [si, 'no', no identificado]
+        observed_values: [no identificado, 'no', si]
+        type: text
+        nullable: true
+        description: 'no identificado=453 (67,3%, mayoría), no=145 (21,5%),
+          si=75 (11,1%). No tratar "no identificado" como "no" -son distintos-.'
+        operations: [filter, group]
+      forma_pago_estimada:
+        configured_values: [contado, credito, sin definir, no mencionado]
+        observed_values: [no mencionado, credito, sin definir, contado]
+        type: text
+        nullable: true
+        description: 'no mencionado=384 (57,1%, mayoría), credito=149 (22,1%),
+          sin definir=83 (12,3%), contado=57 (8,5%).'
+        operations: [filter, group]
+      aplica_registro_completo:
+        type: boolean
+        nullable: true
+        description: 'true cuando corresponde exigir las 8 preguntas obligatorias del
+          registro (fresh up o relación previa con nueva compra); false en Be-Back
+          puro. true=470 (69,8%), false=203 (30,2%).'
+        operations: [filter, group]
+      registro_completo:
+        type: boolean
+        nullable: true
+        description: 'true SÓLO si aplica_registro_completo=true y las 8 preguntas
+          obligatorias del registro fueron hechas (no depende de si el cliente
+          respondió con claridad, sólo de si se preguntó). true=81 (12,0% del total,
+          17,2% de los casos donde aplica), false=592 (88,0%). Tasa de registro
+          completo baja, documentada como hallazgo real -ver known_findings_v1-, no
+          corregida.'
+        operations: [filter, group]
+joins:
+  rule: 'demography, performance y conversation_insights comparten conversation_id.
+    Join permitido calificando el tenant en cada fuente si se usan más de una en la
+    misma consulta.'
+limitations:
+- Resultado y desempeño son inferencias conversacionales del modelo, no ventas
+  certificadas.
+- 'LIMITACIÓN PRINCIPAL: demography.tipointeraccion está 100% sin poblar. No existe
+  ninguna fuente de "resultado comercial" en este Data Map.'
+- Este Data Map cubre exclusivamente la recepción de Huerpel Hostess Seminuevos. No
+  cubre Hostess (autos nuevos) ni Ventas (clientes separados, ver README).
+- Volumen menor (673 conversaciones) que Hostess (5.609) o Ventas (1.707) -las cifras
+  segmentadas por tienda/vendedor/mes pueden volverse poco representativas rápido; se
+  recomienda presentar cifras absolutas junto a los porcentajes.
+- No responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

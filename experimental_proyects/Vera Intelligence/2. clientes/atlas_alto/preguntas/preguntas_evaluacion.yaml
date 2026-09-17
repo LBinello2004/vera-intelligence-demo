@@ -1,0 +1,216 @@
+metadata:
+  name: Preguntas de evaluación VI - Atlas
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas.
+  data_map_version: VI Data Map Atlas V1.yaml
+  tenant: Atlas
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07
+  nota_cobertura_insights: 'A diferencia de todos los clientes onboardeados hasta ahora, Atlas tiene una
+    limitación de cobertura fuerte: categorical_insights/descriptive_insights/categorical_product_insights
+    sólo cubren conversaciones desde 2026-08-10 (ver Data Map > known_findings_v1). Varias preguntas de este
+    banco están diseñadas específicamente para verificar que el agente advierta esta limitación.'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". Las preguntas marcadas es_trampa=true están diseñadas
+    específicamente para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id).
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_atlas_demografia
+      WHERE seller_id = 'Atlas' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '4606'
+
+  - id: q02_tasa_saludo_inicial
+    pregunta: ¿En qué porcentaje de las interacciones evaluables el vendedor saludó al inicio?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - saludoinicial admite Sí/No/N/A; la tasa se calcula sobre Sí+No, excluyendo N/A.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE saludoinicial = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE saludoinicial = 'No') AS no,
+        COUNT(*) FILTER (WHERE saludoinicial IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_atlas_rendimiento_vendedor
+      WHERE seller_id = 'Atlas'
+    respuesta_esperada: 'Sí=3478, No=1886, base evaluada=5364, tasa=64,84%'
+
+  - id: q03_insights_coverage_gate_trap
+    pregunta: ¿Cuál es el motivo de no compra más frecuente?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: esta pregunta suena como si pidiera todo el histórico, pero categorical_insights sólo cubre
+      conversaciones desde el 2026-08-10 (19,6% del total analizable). El agente debe advertir esta
+      limitación de cobertura antes de dar la respuesta, no presentarla como representativa de todo el
+      histórico de Atlas.'
+    sql: |
+      SELECT categoricos_generales_motivo_no_compra_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_generales
+      WHERE seller_id = 'Atlas' AND categoricos_generales_motivo_no_compra_principal NOT IN ('no_aplica')
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'postergacion=305 es el más frecuente (sobre 903 conversaciones con datos de
+      insights, todas posteriores al 2026-08-10 — el agente debe aclarar que no cubre el histórico completo
+      desde junio).'
+
+  - id: q04_resultado_general
+    pregunta: ¿Cuántas conversaciones terminaron en compra?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Usar demography.tipointeraccion (única fuente de resultado disponible para Atlas; no existe una
+      segunda lectura completa como en Farma24/Maga, dado que TipoInteraccion de insights sólo se resuelve
+      dentro del mismo pipeline limitado desde agosto — aunque llamativamente tipointeraccion en demography
+      tiene cobertura casi completa, ver Data Map).
+    sql: |
+      SELECT tipointeraccion, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_atlas_demografia
+      WHERE seller_id = 'Atlas'
+      GROUP BY tipointeraccion
+    respuesta_esperada: 'No compra=4049, Compra=1316, NULL=36'
+
+  - id: q05_tasa_tres_preguntas_investigacion
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor hizo al menos 3 preguntas de investigación?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - realizatrespreguntasdeinvestigacion admite Sí/No/N/A; base evaluada = Sí+No.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE realizatrespreguntasdeinvestigacion = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE realizatrespreguntasdeinvestigacion IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_atlas_rendimiento_vendedor
+      WHERE seller_id = 'Atlas'
+    respuesta_esperada: 'Sí=2763, base evaluada=5354, tasa=51,61%'
+
+  - id: q06_tasa_solicita_referidos_trap
+    pregunta: ¿Qué porcentaje de los vendedores solicita referidos al cierre?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA suave: es el criterio con menor tasa de cumplimiento de todo el checklist (8,76% sobre la
+      base evaluada) y también el que tiene más N/A (1.161) por diseño -sólo es evaluable cuando hubo
+      oportunidad real de cierre-. El agente no debe tratar el N/A alto como parte del "fracaso", sólo el No.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE solicitareferidos = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE solicitareferidos = 'No') AS no,
+        COUNT(*) FILTER (WHERE solicitareferidos = 'N/A') AS na
+      FROM dashboard_v2.vw_atlas_rendimiento_vendedor
+      WHERE seller_id = 'Atlas'
+    respuesta_esperada: 'Sí=370, No=3855, N/A=1161. Tasa sobre base evaluada (Sí+No=4225) = 8,76%. El N/A
+      no cuenta como incumplimiento.'
+
+  - id: q07_tasa_manejo_objeciones
+    pregunta: Cuando hay una objeción real del cliente, ¿el vendedor la aborda?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - manejodeobjeciones sólo es evaluable con objeción real (N/A muy frecuente por diseño); base evaluada = Sí+No.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE manejodeobjeciones = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE manejodeobjeciones IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_atlas_rendimiento_vendedor
+      WHERE seller_id = 'Atlas'
+    respuesta_esperada: 'Sí=3191, base evaluada=3280, tasa=97,29%'
+
+  - id: q08_top_competidor_mencionado
+    pregunta: ¿Cuál es el competidor más mencionado por los clientes?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: misma limitación de cobertura desde agosto (ver q03). Además, no confundir una marca que
+      Atlas mismo vende (ej. Sealy) mencionada como competencia real con una mención neutral del catálogo
+      propio.'
+    sql: |
+      SELECT categoricos_generales_competidor_mencionado, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_generales
+      WHERE seller_id = 'Atlas' AND categoricos_generales_competidor_mencionado NOT IN ('no_aplica', 'no_claro')
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'liverpool=65, sealy=20, luna=12, walmart=9, restonic=9 (sobre 903 conversaciones
+      con datos de insights, desde agosto)'
+
+  - id: q09_distribucion_tipo_producto
+    pregunta: ¿Qué tipos de producto se mencionan más en las conversaciones?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Grano por producto (conversation_id + producto_id), no por conversación.
+    sql: |
+      SELECT tipo_producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_por_producto
+      WHERE seller_id = 'Atlas'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'colchon=936 (72,4%), almohada=142, protector=87, base=75, otro=31, sabanas=17,
+      garantia=4, no_claro=1'
+
+  - id: q10_necesidad_principal_cliente
+    pregunta: ¿Qué es lo que más valoran los clientes al elegir un colchón?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: sólo cuenta si el CLIENTE introduce/pide/compara el atributo, no si el vendedor lo propone y
+      el cliente asiente. Además, cobertura limitada desde agosto (ver q03).'
+    sql: |
+      SELECT categoricos_generales_necesidad_principal_cliente, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_generales
+      WHERE seller_id = 'Atlas' AND categoricos_generales_necesidad_principal_cliente IS NOT NULL
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'firmeza_confort=528 (58,5% de las 903 filas con datos), le siguen no_claro=246,
+      precio_presupuesto=49, medida=38, soporte=17'
+
+  - id: q11_tasa_presenta_opciones_acordes
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor presentó al menos una opción acorde a la necesidad?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - No exige múltiples alternativas, sólo al menos una alineada con la necesidad.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE presentaopcionesacordes = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE presentaopcionesacordes IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_atlas_rendimiento_vendedor
+      WHERE seller_id = 'Atlas'
+    respuesta_esperada: 'Sí=4019, base evaluada=5356, tasa=75,04%'
+
+  - id: q12_premiumizacion_trap
+    pregunta: ¿Con qué frecuencia el vendedor logra que el cliente suba a un colchón de mayor rango?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA doble: (1) premiumización requiere evidencia observable de comparación entre rango de
+      referencia y rango superior EN la misma conversación, no conocimiento externo de catálogo — la mayoría
+      de las filas es no_aplica porque nunca hubo esa comparación; (2) misma limitación de cobertura desde
+      agosto.'
+    sql: |
+      SELECT categoricos_generales_resultado_premiumizacion, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_generales
+      WHERE seller_id = 'Atlas'
+      GROUP BY 1
+    respuesta_esperada: 'no_aplica=594 (mayoría, sin comparación de rango observable), no_claro=138,
+      sube_rango=94, rechaza_subida=77, NULL=4498 (fuera de cobertura). Sobre los casos donde SÍ hubo
+      comparación evaluable (sube_rango + rechaza_subida = 171), sube_rango es el 55%.'
+
+  - id: q13_objecion_principal_distribucion
+    pregunta: ¿Cuál es la objeción más común de los clientes?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: excluir no_aplica del ranking (483 filas, mayoría — significa que no hubo objeción real, no
+      es una "categoría de objeción"). Misma limitación de cobertura desde agosto.'
+    sql: |
+      SELECT categoricos_generales_objecion_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_atlas_insights_categoricos_generales
+      WHERE seller_id = 'Atlas' AND categoricos_generales_objecion_principal NOT IN ('no_aplica')
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'precio_presupuesto=155 es la más común, seguida de postergacion=86,
+      producto_adecuacion=43, consulta_decisor=42'

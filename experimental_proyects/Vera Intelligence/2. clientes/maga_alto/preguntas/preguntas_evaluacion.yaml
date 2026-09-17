@@ -1,0 +1,226 @@
+metadata:
+  name: Preguntas de evaluación VI - Maga
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas.
+  data_map_version: VI Data Map Maga V1.yaml
+  tenant: Maga
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07
+  nota_gemelo_farma24: 'Maga comparte prompt (checklist e insights) carácter por carácter con Farma24, y
+    el mismo store físico de RAG (catálogo de productos) — confirmado por el negocio que es la misma
+    cadena. Este banco NO reusa las preguntas de Farma24 tal cual — cada respuesta_esperada se verificó de
+    forma independiente contra los datos propios de Maga (ver VI Data Map Maga V1.yaml >
+    metadata.known_findings_v1), que tienen tasas y coberturas distintas.'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". Las preguntas marcadas es_trampa=true están diseñadas
+    específicamente para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id).
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_maga_demografia
+      WHERE seller_id = 'Maga' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '77645'
+
+  - id: q02_tasa_saluda_al_inicio
+    pregunta: ¿En qué porcentaje de las interacciones evaluables el vendedor saludó al inicio?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - saludaalinicio admite Sí/No/N/A; la tasa se calcula sobre Sí+No, excluyendo N/A.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE saludaalinicio = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE saludaalinicio = 'No') AS no,
+        COUNT(*) FILTER (WHERE saludaalinicio IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_maga_rendimiento_vendedor
+      WHERE seller_id = 'Maga'
+    respuesta_esperada: 'Sí=75278, No=2482, base evaluada=77760, tasa=96,81%'
+
+  - id: q03_resultado_dual_source_trap
+    pregunta: ¿Cuántas conversaciones terminaron en compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: existen dos mediciones independientes del resultado — demography.tipointeraccion
+      (checklist) y categorical_insights.categoricos_generales_resultado (insights). Discrepan en el
+      6,4% de los casos (ver semantic_dependencies.resultado_dual_source). Idealmente el agente debe
+      declarar cuál fuente usó, o dar ambas lecturas por separado si la pregunta es ambigua.'
+    sql: |
+      SELECT tipointeraccion, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_maga_demografia
+      WHERE seller_id = 'Maga'
+      GROUP BY tipointeraccion
+    respuesta_esperada: 'Según demography (checklist): Compra=77461, No compra=2920, NULL=2. (Existe una
+      segunda lectura independiente en categorical_insights que puede diferir en ~6,4% de los casos.)'
+
+  - id: q04_categoria_no_compra_dual_source_trap
+    pregunta: ¿Cuál es la categoría más común de no compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: la fuente primaria es demography.categorianocompra (casi 100% poblado). La versión de
+      categorical_insights (categoricos_generales_categoria_no_compra) está ~92,1% NULL y no debe usarse
+      como fuente principal.'
+    sql: |
+      SELECT categorianocompra, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_maga_demografia
+      WHERE seller_id = 'Maga' AND tipointeraccion = 'No compra'
+      GROUP BY categorianocompra
+      ORDER BY total DESC
+    respuesta_esperada: 'GestionAdministrativa=1159 es la más común (siguen Stock=1076, Consulta=448,
+      Otro=167, Precio=59, N/A=11)'
+
+  - id: q05_gestion_no_compra_dead_column_trap
+    pregunta: De las conversaciones sin compra por falta de stock, ¿qué hizo el vendedor con más frecuencia?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: categorical_insights.categoricos_generales_gestion_no_compra es una columna muerta (100%
+      NULL en Maga). El campo correcto es demography.gestionnocompra.'
+    sql: |
+      SELECT gestionnocompra, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_maga_demografia
+      WHERE seller_id = 'Maga' AND categorianocompra = 'Stock'
+      GROUP BY gestionnocompra
+      ORDER BY total DESC
+    respuesta_esperada: 'El agente debe usar demography.gestionnocompra, no
+      categorical_insights.categoricos_generales_gestion_no_compra (0% poblado).'
+
+  - id: q06_banco_provincia_reliability_trap
+    pregunta: Si un producto se vendió con la promoción de Banco Provincia, ¿el cliente siempre queda marcado con Banco Provincia o Cuenta DNI?
+    fuentes_requeridas: [categorical_insights, categorical_product_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: la regla se cumple en la gran mayoría de los casos pero NO en el 100%. Verificado contra
+      Postgres: de 2007 conversaciones con al menos un producto vendido con la promo, 1962 (97,8%) quedan
+      marcadas "si" como se espera, pero 45 (2,2%) quedan en "no_determinable". El agente NO debe responder
+      "sí, siempre" sin esta salvedad.'
+    sql: |
+      WITH conv_has_promo AS (
+        SELECT DISTINCT conversation_id FROM dashboard_v2.vw_maga_insights_categoricos_por_producto
+        WHERE seller_id = 'Maga' AND se_vendio_con_promo_banco_provincia = 'si'
+      )
+      SELECT c.categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn, COUNT(*) AS total
+      FROM conv_has_promo p
+      JOIN dashboard_v2.vw_maga_insights_categoricos_generales c USING (conversation_id)
+      WHERE c.seller_id = 'Maga'
+      GROUP BY 1
+    respuesta_esperada: 'No, en el 100% de los casos: si=1962 (97,8%), no_determinable=45 (2,2%). El
+      agente debe dar el matiz del 97,8%, no afirmar "siempre" sin salvedad.'
+
+  - id: q07_tasa_abordo_banco_provincia
+    pregunta: ¿En qué porcentaje de las conversaciones evaluadas el vendedor abordó Banco Provincia o Cuenta DNI?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA de denominador: la base evaluada correcta es si+no (excluyendo no_aplica y NULL), no
+      si+no+no_aplica. Calcular sobre el denominador incorrecto da un número distinto.'
+    sql: |
+      SELECT categoricos_generales_abordo_banco_provincia_o_cuenta_dni, COUNT(*) AS total
+      FROM dashboard_v2.vw_maga_insights_categoricos_generales
+      WHERE seller_id = 'Maga'
+      GROUP BY 1
+    respuesta_esperada: 'si=10389, no=19625, no_aplica=2739, NULL=47627. Base evaluada correcta (si+no) =
+      30014, tasa = 34,6%. Calcular incluyendo no_aplica (32753) da 31,7% y es incorrecto.'
+
+  - id: q08_rol_comercial_cutoff_trap
+    pregunta: ¿Qué porcentaje de los productos tiene identificado su rol comercial (principal, sustituto, adicional)?
+    fuentes_requeridas: [categorical_product_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: rol_comercial es NULL para casi toda la historia anterior al 2026-08-03 por un corte de
+      versión del prompt, no porque el dato sea "no determinable" de negocio. El agente debe explicar esta
+      limitación de cobertura, no tratar el NULL como una categoría de negocio.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE rol_comercial IS NOT NULL) AS con_rol,
+        COUNT(*) AS total
+      FROM dashboard_v2.vw_maga_insights_categoricos_por_producto
+      WHERE seller_id = 'Maga'
+    respuesta_esperada: '106726 de 247682 filas (43,1%) — el resto es NULL por ser anterior al
+      2026-08-03 (corte de versión del prompt), no por ser "no determinable".'
+
+  - id: q09_top5_producto_casing_trap
+    pregunta: ¿Cuáles son los 5 productos más mencionados?
+    fuentes_requeridas: [categorical_product_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: hay casing duplicado sistémico (ej. "ibuprofeno"/"Ibuprofeno"/"IBUPROFENO"). Sin normalizar
+      con LOWER(TRIM(...)), el ranking queda fragmentado y subestimado.'
+    sql: |
+      SELECT LOWER(TRIM(producto)) AS producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_maga_insights_categoricos_por_producto
+      WHERE seller_id = 'Maga'
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'ibuprofeno=11340, omeprazol=6834, paracetamol=6066, ibuprofeno 600=4215,
+      protector gástrico=2771 (normalizado con LOWER(TRIM(...)); sin normalizar, ibuprofeno aparece
+      fragmentado en 9374+1965+1)'
+
+  - id: q10_descriptive_insights_aislada_trap
+    pregunta: Dame algunos ejemplos textuales de por qué no compraron los clientes en enero de este año.
+    fuentes_requeridas: [descriptive_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: descriptive_insights en Maga NO tiene conversation_id ni seller_id (a diferencia de
+      Farma24) — usa recordingid y seller_name. No se puede cruzar con ninguna otra fuente de Maga. El
+      agente debe consultarla de forma aislada, filtrando por seller_name y month/year (no
+      business_month/business_year, esos nombres son de Farma24).'
+    sql: |
+      SELECT descriptivos_generales_tipo_interaccion_detalle, month, year
+      FROM dashboard_v2.vw_maga_insights_descriptivos_generales
+      WHERE seller_name = 'Maga' AND month = 1
+      LIMIT 5
+    respuesta_esperada: 'El agente debe usar seller_name (no seller_id) y los campos month/year (no
+      business_month/business_year), sin intentar cruzar con conversation_id.'
+
+  - id: q11_producto_sustitucion_rag
+    pregunta: Si no tenemos ibuprofeno en stock, ¿qué le podríamos ofrecer al cliente como sustituto?
+    fuentes_requeridas: [rag]
+    requisitos:
+    - Pregunta de catálogo de productos — debe resolverse con la herramienta de RAG (Gemini File Search),
+      no con SQL. Verifica que el RAG compartido con Farma24 realmente responda para Maga (mismo store
+      físico, confirmado por el negocio).
+    sql: null
+    respuesta_esperada: 'El agente debe devolver sustitutos reales del catálogo (vía RAG), sin mencionar
+      que la fuente es un archivo, una base de conocimiento compartida con otro cliente, ni ningún detalle
+      técnico.'
+
+  - id: q12_tasa_falta_stock
+    pregunta: ¿En qué porcentaje de los productos evaluados hubo falta de stock?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - hubo_falta_stock es boolean con NULL cuando el insights no corrió sobre esa fila; la tasa se calcula
+      sobre filas no nulas.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE hubo_falta_stock IS TRUE) AS con_falta,
+        COUNT(*) FILTER (WHERE hubo_falta_stock IS NOT NULL) AS base_evaluada
+      FROM dashboard_v2.vw_maga_insights_categoricos_por_producto
+      WHERE seller_id = 'Maga'
+    respuesta_esperada: '30510 de 229282 productos evaluados (13,3%)'
+
+  - id: q13_tasa_sustitucion_pertinente
+    pregunta: ¿En qué porcentaje de las oportunidades evaluables el vendedor intentó una sustitución pertinente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - intentasustitucionpertinente admite Sí/No/N/A; base evaluada = Sí+No.
+    - N/A es muy frecuente acá (interacción administrativa, falta de stock del producto principal, producto
+      no sustituible con receta) — no tratarlo como incumplimiento.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_maga_rendimiento_vendedor
+      WHERE seller_id = 'Maga'
+    respuesta_esperada: 'Sí=26967, base evaluada=31687, tasa=85,1%. El agente debe aclarar que un N/A
+      alto en este campo es normal (regla 1.A / falta de stock / producto no sustituible con receta), no
+      un problema de desempeño.'

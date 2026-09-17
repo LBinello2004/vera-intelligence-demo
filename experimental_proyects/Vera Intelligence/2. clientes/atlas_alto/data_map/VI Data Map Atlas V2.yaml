@@ -1,0 +1,689 @@
+metadata:
+  name: VI Data Map Atlas V2
+  version: 2.0.0
+  client: Atlas
+  model_target: Gemini 3.7
+  generated_at: '2026-09-08'
+  scope: Sólo seis vistas dashboard_v2 de Atlas. El tenant ('Atlas') es fijo para este cliente; no se resuelve
+    dinámicamente.
+  changes_from_v1: 'V2 (2026-09-08, ronda 2 de auditoría): auditoría campo por campo contra Postgres QA sin
+    hallazgos que requirieran cambio de SQL/routing (el banco dorado de 13 preguntas corrió limpio contra V1,
+    sin regresiones). Se documentan 4 hallazgos nuevos en known_findings_v2, todos de calidad de datos:
+    prompt_id no identificado en 15 filas de performance (mismo ID ya visto en Huerpel Ventas), 8 filas
+    huérfanas entre categorical_product_insights y descriptive_product_insights, semantic_dependencies con
+    excepciones puntuales (no absolutas, mismo patrón que Farma24), y una caída de volumen total no explicada
+    desde la auditoría V1. Ninguno requirió cambio de SQL rules ni routing -son notas de calidad de datos,
+    documentadas in-place en las secciones correspondientes-.'
+  source_of_truth:
+    checklist_prompt: clientes/Atlas/checklist (Langfuse, label production, v4 al construir este mapa)
+    insights_prompt: clientes/Atlas/insights (Langfuse, label production, v5 al construir este mapa)
+    note: 'Primer Data Map de Atlas, cliente propio -no comparte prompt con ningún otro cliente onboardeado
+      hasta ahora-. Dominio: tienda física de colchones y productos de descanso (Spring Air, Sealy, Principe
+      Colchones, Four Seasons Grand). Construido leyendo el texto completo de ambos prompts y verificando con
+      GROUP BY/COUNT contra Postgres QA el 2026-09-07.'
+  known_findings_v1:
+  - 'HALLAZGO MAYOR — COBERTURA DE INSIGHTS MUY LIMITADA Y TARDÍA: a diferencia de todos los clientes
+      onboardeados hasta ahora (Farma24, Maga, Mens Fashion, Roberts), donde categorical_insights cubre
+      prácticamente el mismo período que performance/demography, en Atlas el pipeline de insights
+      (categorical_insights, descriptive_insights y categorical_product_insights, las 3 fuentes) sólo tiene
+      datos desde el 2026-08-10 en adelante. demography y performance (checklist) cubren desde el 2026-06-07.
+      Verificado: de las 4.606 conversaciones analizables (usefulforanalysis=true), sólo 903 (19,6%) tienen
+      algún campo de categorical_insights poblado — y las 903 caen TODAS después del 2026-08-10 (verificado
+      con JOIN y filtro de fecha, cero excepciones). No se investigó la causa (¿el pipeline de insights se
+      activó recién esa fecha para este cliente? ¿reprocesamiento pendiente del histórico?) — sólo se
+      cuantificó y documentó el impacto: cualquier pregunta sobre motivos, necesidad, premiumización,
+      objeciones, competencia o complementos NO puede responderse para conversaciones anteriores al 10 de
+      agosto, aunque el checklist sí las cubra. Esto es sustancialmente más severo que el caso de Farma24 (donde
+      descriptive_insights se congeló pero seguía cubriendo desde el inicio) — acá es al revés, el inicio de
+      cobertura quedó recortado.'
+  - 'Dataset pequeño en términos absolutos: 5.401 conversaciones totales, 4.606 analizables — un orden de
+      magnitud menor que Mens Fashion/Roberts (~10-19k) y dos órdenes menor que Farma24/Maga (~250-750k a
+      nivel producto). Los porcentajes de este Data Map tienen bases más chicas y son más sensibles a pocas
+      filas.'
+  - 'tipointeraccion (demography) está poblado casi en su totalidad (5.365 de 5.401, sólo 36 NULL) pese a que
+      el resto de los campos de insights recién arranca en agosto — es decir, este campo específico NO sigue el
+      mismo patrón de cobertura tardía que el resto de categorical_insights/descriptive_insights. No se
+      investigó por qué (podría ser una clasificación más liviana/temprana, independiente del pipeline completo
+      de insights); tratarlo como una fuente distinta y más completa, sin asumir que su cobertura temporal se
+      extiende al resto de los campos de insights.'
+  - 'Todos los 12 criterios Sí/No/N/A del checklist tienen enum limpio (sólo Sí/No/N/A, 15 filas NULL
+      consistentes en todos -misma conversación rota en las 12 columnas, no 12 problemas distintos, mismo
+      patrón que se vio en Mens Fashion/Farma24-). Las tasas de N/A son coherentes con la semántica de cada
+      campo: manejodeobjeciones (2.106 N/A, sólo evaluable si hubo objeción real), explicacondicionesdecompraoentrega
+      (989 N/A), llamadoalaaccion (1.136 N/A) y solicitareferidos (1.161 N/A) tienen N/A alto por diseño -son
+      campos que sólo aplican en una etapa avanzada de la conversación (cierre)-, no por un problema de datos.'
+  - 'No se detectó casing duplicado en producto/marca/tecnología/modelo (a diferencia de Farma24/Maga) — son
+      enums cerrados definidos en el prompt (spring_air, sealy, principe_colchones, four_seasons_grand, otra,
+      no_claro, no_aplica para marca; enum cerrado también para modelo y tecnología), no texto libre, así que
+      no hay variantes de captura que normalizar.'
+  - 'competidor_mencionado tiene buena diversidad real: liverpool=65, sealy=20, luna=12, walmart=9,
+      restonic=9, america=9, dormimundo=7, spring_air=5 (mencionar la propia marca de Atlas como competencia
+      es válido si aparece en contexto competitivo, ej. el cliente comparando con una compra anterior).'
+  - 'HALLAZGO DE CÓDIGO COMPARTIDO, ENCONTRADO Y CORREGIDO EN ESTE ONBOARDING (no es un problema de este Data
+      Map — vive en vi_agent.py/response_policy.py, afecta potencialmente a cualquier cliente con enums
+      multi-palabra densos): la primera corrida completa del banco dorado tuvo 7 de 13 preguntas (54%) con
+      UNSAFE_ANSWER_FALLBACK ("No pude formular la respuesta con el nivel de claridad ejecutiva requerido") en
+      vez de una respuesta real — las preguntas que exigen nombrar varias categorías de categorical_insights
+      (motivo de no compra, objeción, necesidad del cliente, competidor, premiumización) y dos de performance.
+      Causa raíz: response_policy._SNAKE_CASE rechaza cualquier token snake_case en el borrador, y la
+      instrucción de reescritura (build_rewrite_instruction) sólo decía "expusiste identificadores internos"
+      sin decir CUÁLES — con categorías compuestas (precio_presupuesto, consulta_decisor,
+      producto_no_adecuado) el modelo repetía el mismo error en cada intento porque nunca sabía qué palabra
+      exacta evitar. FIX APLICADO (2026-09-07, con aprobación explícita del usuario): (1) nueva función
+      `response_policy.violation_terms()` que extrae los tokens exactos que dispararon la violación; (2)
+      `build_rewrite_instruction()` ahora los lista explícitamente y agrega una regla general ("nunca uses
+      guion bajo, reformulá como frase"); (3) `MAX_CLIENT_REWRITES` subido de 2 a 4. Resultado verificado:
+      12 de 13 preguntas (92%) pasaron a responder correctamente. Queda 1 caso residual (q10, la pregunta que
+      obliga a sintetizar tres campos categóricos de una sola vez con ~9 valores distintos cada uno) que sigue
+      agotando los reintentos — aceptado como limitación conocida, no bloqueante (el fallback nunca filtra
+      nada técnico, sólo pide reformular). 30→35 tests actualizados y en verde (se agregaron tests para
+      violation_terms y build_rewrite_instruction con offending_terms). SEGUIMIENTO (2026-09-07, mismo día):
+      se probó subir MAX_CLIENT_REWRITES de 4 a 5 y correr q10 tres veces más — siguió fallando 1 de 3 (mismo
+      ~33% que antes), confirmando que el límite de reintentos no es la causa raíz -es la densidad de
+      categorías en una sola respuesta larga lo que genera el riesgo, no la cantidad de intentos disponibles-.
+      Se revirtió a MAX_CLIENT_REWRITES=4 (subir más no ayuda y sólo aumenta la latencia/costo del peor caso).
+      SEGUIMIENTO 2 (2026-09-07, mismo día): se investigó la causa raíz de por qué q10 combina categorías -el
+      agente decide por iniciativa propia traer un SEGUNDO campo categórico (categoricos_generales_motivo_necesidad)
+      además del que la pregunta pide (categoricos_generales_necesidad_principal_cliente), y al sintetizar dos
+      enums de ~9-10 valores cada uno en una sola respuesta es cuando se dispara la cascada de violaciones. Se
+      re-corrió q10 tres veces para confirmar: 2 de 3 fallaron con este patrón exacto (query a ambos campos,
+      luego fallback). FIX APLICADO: se agregó una regla en routing.categorical_insights.avoid indicando
+      responder con un único campo cuando la pregunta pide un solo atributo, sin agregar campos categóricos no
+      solicitados. RESULTADO MEDIDO (6 corridas post-fix): el agente dejó de consultar el segundo campo en las
+      6/6 corridas (el fix de ruteo funciona como se esperaba), y la tasa de éxito subió de 1/3 (33%) a 4/6
+      (67%). Sigue habiendo fallas residuales incluso con una sola query a un solo campo de 10 valores dispersos
+      -ya no por exceso de campos, sino por variabilidad propia del modelo al redactar una lista de 10
+      categorías (a veces el borrador deja pasar una palabra snake_case). Aceptado como limitación conocida,
+      mejorada pero no eliminada -no bloqueante, el fallback siempre pide reformular en vez de fallar
+      silenciosamente-. SEGUIMIENTO 3 (2026-09-07, mismo día) — RESUELTO: se probó la mejora que había
+      quedado pendiente (agrupar categorías de cola larga <3% como "otros factores menores" en vez de
+      nombrarlas todas), agregada como regla nueva en `decision_flow`. RESULTADO MEDIDO: q10 pasó
+      8 de 8 corridas limpias (100%, sumadas a la corrida de la ronda anterior que también pasó, total
+      9/9 del día con esta regla activa), y la corrida completa del banco de 13 preguntas dio 13/13 sin
+      ningún fallback. Con esto, el hallazgo que mantenía a Atlas en grado "medio" queda cerrado -no
+      sólo mitigado-. Carpeta renombrada de `atlas_medio` a `atlas_alto` (2026-09-07) reflejando este
+      resultado. Sigue documentada la limitación real de cobertura (categorical_insights sólo desde
+      2026-08-10, ver el hallazgo de arriba) porque es un hecho de los datos, no un bug -pero ya no hay
+      ninguna falla de ejecución conocida asociada a esta pregunta ni al resto del banco-.'
+  - 'RAG no aplica a este cliente: verificado en Langfuse que clientes/Atlas/checklist no declara
+      geminiFileSearchStoreName (a diferencia de clientes/Atlas/feedback, que sí lo tiene pero es un prompt de
+      otro producto/feature, no de Vera Intelligence -mismo criterio de exclusión que se usó para descartar RAG
+      en el resto de los 8 clientes de este batch salvo Maga-).'
+  known_findings_v2:
+  - '[DOCUMENTADO, no requiere fix] prompt_id no identificado en performance: 15 de 5.355 filas (0,28%) de
+      vw_atlas_rendimiento_vendedor tienen prompt_id=''O7fesqEq1wN5oQXSOEcT'', que no coincide con ninguna
+      versión revisada del prompt clientes/Atlas/checklist en Langfuse (las otras 5.340 filas se reparten entre
+      dos prompt_id sí identificados: BR5k8lsYYAEhFkzEEIdh=4.296, jhb3rRgE3uvkD6XsHGUG=1.044). De esas 15, 13
+      tienen usefulforanalysis=true y estado_analisis=''Analizada'' pero los 12 campos del checklist están en
+      NULL real (no ''N/A''). Efecto práctico: no distorsiona ninguna tasa Sí/No (los NULL se excluyen
+      naturalmente), pero sí un COUNT(*) crudo de "conversaciones analizables". HALLAZGO CRUZADO: es
+      exactamente el mismo prompt_id no identificado (''O7fesqEq1wN5oQXSOEcT'') documentado en
+      huerpel_ventas_alto/data_map/VI Data Map Huerpel Ventas V2.yaml (57 filas allá, con el mismo patrón de
+      checklist en NULL) — sugiere que no es un artefacto puntual de un cliente sino de infraestructura
+      compartida (¿un prompt_id de prueba/placeholder reutilizado por el pipeline de ingesta entre clientes?).
+      QUEDA ABIERTO: no identificado a qué prompt/versión corresponde ni por qué aparece en más de un cliente.'
+  - '[DOCUMENTADO, no requiere fix] 8 filas huérfanas entre categorical_product_insights y
+      descriptive_product_insights: de 1.359 filas de producto en categorical_product_insights, 8 (0,6%) no
+      tienen fila correspondiente en descriptive_product_insights para el mismo (conversation_id, producto_id)
+      -verificado con LEFT JOIN en ambas direcciones; la dirección inversa (descriptive sin categórico) no
+      tiene huérfanas, 0 de 1.351-. Efecto: para esas 8 combinaciones no hay comentario textual de evidencia de
+      la prueba de producto, sólo los campos categóricos. Volumen insignificante, no bloquea el join declarado
+      en joins.product_evidence. No se investigó la causa.'
+  - '[DOCUMENTADO, no requiere fix] Los semantic_dependencies de "gate" no son reglas absolutas, tienen
+      excepciones puntuales -mismo patrón ya documentado en Farma24 V2-: verificado contra Postgres,
+      objecion_gate (objecion_principal=no_aplica ⇒ respuesta_vendedor_objecion=no_aplica) tiene 2 excepciones;
+      prueba_gate (prueba_producto≠probado ⇒ percepcion_prueba=no_aplica) tiene 4; complemento_gate
+      (momento_ofrecimiento_complemento=no_aplica ⇒ resultado_complemento=no_aplica) tiene 1; premiumizacion_gate
+      no tuvo ninguna excepción (0 de miles de filas, la única de las cuatro que sí es absoluta en la muestra
+      verificada). Todas sobre miles de filas -no afectan las tasas agregadas del banco dorado, pero el agente
+      no debe asumir que estas reglas son 100% deterministas al construir SQL exploratorio.'
+  - '[QUEDA ABIERTO, sin investigar] El total de filas de demography/performance bajó de 5.401 (auditoría V1,
+      2026-09-07) a 5.355 (esta auditoría, 2026-09-08) — una caída de 46 filas en 24 horas, con
+      MAX(uploaded_at_local) avanzando de todas formas hasta el 2026-09-07 23:03 (es decir, siguen entrando
+      filas nuevas). No es el comportamiento esperable de un pipeline de sólo inserción -no se investigó si
+      hubo un borrado/reprocesamiento, un cambio en el filtro de la vista, o si la cifra de V1 tenía un error de
+      conteo-. Verificado que no es un problema de casing de seller_id (un único valor exacto ''Atlas'' en toda
+      la vista). Revisar en la próxima auditoría si la cifra sigue moviéndose.'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe
+  join declarado.
+- Antes de escribir SQL, resolver profile, grano y tenant.
+- 'Si la pregunta requiere categorical_insights/descriptive_insights/categorical_product_insights (motivo, necesidad,
+  premiumización, objeción, competencia, complementos, prueba), advertir que esas fuentes sólo cubren
+  conversaciones desde el 2026-08-10 -ver known_findings_v1-, salvo que la pregunta sea explícitamente sobre ese
+  período reciente.'
+- 'AGREGADO 2026-09-07 (ver known_findings_v1, experimento verificado): al redactar la distribución
+  de un campo categórico con muchos valores (10+ categorías), agrupar mentalmente las categorías con
+  menos de 3% de participación cada una en un solo bloque tipo "otros factores menores" en vez de
+  nombrar cada una por separado -nombrar muchas categorías de cola larga en una sola respuesta es lo
+  que más frecuentemente dispara el rechazo de response_policy en preguntas de síntesis categórica-.'
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si NULL es parte
+  legítima de la respuesta.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (compra/no compra), características básicas de la conversación
+    avoid: no es la fuente de necesidad/objeción/competencia -eso vive en categorical_insights, con cobertura
+      limitada desde agosto-
+  performance:
+    questions: criterios del protocolo de venta de colchones (apertura, investigación, presentación, prueba del
+      producto, venta adicional, manejo de objeciones, condiciones de compra/entrega, cierre, referidos, despedida)
+    avoid: no tratar N/A como incumplimiento — varios campos (manejo de objeciones, condiciones de compra,
+      llamado a la acción, solicitud de referidos) sólo son evaluables en etapas avanzadas de la conversación
+  categorical_insights:
+    questions: motivo de no compra, necesidad del cliente, premiumización, objeción y respuesta del vendedor,
+      presupuesto, factor comercial, competencia
+    avoid: 'CRÍTICO: sólo cubre conversaciones desde 2026-08-10 (19,6% del total analizable) — advertir esta
+      limitación antes de responder con cualquier cifra que implique todo el histórico. AGREGADO 2026-09-07
+      (ver known_findings_v1, verificado empíricamente): si la pregunta pide un solo atributo (ej. "qué es lo
+      que más valoran los clientes"), responder con un único campo -el más específico y directamente pedido,
+      normalmente necesidad_principal_cliente- y NO agregar motivo_necesidad u otro campo categórico adicional
+      que la pregunta no pidió. Sintetizar dos o más campos categóricos de alta cardinalidad en una sola
+      respuesta aumenta el riesgo real de que response_policy agote los reintentos de reescritura y devuelva el
+      fallback.'
+  descriptive_insights:
+    questions: voice of customer (lenguaje textual del cliente)
+    avoid: no agrupar ni calcular frecuencia de texto libre; misma limitación de cobertura desde agosto; esta
+      fuente además no tiene conversation_id, no se puede cruzar con otras -ver sources.descriptive_insights-
+  categorical_product_insights:
+    questions: producto solicitado/recomendado/probado/comprado, modelo, marca, medida, firmeza, tecnología,
+      complementos y su resultado, percepción de la prueba
+    avoid: misma limitación de cobertura desde agosto; grano por producto, no por conversación
+  descriptive_product_insights:
+    questions: comentario textual de la prueba del producto
+    avoid: no usar sin la vista categórica cuando hay que confirmar prueba_producto/percepcion_prueba
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+  descriptive_conversation_aislada:
+    row_key: recordingid
+    tenant_field: seller_name
+    date_field: upload_time_mexico
+    optional_dimensions:
+    - store_name
+    - full_name
+    quality_filter: 'usefulforanalysis está disponible, pero no hay conversation_id para cruzar con otras
+      fuentes de Atlas.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Atlas') sobre el tenant_field de cada fuente (seller_id
+    en 5 de 6 fuentes, seller_name en descriptive_insights).
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_id)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir N/A y
+    null.
+  categorical_rate_general_rule: La misma convención de performance_rate aplica a cualquier campo categórico
+    con semántica afirmativo/negativo/no_aplica del Data Map.
+  insights_coverage_gate: 'AGREGADO V1 (hallazgo propio de Atlas): antes de calcular cualquier tasa o
+    distribución sobre categorical_insights/descriptive_insights/categorical_product_insights, aclarar en la
+    respuesta que esas fuentes sólo cubren conversaciones desde el 2026-08-10 (ver known_findings_v1) — no
+    presentar un resultado como si representara todo el histórico del cliente.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  motivo_no_compra_gate: 'categoricos_generales_motivo_no_compra_principal sólo es interpretable cuando
+    TipoInteraccion (o demography.tipointeraccion) = "No compra" -en Compra siempre vale no_aplica según el
+    propio prompt-. Además hereda la limitación de cobertura desde 2026-08-10.'
+  premiumizacion_gate: resultado_premiumizacion = no_aplica implica factor_premiumizacion = no_aplica
+    (regla explícita del prompt, verificable en cualquier fila).
+  objecion_gate: objecion_principal = no_aplica implica respuesta_vendedor_objecion = no_aplica.
+  factor_comercial_gate: factor_comercial_principal = no_aplica implica impacto_factor_comercial = no_aplica.
+  competencia_gate: competidor_mencionado = no_aplica implica aspecto_comparado_competencia = no_aplica.
+  complemento_gate: momento_ofrecimiento_complemento = no_aplica implica resultado_complemento y
+    motivo_resultado_complemento = no_aplica (a nivel producto).
+  prueba_gate: prueba_producto != 'probado' implica percepcion_prueba = 'no_aplica' (a nivel producto).
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: 'NO DISPONIBLE: descriptive_insights en Atlas no tiene conversation_id (mismo patrón que Maga), usa
+      recordingid. No se puede ejecutar este join.'
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys:
+    - conversation_id
+    - producto_id
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_atlas_demografia
+    use_when: Resultado de la interacción (compra/no compra).
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [Compra, No compra]
+        observed_values: [Compra, No compra]
+        type: text
+        nullable: true
+        description: 'Resultado de la interacción. Compra sólo con evidencia inequívoca de transacción o
+          compromiso vinculante (paga, seña, reserva, confirma que se lleva el producto). "Lo voy a pensar",
+          interés alto, cotización o prueba sin cierre son No compra. Poblado en 5.365 de 5.401 filas (36 NULL)
+          — cobertura mucho más amplia que el resto de categorical_insights, ver known_findings_v1 (no se
+          investigó por qué este campo específico no comparte el mismo corte de cobertura del 2026-08-10).'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_atlas_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de venta (apertura, investigación, presentación, prueba,
+      venta adicional, negociación, cierre).
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 12 criterios admiten Sí/No/N/A con la lógica estándar -"Sí" con evidencia clara,
+      "No" con oportunidad real sin cumplimiento, "N/A" sin oportunidad real (etapa no ocurrió, no quedó
+      capturada, o el cliente cortó antes)-. Enum limpio verificado, 15 filas NULL en las 12 columnas
+      simultáneamente (misma conversación rota).'
+    fields:
+      saludoinicial:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. Sí ante cualquier saludo o bienvenida clara ("Buenos días", "Bienvenidos a
+          Atlas"). No si el inicio real está capturado y el vendedor comienza sin saludar. N/A si el audio
+          empieza después del inicio real.'
+        operations: [filter, group, compare]
+      realizatrespreguntasdeinvestigacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Sí si realiza 3 o más preguntas genuinas para entender la
+          necesidad (medida, uso, posición al dormir, firmeza preferida, molestias, colchón actual, confort,
+          temperatura, presupuesto, etc. — lista abierta). No cuenta preguntas repetidas ni del cliente. No si
+          hizo menos de 3 con oportunidad de investigar. N/A si la conversación empieza después de esa etapa.'
+        operations: [filter, group, compare]
+      presentaopcionesacordes:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Sí si presenta al menos una opción alineada con la necesidad (no exige
+          múltiples alternativas). No si hubo oportunidad y no presenta ninguna opción acorde. N/A si la
+          interacción termina antes de la presentación de producto.'
+        operations: [filter, group, compare]
+      invitaaprobarelproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Sí ante invitación verbal clara a acostarse/sentarse/probar el colchón. No
+          si hubo un producto concreto en evaluación y no invita, teniendo oportunidad. N/A si nunca se llegó a
+          evaluar un producto concreto.'
+        operations: [filter, group, compare]
+      explicacaracteristicasybeneficiosdelproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Sí si explica al menos una característica o beneficio concreto del producto
+          (composición, tecnología, firmeza, soporte, materiales, confort, ventilación, durabilidad). NO cuentan
+          beneficios comerciales de Atlas -eso es comunicabeneficiosdemarca, campo distinto-. No si hubo
+          producto en evaluación y no explica nada concreto. N/A si no hubo producto concreto en evaluación.'
+        operations: [filter, group, compare]
+      intentaventaadicional:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Sí si recomienda/ofrece al menos un producto complementario (almohadas,
+          protector, base, box, ropa de cama, accesorios). No si hubo un colchón en evaluación y no ofrece
+          ningún complemento. N/A si no se llegó a evaluar un colchón.'
+        operations: [filter, group, compare]
+      comunicabeneficiosdemarca:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sí si comunica al menos un beneficio o diferencial comercial de Atlas
+          (garantías, promociones, financiación, facilidades de pago, servicios). NO son atributos del colchón
+          -eso es explicacaracteristicasybeneficiosdelproducto-. No si hubo producto en evaluación y no lo hace.
+          N/A si no se llegó a evaluar un producto concreto.'
+        operations: [filter, group, compare]
+      manejodeobjeciones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sí si aparece una objeción real (duda/resistencia/freno del cliente sobre
+          precio, firmeza, comodidad, medida, entrega, condiciones) y el vendedor hace un intento relevante de
+          abordarla (no exige convencer al cliente). No si hay objeción real y la ignora o no la aborda. N/A si
+          no hubo objeción real (mayoría de los casos: 2.106 de 5.401 N/A, por diseño del campo).'
+        operations: [filter, group, compare]
+      explicacondicionesdecompraoentrega:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sí si la conversación llega a una instancia concreta de compra/pedido y
+          explica al menos una condición operativa (entrega, tiempos, domicilio, retiro, forma de pago). El mero
+          interés NO activa este campo. No si llega a esa instancia y no explica nada. N/A si no llega a esa
+          instancia concreta (989 de 5.401 N/A, alto por diseño).'
+        operations: [filter, group, compare]
+      llamadoalaaccion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí si propone un siguiente paso comercial concreto (comprar, avanzar el pedido,
+          pagar, reservar, definir entrega). No si hubo oportunidad real de cierre (colchón evaluado seriamente)
+          y no lo intenta, aunque el cliente finalmente no compre. N/A si nunca hubo oportunidad real de cierre
+          (1.136 de 5.401 N/A).'
+        operations: [filter, group, compare]
+      solicitareferidos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí si solicita explícitamente un referido o recomendación a terceros. No si hubo
+          oportunidad real de cierre y no lo pide. N/A si el cliente corta antes de esa oportunidad (1.161 de
+          5.401 N/A — es el campo con menor tasa de "Sí" del checklist: sólo 370, ver golden bank).'
+        operations: [filter, group, compare]
+      agradecimientoydespedida:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí ante agradecimiento o despedida cordial verbal. No si el final real está
+          capturado y no aparece. N/A si la grabación termina antes del final real.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_atlas_insights_categoricos_generales
+    use_when: Motivo de no compra, necesidad del cliente, premiumización, objeción, presupuesto, factor
+      comercial y competencia.
+    grain: Una fila por conversación.
+    data_quality_note: 'CRÍTICO (ver known_findings_v1): sólo 903 de 5.401 filas (16,7%) tienen algún campo
+      poblado, y las 903 son exclusivamente conversaciones posteriores al 2026-08-10. No confundir con NULL de
+      negocio (ej. no_aplica) — para el 83,3% restante, el insights directamente no corrió.'
+    profile: standard_conversation
+    fields:
+      categoricos_generales_motivo_no_compra_principal:
+        configured_values: [precio_presupuesto, stock_disponibilidad, entrega, financiamiento, competencia, consulta_decisor, producto_no_adecuado, postergacion, otro, no_claro, no_aplica]
+        observed_values: [postergacion, no_claro, no_aplica, consulta_decisor, precio_presupuesto, stock_disponibilidad, competencia, producto_no_adecuado, otro, entrega, financiamiento]
+        type: text
+        nullable: true
+        description: 'no_aplica si TipoInteraccion=Compra (por regla del propio prompt). En No compra: causa
+          dominante entre las opciones. postergacion es el valor observado más frecuente (305 de 903 filas
+          pobladas). Hereda la limitación de cobertura desde 2026-08-10.'
+        operations: [filter, group, compare]
+      categoricos_generales_motivo_necesidad:
+        configured_values: [reemplazo_colchon_actual, problema_descanso, nuevo_espacio, cambio_medida, mejora_upgrade, compra_para_tercero, promocion_oportunidad, otro, no_claro]
+        observed_values: [reemplazo_colchon_actual, problema_descanso, nuevo_espacio, cambio_medida, mejora_upgrade, compra_para_tercero, promocion_oportunidad, otro, no_claro]
+        type: text
+        nullable: true
+        description: Qué originó la búsqueda del cliente (no qué atributo busca, eso es
+          necesidad_principal_cliente). Nunca no_aplica, siempre tiene un valor cuando el insights corrió.
+        operations: [filter, group, compare]
+      categoricos_generales_necesidad_principal_cliente:
+        configured_values: [firmeza_confort, soporte, frescura_temperatura, aislamiento_movimiento, durabilidad, tecnologia, marca, medida, precio_presupuesto, otro, no_claro]
+        observed_values: [firmeza_confort, no_claro, precio_presupuesto, medida, soporte, otro, frescura_temperatura, tecnologia, durabilidad, marca]
+        type: text
+        nullable: true
+        description: 'Atributo principal que el CLIENTE prioriza (sólo cuenta si el cliente lo introduce/pide/
+          compara, no si el vendedor lo propone y el cliente asiente). firmeza_confort es el valor dominante
+          (528 de 903 filas pobladas, ~58,5%).'
+        operations: [filter, group, compare]
+      categoricos_generales_resultado_premiumizacion:
+        configured_values: [sube_rango, rechaza_subida, no_claro, no_aplica]
+        observed_values: [sube_rango, rechaza_subida, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Requiere evidencia observable de una opción de referencia y otra de rango superior en la
+          MISMA conversación (no conocimiento de catálogo). no_aplica si no hay esa comparación.
+        operations: [filter, group, compare]
+      categoricos_generales_factor_premiumizacion:
+        configured_values: [confort_soporte, tecnologia, calidad_durabilidad, marca, prueba_producto, precio_promocion, financiamiento, otro, no_claro, no_aplica]
+        observed_values: [confort_soporte, tecnologia, calidad_durabilidad, marca, prueba_producto, precio_promocion, financiamiento, otro, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Factor principal vinculado a aceptar/rechazar la opción superior. no_aplica si
+          resultado_premiumizacion=no_aplica (ver semantic_dependencies.premiumizacion_gate).
+        operations: [filter, group, compare]
+      categoricos_generales_objecion_principal:
+        configured_values: [precio_presupuesto, financiamiento, stock_disponibilidad, entrega, producto_adecuacion, marca_confianza, competencia, consulta_decisor, postergacion, otro, no_claro, no_aplica]
+        observed_values: [precio_presupuesto, financiamiento, stock_disponibilidad, entrega, producto_adecuacion, marca_confianza, competencia, consulta_decisor, postergacion, otro, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Objeción real dominante del cliente (duda/resistencia/freno que puede impedir/demorar el
+          avance; una consulta neutral no es objeción). no_aplica si no hubo ninguna objeción real.
+        operations: [filter, group, compare]
+      categoricos_generales_respuesta_vendedor_objecion:
+        configured_values: [argumenta_valor_producto, ofrece_alternativa_producto, ofrece_descuento_promocion, ofrece_financiamiento, resuelve_condicion_operativa, diferencia_competencia, invita_a_probar, profundiza_necesidad, brinda_informacion, no_responde, otro, no_claro, no_aplica]
+        observed_values: [argumenta_valor_producto, ofrece_alternativa_producto, ofrece_descuento_promocion, ofrece_financiamiento, resuelve_condicion_operativa, diferencia_competencia, invita_a_probar, profundiza_necesidad, brinda_informacion, no_responde, otro, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Cómo respondió el vendedor a la objeción. no_aplica si objecion_principal=no_aplica (ver
+          semantic_dependencies.objecion_gate).
+        operations: [filter, group, compare]
+      categoricos_generales_presupuesto_maximo_mxn:
+        type: integer
+        nullable: true
+        description: Presupuesto máximo explícito del cliente en pesos mexicanos. 0 si no hay límite monetario
+          explícito, la cifra es ambigua, o sólo se mencionan precios de productos (nunca inferido de "caro" o
+          "barato" sin cifra).
+        operations: [filter, aggregate]
+      categoricos_generales_factor_comercial_principal:
+        configured_values: [precio, descuento_promocion, meses_sin_intereses, otro_financiamiento, no_claro, no_aplica]
+        observed_values: [precio, descuento_promocion, meses_sin_intereses, otro_financiamiento, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Principal factor comercial MENCIONADO (no requiere que haya influido en la decisión — eso
+          se mide en impacto_factor_comercial).
+        operations: [filter, group, compare]
+      categoricos_generales_impacto_factor_comercial:
+        configured_values: [favorece_avance, frena_avance, sin_efecto_observable, no_aplica]
+        observed_values: [favorece_avance, frena_avance, sin_efecto_observable, no_aplica]
+        type: text
+        nullable: true
+        description: Efecto observable del factor comercial sobre el avance de la venta. no_aplica si
+          factor_comercial_principal=no_aplica (ver semantic_dependencies.factor_comercial_gate). No deducir del
+          resultado final de compra.
+        operations: [filter, group, compare]
+      categoricos_generales_competidor_mencionado:
+        type: text
+        nullable: true
+        description: 'Nombre normalizado del competidor (minúsculas, sin acentos, snake_case) o no_claro/
+          no_aplica. Valores observados con volumen real: liverpool=65, sealy=20, luna=12, walmart=9,
+          restonic=9, america=9, dormimundo=7 (sobre 903 filas pobladas). No confundir una marca vendida POR
+          Atlas con un competidor.'
+        operations: [filter, group, compare]
+      categoricos_generales_aspecto_comparado_competencia:
+        configured_values: [precio_condiciones_comerciales, confort_firmeza, tecnologia_caracteristicas, calidad_durabilidad, garantia, entrega_disponibilidad, servicio, otro, no_claro, no_aplica]
+        observed_values: [precio_condiciones_comerciales, confort_firmeza, tecnologia_caracteristicas, calidad_durabilidad, garantia, entrega_disponibilidad, servicio, otro, no_claro, no_aplica]
+        type: text
+        nullable: true
+        description: Aspecto comparado con el competidor mencionado. no_aplica si competidor_mencionado=no_aplica
+          (ver semantic_dependencies.competencia_gate).
+        operations: [filter, group, compare]
+  descriptive_insights:
+    source: dashboard_v2.vw_atlas_insights_descriptivos_generales
+    use_when: Voice of Customer -lenguaje textual real del cliente-. AISLADA -ver joins.general_evidence-.
+    grain: Una fila por recordingid (NO por conversation_id); texto libre no agregable.
+    profile: descriptive_conversation_aislada
+    data_quality_note: 'Igual que Maga: no tiene conversation_id ni seller_id (sólo seller_name, recordingid).
+      903 filas totales, mismo rango de fechas que categorical_insights (desde 2026-08-10) — misma limitación
+      de cobertura, ver known_findings_v1.'
+    fields:
+      month:
+        type: integer
+        nullable: true
+        description: Mes de la conversación (nombre físico "month").
+        operations: [filter, group]
+      year:
+        type: integer
+        nullable: true
+        description: Año de la conversación (nombre físico "year").
+        operations: [filter, group]
+      descriptivos_generales_voice_of_customer:
+        type: text
+        nullable: true
+        description: 'Lenguaje real del cliente que ayuda a entender qué quiere, valora o rechaza -breve, cerca
+          de sus palabras, no repite mecánicamente los enums-. NULL si no hay ninguna expresión útil.'
+        operations: [select_evidence]
+  categorical_product_insights:
+    source: dashboard_v2.vw_atlas_insights_categoricos_por_producto
+    use_when: Producto solicitado/recomendado/probado/comprado, modelo, marca, medida, firmeza, tecnología,
+      complementos y resultado de la prueba.
+    grain: Una fila por conversation_id + producto_id.
+    profile: standard_conversation
+    data_quality_note: 'Misma limitación de cobertura que categorical_insights: sólo 780 conversaciones
+      distintas (1.293 filas de producto), todas desde 2026-08-10.'
+    fields:
+      producto_id:
+        type: integer
+        nullable: false
+        description: Entero positivo, único y consecutivo dentro de la conversación (1, 2, 3...). Clave de join
+          con descriptive_product_insights.
+        operations: [join_key, filter]
+      tipo_producto:
+        configured_values: [colchon, almohada, protector, sabanas, base, garantia, otro, no_claro]
+        observed_values: [colchon, almohada, protector, base, otro, sabanas, garantia, no_claro]
+        type: text
+        nullable: false
+        description: 'Categoría del producto. colchon es la más frecuente (936 de 1.293 filas, ~72,4%).'
+        operations: [filter, group, compare]
+      solicitado_cliente:
+        configured_values: &si_no_noclaro [si, 'no', no_claro]
+        observed_values: *si_no_noclaro
+        type: text
+        nullable: false
+        description: si = el cliente introduce/pide el producto. no = evidencia de que aparece por iniciativa
+          del vendedor.
+        operations: [filter, group, compare]
+      recomendado_vendedor:
+        configured_values: *si_no_noclaro
+        observed_values: *si_no_noclaro
+        type: text
+        nullable: false
+        description: si = el vendedor lo propone/presenta como opción.
+        operations: [filter, group, compare]
+      prueba_producto:
+        configured_values: [probado, rechaza_probar, no_claro, no_aplica]
+        observed_values: [probado, rechaza_probar, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo aplica a colchones (no_aplica para el resto). probado requiere evidencia verbal
+          suficiente de prueba real -nunca inferir sólo por la invitación-.
+        operations: [filter, group, compare]
+      comprado:
+        configured_values: *si_no_noclaro
+        observed_values: [no, si, no_claro]
+        type: text
+        nullable: false
+        description: 'si sólo si el producto se vincula claramente con la compra (y sólo puede ser si cuando
+          TipoInteraccion=Compra a nivel conversación). Distribución observada: no=907, si=360, no_claro=26.'
+        operations: [filter, group, compare]
+      modelo:
+        configured_values: [atlantic, class, four_seasons_grand_vip, leonardo, manhattan, new_aurora, pearl, persival, pleasure, preston, quartz, ramat, scandinavian_arendal, williams, cinza, frost, cobalto, metz, invictus_cezzane, altima_albi, wellness, otro, no_claro, no_aplica]
+        observed_values: [atlantic, class, four_seasons_grand_vip, leonardo, manhattan, new_aurora, pearl, persival, pleasure, preston, quartz, ramat, scandinavian_arendal, williams, cinza, frost, cobalto, metz, invictus_cezzane, altima_albi, wellness, otro, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo colchón; no_aplica para el resto de tipo_producto. Enum cerrado del prompt, no
+          inferido por marca/tecnología/precio.
+        operations: [filter, group, compare]
+      marca:
+        configured_values: [spring_air, four_seasons_grand, principe_colchones, sealy, otra, no_claro, no_aplica]
+        observed_values: [no_claro, no_aplica, spring_air, sealy, otra, principe_colchones, four_seasons_grand]
+        type: text
+        nullable: false
+        description: 'Sólo colchón; sólo mención explícita (no inferida por modelo — "Back Supporter" no es
+          marca, es tecnología). spring_air es la más mencionada explícitamente (255 de 1.293).'
+        operations: [filter, group, compare]
+      medida:
+        configured_values: [individual, matrimonial, queen_size, king_size, otra, no_claro, no_aplica]
+        observed_values: [individual, matrimonial, queen_size, king_size, otra, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo colchón; no inferida por modelo/precio.
+        operations: [filter, group, compare]
+      firmeza:
+        configured_values: [suave, media, medio_firme, firme, otra, no_claro, no_aplica]
+        observed_values: [suave, media, medio_firme, firme, otra, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo colchón. media incluye "intermedia/equilibrada/ni muy dura ni muy suave".
+        operations: [filter, group, compare]
+      tecnologia:
+        configured_values: [back_supporter, comfort_flex, comfort_flex_high_tech, infinity, memory_foam, cool_gel, foam_encasement, edge_foam, euro_top, pillow_top, euro_pillow_top, tight_top, purotex, posturetech, posturepedic, memory_cool_foam, memory_gel, frequency_technology, form_i_sin_resortes, poliesferas_adaptacion_milimetrica, base_ergo_multiposiciones, resortes_embolsados_independientes, resortes_optimizados_ia, otra, no_claro, no_aplica]
+        observed_values: [back_supporter, comfort_flex, comfort_flex_high_tech, infinity, memory_foam, cool_gel, foam_encasement, edge_foam, euro_top, pillow_top, euro_pillow_top, tight_top, purotex, posturetech, posturepedic, memory_cool_foam, memory_gel, frequency_technology, form_i_sin_resortes, poliesferas_adaptacion_milimetrica, base_ergo_multiposiciones, resortes_embolsados_independientes, resortes_optimizados_ia, otra, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo colchón; sólo mención explícita o inequívocamente equivalente, la más específica
+          cuando coincide con varias categorías.
+        operations: [filter, group, compare]
+      momento_ofrecimiento_complemento:
+        configured_values: [antes_eleccion_colchon, despues_eleccion_colchon, no_claro, no_aplica]
+        observed_values: [antes_eleccion_colchon, despues_eleccion_colchon, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo aplica cuando un producto distinto del colchón se ofrece como venta adicional
+          asociada. no_aplica si no fue ofrecido como complemento o el cliente vino específicamente por él.
+        operations: [filter, group, compare]
+      resultado_complemento:
+        configured_values: [aceptado, rechazado, no_se_define, no_aplica]
+        observed_values: [aceptado, rechazado, no_se_define, no_aplica]
+        type: text
+        nullable: false
+        description: no_aplica si momento_ofrecimiento_complemento=no_aplica (ver
+          semantic_dependencies.complemento_gate).
+        operations: [filter, group, compare]
+      motivo_resultado_complemento:
+        configured_values: [precio, ya_tiene, no_lo_necesita, beneficio_producto, promocion_paquete, otro, no_claro, no_aplica]
+        observed_values: [precio, ya_tiene, no_lo_necesita, beneficio_producto, promocion_paquete, otro, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: no_aplica si resultado_complemento=no_aplica.
+        operations: [filter, group, compare]
+      percepcion_prueba:
+        configured_values: [positiva, neutral, negativa, mixta, no_claro, no_aplica]
+        observed_values: [positiva, neutral, negativa, mixta, no_claro, no_aplica]
+        type: text
+        nullable: false
+        description: Sólo si prueba_producto=probado (ver semantic_dependencies.prueba_gate). No inferida por
+          compra/no compra.
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_atlas_insights_descriptivos_por_producto
+    use_when: Comentario textual de la experiencia de prueba del producto.
+    grain: Una fila por conversation_id + producto_id; texto libre no agregable.
+    profile: standard_conversation
+    fields:
+      producto_id:
+        type: integer
+        nullable: false
+        description: Índice del producto; unir con la vista categórica usando conversation_id + producto_id.
+        operations: [join_key, filter]
+      comentario_prueba:
+        type: text
+        nullable: true
+        description: 'Comentarios del cliente sobre la experiencia de probar ese producto. Puede incluir
+          "antes: ...; despues: ..." si hay comentarios en ambos momentos. NULL si no hay comentario útil. Debe
+          ser coherente con prueba_producto/percepcion_prueba de la vista categórica.'
+        operations: [select_evidence]
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL: categorical_insights, descriptive_insights y categorical_product_insights sólo cubren
+  conversaciones desde el 2026-08-10 (19,6%-24% de las conversaciones/productos analizables, según la fuente).
+  No se investigó la causa. Ver metadata.known_findings_v1.'
+- No se investigó por qué demography.tipointeraccion tiene cobertura casi completa (poblado desde junio) pese a
+  ser conceptualmente parte del mismo pipeline de insights que sí arranca en agosto para el resto de los campos.
+- Dataset pequeño (5.401 conversaciones, 1.293 filas de producto) — porcentajes con bases chicas son más
+  sensibles a pocas filas que en clientes con volumen mayor.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

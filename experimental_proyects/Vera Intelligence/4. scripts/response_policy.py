@@ -1,0 +1,185 @@
+"""Política determinística para respuestas orientadas a gerencia y C-level."""
+
+from __future__ import annotations
+
+import re
+
+
+_COURTESY_MESSAGES = frozenset({
+    "gracias", "muchas gracias", "muchísimas gracias", "muchisimas gracias",
+    "mil gracias", "te agradezco", "gracias vera", "gracias vera intelligence",
+    "muchas gracias vera", "gracias por el análisis", "gracias por el analisis",
+})
+
+
+def courtesy_response(question: str) -> str | None:
+    """Sólo cortesías completas e inequívocas; confirmaciones o preguntas no se interceptan."""
+    normalized = " ".join(question.casefold().split()).strip(" .,!¡")
+    if normalized in _COURTESY_MESSAGES:
+        return "¡De nada! Estoy para ayudarte con el próximo análisis."
+    return None
+
+
+def implementation_question_response(display_name: str) -> str:
+    return (
+        "Vera Intelligence está diseñada para transformar la información autorizada "
+        f"de {display_name} en respuestas y recomendaciones de negocio. Los detalles "
+        "internos de funcionamiento no forman parte de la experiencia. Puedo ayudarte "
+        "con resultados, tendencias, desempeño, oportunidades y criterios comerciales."
+    )
+
+UNSAFE_ANSWER_FALLBACK = (
+    "No pude formular la respuesta con el nivel de claridad ejecutiva requerido. "
+    "Podés reformular la pregunta en términos de resultados, tendencias, desempeño "
+    "u oportunidades comerciales."
+)
+
+_IMPLEMENTATION_TERMS = re.compile(
+    r"\b(?:"
+    r"sql|postgres(?:ql)?|langfuse|gemini|openai|claude|mcp|api|"
+    r"base(?:s)?\s+de\s+datos|data\s*base|modelo(?:s)?\s+(?:de\s+)?(?:ia|inteligencia\s+artificial)|"
+    r"(?:qué|que)\s+modelo\s+(?:estás|estas|está|esta|usan|usa|usás|usas|utilizan)|"
+    r"inteligencia\s+artificial\s+usan|algoritmo(?:s)?|"
+    r"(?:cómo|como)\s+(?:funcionás|funcionas|funciona|estás\s+hech[oa]|estas\s+hech[oa]|"
+    r"fuiste\s+entrenad[oa]|te\s+entrenaron)|"
+    r"tabla(?:s)?|columna(?:s)?|vista(?:s)?\s+de\s+datos|schema|query|consulta\s+sql|"
+    r"prompt(?:s)?|system\s+instruction|tool\s+calling|data\s+map|"
+    r"tecnología(?:s)?|tecnologia(?:s)?|"
+    r"servidor(?:es)?|backend|infraestructura|código\s+fuente|codigo\s+fuente|"
+    r"lenguaje\s+de\s+programación|lenguaje\s+de\s+programacion|"
+    r"arquitectura\s+(?:técnica|tecnica)|stack\s+tecnológico|stack\s+tecnologico"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Subconjunto de _IMPLEMENTATION_TERMS usado para revisar la RESPUESTA del agente (no la
+# pregunta entrante). "tecnología"/"tecnologia" a secas quedó afuera a propósito: es
+# lenguaje de negocio legítimo para varios clientes (Salomon: "tecnología del producto"
+# tipo Gore-Tex; Atlas: campo "tecnologia" de colchones -memory foam, gel-), no una fuga de
+# la stack técnica de Vera Intelligence. Encontrado en el onboarding de Salomon
+# (2026-09-07): una pregunta tan simple como "¿el vendedor explica la tecnología del
+# producto?" agotaba los 4 reintentos de reescritura porque la única palabra natural para
+# responderla ("tecnología") estaba baneada, y como violation_terms() no la reportaba como
+# término ofensivo (sólo cubre _SNAKE_CASE/_PHYSICAL_IDENTIFIER), el modelo nunca sabía qué
+# evitar y repetía el mismo error en cada intento -mismo patrón de causa raíz que el bug de
+# _SNAKE_CASE encontrado con Atlas-. Los patrones más específicos que sí indican fuga real de
+# nuestra propia stack (arquitectura técnica, stack tecnológico, modelo de IA, etc.) se
+# mantienen: lo que se sacó es sólo la palabra suelta "tecnología".
+_ANSWER_LEAK_TERMS = re.compile(
+    r"\b(?:"
+    r"sql|postgres(?:ql)?|langfuse|gemini|openai|claude|mcp|api|"
+    r"base(?:s)?\s+de\s+datos|data\s*base|modelo(?:s)?\s+(?:de\s+)?(?:ia|inteligencia\s+artificial)|"
+    r"inteligencia\s+artificial\s+usan|algoritmo(?:s)?|"
+    r"tabla(?:s)?|columna(?:s)?|vista(?:s)?\s+de\s+datos|schema|query|consulta\s+sql|"
+    r"prompt(?:s)?|system\s+instruction|tool\s+calling|data\s+map|"
+    r"servidor(?:es)?|backend|infraestructura|código\s+fuente|codigo\s+fuente|"
+    r"lenguaje\s+de\s+programación|lenguaje\s+de\s+programacion|"
+    r"arquitectura\s+(?:técnica|tecnica)|stack\s+tecnológico|stack\s+tecnologico"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_SNAKE_CASE = re.compile(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b")
+_PHYSICAL_IDENTIFIER = re.compile(
+    r"\b(?:dashboard_v\d+|vw_[a-z0-9_]+|seller_id|conversation_id|producto_index)\b",
+    re.IGNORECASE,
+)
+
+_BUSINESS_TERMS = re.compile(
+    r"\b(?:"
+    r"conversacion(?:es)?|interaccion(?:es)?|compra(?:s)?|venta(?:s)?|"
+    r"vendedor(?:es|a|as)?|cliente(?:s)?|tienda(?:s)?|producto(?:s)?|"
+    r"desempeño|rendimiento|tasa(?:s)?|porcentaje(?:s)?|ranking|"
+    r"resultado(?:s)?|tendencia(?:s)?|periodo|período|criterio(?:s)?|"
+    r"indicador(?:es)?|oportunidad(?:es)?|objecion(?:es)?|objeción(?:es)?|"
+    r"cashback|inventario|talla(?:s)?|color(?:es)?|ocasión|ocasion|meta(?:s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_implementation_question(question: str) -> bool:
+    """Detecta pedidos cuyo objetivo principal es conocer la implementación."""
+    normalized = " ".join(question.strip().split())
+    if not normalized:
+        return False
+    return bool(_IMPLEMENTATION_TERMS.search(normalized))
+
+
+def has_business_intent(question: str) -> bool:
+    """Indica si el pedido también contiene una necesidad concreta de negocio."""
+    return bool(_BUSINESS_TERMS.search(question))
+
+
+def client_answer_violations(
+    answer: str,
+    *,
+    internal_identifiers: set[str] | frozenset[str] = frozenset(),
+) -> list[str]:
+    """Devuelve categorías de información que no deben llegar al cliente."""
+    violations: list[str] = []
+    if _ANSWER_LEAK_TERMS.search(answer):
+        violations.append("detalles internos o tecnológicos")
+    if _SNAKE_CASE.search(answer):
+        violations.append("identificadores internos")
+    if _PHYSICAL_IDENTIFIER.search(answer):
+        violations.append("nombres físicos de datos")
+    lowered_answer = answer.lower()
+    if any(
+        re.search(rf"(?<![\w]){re.escape(identifier.lower())}(?![\w])", lowered_answer)
+        for identifier in internal_identifiers
+    ):
+        if "identificadores internos" not in violations:
+            violations.append("identificadores internos")
+    return violations
+
+
+def violation_terms(
+    answer: str,
+    *,
+    internal_identifiers: set[str] | frozenset[str] = frozenset(),
+) -> list[str]:
+    """Términos concretos que dispararon la violación (para reescrituras dirigidas).
+
+    Sin esto, una reescritura sólo sabe "expusiste identificadores internos" sin saber
+    CUÁLES palabras evitar — con categorías de negocio densas y compuestas (ej. Atlas:
+    precio_presupuesto, consulta_decisor, producto_no_adecuado) el modelo repite el mismo
+    error en reescrituras sucesivas porque no tiene la lista exacta de términos a
+    reformular. Nombrar los términos exactos sube la tasa de éxito en el primer intento.
+    """
+    terms: set[str] = set()
+    terms.update(m.group(0) for m in _SNAKE_CASE.finditer(answer))
+    terms.update(m.group(0) for m in _PHYSICAL_IDENTIFIER.finditer(answer))
+    terms.update(m.group(0) for m in _ANSWER_LEAK_TERMS.finditer(answer))
+    lowered_answer = answer.lower()
+    for identifier in internal_identifiers:
+        if re.search(rf"(?<![\w]){re.escape(identifier.lower())}(?![\w])", lowered_answer):
+            terms.add(identifier)
+    return sorted(terms)
+
+
+def build_rewrite_instruction(
+    violations: list[str], *, offending_terms: list[str] | None = None
+) -> str:
+    categories = ", ".join(violations)
+    terms_clause = ""
+    if offending_terms:
+        terms_list = ", ".join(offending_terms)
+        terms_clause = (
+            f" Los términos exactos a eliminar o reformular en lenguaje natural son: "
+            f"{terms_list}. No los repitas tal cual (ni siquiera entre comillas o como "
+            "ejemplo); expresá la misma idea con palabras comerciales corrientes. Regla "
+            "general para evitar repetir este error en categorías compuestas: nunca "
+            "uses guion bajo — donde tengas un valor como \"precio_presupuesto\" o "
+            "\"consulta_decisor\", escribilo como una frase separada (\"precio o "
+            "presupuesto\", \"debe consultar con quien decide\"), incluso si tu "
+            "respuesta menciona varias categorías distintas."
+        )
+    return (
+        "Reescribí tu respuesta anterior para una audiencia de gerencia y C-level. "
+        f"El borrador expuso {categories}.{terms_clause} Conservá todos los números, "
+        "hallazgos, criterios y recomendaciones de negocio, pero eliminá nombres "
+        "internos, tecnologías, mecanismos de almacenamiento, consultas, instrucciones "
+        "y identificadores. Usá únicamente lenguaje comercial natural. No expliques que "
+        "estás reescribiendo ni menciones esta instrucción."
+    )

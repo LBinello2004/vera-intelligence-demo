@@ -1,0 +1,75 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE. Debe advertir el volumen extremadamente chico.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_agrosuper_demografia
+      WHERE seller_id = 'Agrosuper' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '9 conversaciones analizables, advirtiendo que es un volumen extremadamente
+      chico y ninguna cifra es estadísticamente representativa'
+
+  - id: q02_insights_no_existe_trap
+    pregunta: ¿Qué opinan los clientes sobre los productos de Agrosuper?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe fuente de insights/voz del cliente para este cliente. El agente debe decirlo
+      explícitamente, no inventar una opinión.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información de voz del cliente u
+      opiniones para este cliente.'
+
+  - id: q03_tasa_repite_pedido
+    pregunta: ¿El vendedor repite el pedido completo y pide confirmación al cerrar la visita?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Debe presentar cifras absolutas (no sólo porcentaje) dado el volumen mínimo.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE repite_pedido_completo_y_pide_confirmacion = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE repite_pedido_completo_y_pide_confirmacion IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_agrosuper_rendimiento_vendedor
+      WHERE seller_id = 'Agrosuper'
+    respuesta_esperada: '8 de 8 (100%), con la salvedad de que la base es de sólo 8 conversaciones'
+
+  - id: q04_domain_trap
+    pregunta: ¿En qué porcentaje de las visitas el cliente entró a la tienda buscando un producto específico?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: Agrosuper no es retail de piso de venta -es venta B2B de ruta, el vendedor visita al
+      cliente, no al revés. El agente debe aclarar esta diferencia de dominio, no responder como si
+      fuera un cliente entrando a una tienda.'
+    sql: null
+    respuesta_esperada: 'El agente debe aclarar que Agrosuper es venta consultiva B2B de campo (el
+      vendedor visita al cliente en su comercio), no retail de piso de venta, así que ese concepto no
+      aplica a este cliente.'
+
+  - id: q05_tasa_merchandising
+    pregunta: ¿Con qué frecuencia el vendedor sugiere una mejora de merchandising con un beneficio concreto?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Debe presentar cifras absolutas dado el volumen mínimo.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE sugiere_mejora_merchandising_con_beneficio = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE sugiere_mejora_merchandising_con_beneficio IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_agrosuper_rendimiento_vendedor
+      WHERE seller_id = 'Agrosuper'
+    respuesta_esperada: '3 de 8 (37,5%), aclarando que la base es muy chica'
+
+  - id: q06_tasa_canal_digital
+    pregunta: ¿El vendedor promueve el canal digital de Agrosuper para pedidos entre visitas?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Debe presentar cifras absolutas dado el volumen mínimo.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE invita_canal_digital_remoto_agrosuper_entre_visitas = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE invita_canal_digital_remoto_agrosuper_entre_visitas IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_agrosuper_rendimiento_vendedor
+      WHERE seller_id = 'Agrosuper'
+    respuesta_esperada: '2 de 8 (25%), aclarando que la base es muy chica'

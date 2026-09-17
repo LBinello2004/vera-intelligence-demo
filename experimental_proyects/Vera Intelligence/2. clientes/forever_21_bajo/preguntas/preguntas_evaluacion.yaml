@@ -1,0 +1,206 @@
+metadata:
+  name: Preguntas de evaluación VI - Forever 21
+  purpose: 'Banco CHICO a propósito, más chico incluso que Shoe Box: Forever 21 tiene UNA sola conversación
+    total en Postgres, con señales fuertes de ser una grabación de prueba/onboarding ("HQ-prueba...",
+    empleado "Prueba Vera"), no un caso real de venta (ver Data Map, known_findings_v1). Estas 13 preguntas
+    verifican que el agente (a) reporta el volumen real sin inflarlo, (b) nunca presenta la lectura del
+    único caso como tasa/tendencia del negocio, y (c) puede señalar la duda razonable sobre si el dato es
+    de prueba cuando la pregunta lo amerita. No mide tasas estadísticamente sólidas -no puede haberlas
+    con n=1-. Reconstruir este banco por completo cuando el cliente tenga volumen real de conversaciones de
+    tienda.'
+  data_map_version: VI Data Map Forever21 V1.yaml
+  tenant: Forever 21
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-08 — lectura completa de la única fila
+    existente en las 6 vistas, no una muestra.
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su respuesta
+    contra "respuesta_esperada".'
+
+preguntas:
+  - id: q01_total_conversaciones
+    pregunta: ¿Cuántas conversaciones hay en total?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA, la más extrema del proyecto: la base es de una sola conversación. El agente debe comunicar
+      el número real (1) con naturalidad, sin inflar la percepción de volumen y sin evitar la cifra chica.'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) AS total,
+        COUNT(DISTINCT conversation_id) FILTER (WHERE usefulforanalysis) AS analizables
+      FROM dashboard_v2.vw_forever_21_demografia
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: '1 conversación total, 1 analizable.'
+
+  - id: q02_representatividad_trap
+    pregunta: ¿Esta información representa bien el desempeño general de las tiendas Forever 21?
+    fuentes_requeridas: [demography, performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA de negocio: con una sola conversación (posiblemente de prueba, ver Data Map
+      known_findings_v1: filename "HQ-prueba...", empleado "Prueba Vera"), el agente NO debe responder
+      "sí" ni dar una lectura de desempeño general. Debe explicar que la base es de un único caso, que no es
+      representativa del negocio, y puede mencionar la duda razonable sobre si es un dato de prueba.'
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total, filename, employee_full_name
+      FROM dashboard_v2.vw_forever_21_demografia
+      WHERE seller_id = 'Forever 21'
+      GROUP BY filename, employee_full_name
+    respuesta_esperada: 'No. Es un único caso (filename "HQ-prueba.vera-...", empleado "Prueba Vera"), sin
+      significancia estadística ni representatividad del negocio; el agente debe aclarar la duda sobre si
+      es una conversación de prueba.'
+
+  - id: q03_tasa_saludo_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor saludó y ofreció ayuda?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: con base evaluada de 1, el agente debe expresar la fracción real (1 de 1) en vez de sólo un
+      porcentaje ("100%") que suene más sólido de lo que es.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorsaludoyofrecioayuda = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorsaludoyofrecioayuda IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_forever_21_rendimiento_vendedor
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'Sí=1, base evaluada=1 (100%), pero el agente debe aclarar que la base es de una
+      sola conversación, no presentar el 100% como un hallazgo estadísticamente robusto.'
+
+  - id: q04_tres_preguntas_utiles
+    pregunta: ¿El vendedor hizo al menos tres preguntas útiles antes de recomendar?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - vendedorrealizotrespreguntasutiles es Sí/No/N/A; en la única fila es "No".
+    sql: |
+      SELECT vendedorrealizotrespreguntasutiles
+      FROM dashboard_v2.vw_forever_21_rendimiento_vendedor
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'No, en la única conversación disponible el vendedor no realizó al menos 3
+      preguntas útiles antes de recomendar.'
+
+  - id: q05_orientacion_estilo_vs_opcion_pertinente_trap
+    pregunta: ¿El vendedor orientó al cliente según la ocasión y el estilo que buscaba?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA de interpretación del Data Map: vendedororientosegunocasionyestilo=Sí PERO
+      vendedorpresentoopcionprincipalpertinente=No en la misma fila (son criterios distintos, ver Data Map
+      semantic_dependencies.orientacion_estilo). El agente no debe confundir ambos campos ni promediarlos
+      en una sola respuesta genérica -debe poder distinguir que sí usó ocasión/estilo para orientar, aunque
+      la opción presentada no haya sido evaluada como pertinente a la necesidad conocida-.'
+    sql: |
+      SELECT vendedororientosegunocasionyestilo, vendedorpresentoopcionprincipalpertinente
+      FROM dashboard_v2.vw_forever_21_rendimiento_vendedor
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'Sí orientó según ocasión y estilo (usó explícitamente el contexto de fiesta/ocasión
+      del cliente), pero ese mismo criterio del checklist marca por separado que la opción principal
+      presentada no fue evaluada como pertinente (vendedorpresentoopcionprincipalpertinente=No) -son dos
+      evaluaciones distintas, no deben mezclarse en una sola cifra-.'
+
+  - id: q06_manejo_objeciones_ace_trap
+    pregunta: ¿El vendedor manejó bien las objeciones del cliente?
+    fuentes_requeridas: [performance, descriptive_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: hubo una objeción real (precio $1800 vs. presupuesto de $1500, según
+      resumen_conversacion) pero vendedormanejoobjecionesconace=No (no cumplió las 3 funciones A.C.E.). El
+      agente NO debe decir "no hubo objeciones" (sí la hubo) ni "sí las manejó bien" (el checklist dice
+      que no) — debe distinguir que hubo objeción de precio y que el vendedor no aplicó el método completo.'
+    sql: |
+      SELECT vendedormanejoobjecionesconace
+      FROM dashboard_v2.vw_forever_21_rendimiento_vendedor
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'No. Hubo una objeción real de precio (el producto costaba $1800 y el presupuesto
+      del cliente era $1500) pero el vendedor no cumplió el método A.C.E. completo, según el checklist.'
+
+  - id: q07_venta_complementaria_trap
+    pregunta: ¿Qué porcentaje de las ventas incluye un producto complementario?
+    fuentes_requeridas: [performance, categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: tanto vendedorofrecioventacomplementariapertinente (checklist) como
+      hubo_ofrecimiento_complementario (insights) son "No"/false en la única conversación disponible. El
+      agente debe dar el número real (0%, 0 de 1) sin ocultarlo, con la misma cautela de tamaño de muestra
+      que el resto del banco.'
+    sql: |
+      SELECT
+        (SELECT vendedorofrecioventacomplementariapertinente FROM dashboard_v2.vw_forever_21_rendimiento_vendedor WHERE seller_id = 'Forever 21') AS checklist,
+        (SELECT hubo_ofrecimiento_complementario FROM dashboard_v2.vw_forever_21_insights_categoricos_generales WHERE seller_id = 'Forever 21') AS insights
+    respuesta_esperada: '0% (0 de 1 conversación disponible ofreció venta complementaria, coincide entre
+      checklist e insights) — el agente debe dar el número real y aclarar el tamaño mínimo de la muestra.'
+
+  - id: q08_falta_stock
+    pregunta: ¿Hubo casos de falta de stock?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - hubo_falta_stock es boolean, ante duda el prompt indica usar false.
+    sql: |
+      SELECT hubo_falta_stock
+      FROM dashboard_v2.vw_forever_21_insights_categoricos_generales
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'No, la única conversación disponible no registró falta de stock explícita.'
+
+  - id: q09_alternativa_ofrecida_consistencia
+    pregunta: ¿El vendedor ofreció alguna alternativa al cliente?
+    fuentes_requeridas: [performance, categorical_insights]
+    requisitos:
+    - Verificar consistencia entre vendedorofrecioalternativascuandoaplicaba (checklist) y
+      hubo_ofrecimiento_alternativa (insights); ambos "No"/false en la única fila.
+    sql: |
+      SELECT
+        (SELECT vendedorofrecioalternativascuandoaplicaba FROM dashboard_v2.vw_forever_21_rendimiento_vendedor WHERE seller_id = 'Forever 21') AS checklist,
+        (SELECT hubo_ofrecimiento_alternativa FROM dashboard_v2.vw_forever_21_insights_categoricos_generales WHERE seller_id = 'Forever 21') AS insights
+    respuesta_esperada: 'No, en la única conversación disponible no se ofreció una alternativa (coincide
+      entre checklist e insights).'
+
+  - id: q10_resultado_por_producto
+    pregunta: De los productos considerados, ¿cuántos terminaron en compra?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Distinguir rol_producto=principal de otros roles; con n=1 sólo hay un producto, principal y comprado.
+    sql: |
+      SELECT rol_producto, resultado_producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_forever_21_insights_categoricos_por_producto
+      WHERE seller_id = 'Forever 21'
+      GROUP BY 1, 2
+    respuesta_esperada: '1 producto considerado, rol principal, resultado comprado (el único producto de la
+      única conversación disponible).'
+
+  - id: q11_detalle_producto_comprado
+    pregunta: ¿Qué talla y color pidió la clienta del producto que compró?
+    fuentes_requeridas: [descriptive_product_insights]
+    requisitos:
+    - talla y color son texto libre observado, no un enum cerrado; marca_modelo es NULL en este caso.
+    sql: |
+      SELECT producto_mencionado, marca_modelo, talla, color
+      FROM dashboard_v2.vw_forever_21_insights_descriptivos_por_producto
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'Talla 37, color negro (producto: "zapatos para fiesta"). No se verbalizó marca ni
+      modelo (NULL).'
+
+  - id: q12_resumen_objecion_precio
+    pregunta: ¿Qué pasó con el precio en esa conversación?
+    fuentes_requeridas: [descriptive_insights]
+    requisitos:
+    - resumen_conversacion es texto libre; usar como evidencia, no agregar ni inventar cifras fuera del texto.
+    sql: |
+      SELECT resumen_conversacion
+      FROM dashboard_v2.vw_forever_21_insights_descriptivos_generales
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'El producto costaba $1800 y el presupuesto de la clienta era $1500 (objeción de
+      precio), pero finalmente decidió llevarlo igual.'
+
+  - id: q13_despedida_e_invitacion_trap
+    pregunta: ¿El vendedor se despidió correctamente e invitó al cliente a volver?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: son dos campos distintos del checklist (VendedorAgradecioYSeDespidio y
+      VendedorInvitoARegresar) que divergen en esta fila -Sí y No respectivamente-. El agente no debe
+      fusionarlos en una sola respuesta afirmativa o negativa única.'
+    sql: |
+      SELECT vendedoragradecioysedespidio, vendedorinvitoaregresar
+      FROM dashboard_v2.vw_forever_21_rendimiento_vendedor
+      WHERE seller_id = 'Forever 21'
+    respuesta_esperada: 'Se despidió correctamente (agradeció y se despidió cordialmente) pero NO invitó
+      explícitamente al cliente a regresar -son dos criterios distintos del checklist, y en este caso
+      divergen-.'

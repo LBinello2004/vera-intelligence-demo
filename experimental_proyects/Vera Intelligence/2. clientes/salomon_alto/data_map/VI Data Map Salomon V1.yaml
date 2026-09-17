@@ -1,0 +1,305 @@
+metadata:
+  name: VI Data Map Salomon V1
+  version: 1.0.0
+  client: Salomon
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo dos vistas dashboard_v2 de Salomon (demografia + rendimiento_vendedor). El tenant
+    ('Salomon') es fijo para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Salomon/checklist (Langfuse, label production, v5 al construir este mapa)
+    note: 'Salomon es un cliente de "schema delgado": existe un prompt clientes/Salomon/insights en
+      Langfuse (label production, v2) pero NO hay ninguna vista de insights materializada en
+      dashboard_v2 -verificado contra information_schema.views el 2026-09-07-. Esto significa que
+      Vera Intelligence NO puede responder preguntas de motivo/necesidad/objeción/competencia para
+      este cliente, aunque el pipeline de extracción de insights exista -sus resultados simplemente no
+      llegan a una vista consultable-. Dominio: retail físico de indumentaria/calzado/equipamiento
+      deportivo y outdoor (marca Salomon). Construido leyendo el prompt completo de checklist y
+      verificando con GROUP BY/COUNT contra Postgres QA el 2026-09-07.'
+  known_findings_v1:
+  - 'ESQUEMA DELGADO: a diferencia de los primeros 9 clientes onboardeados (molde completo de 6
+      vistas), Salomon sólo tiene demografia + rendimiento_vendedor. No hay categorical_insights,
+      descriptive_insights, categorical_product_insights ni descriptive_product_insights. Cualquier
+      pregunta de negocio sobre motivo de no compra, necesidad del cliente, objeciones, competencia,
+      presupuesto o producto específico NO puede responderse con las fuentes actuales -no es una
+      limitación temporal de cobertura como en Atlas/High Life, es que la fuente no existe-.'
+  - 'VOLUMEN REAL Y ACTIVO: 10.447 conversaciones totales, 9.189 analizables (87,9%), rango
+      2026-06-07 a 2026-09-07 (hoy), sin señales de corte -es el cliente de mayor volumen de este
+      segundo batch, comparable en escala a Mens Fashion/Roberts-.'
+  - 'tipointeraccion (demography) tiene un enum más amplio en el prompt (Compra, Cambio, Queja, No
+      compra, Saludo/Transferencia a otro vendedor, Conversación no finalizada) pero sólo se observan
+      dos valores poblados en la práctica: No compra=7.426, Compra=2.963 (58 NULL, misma conversación
+      rota en todas las columnas de performance también, patrón visto en el resto del proyecto). No se
+      investigó por qué los otros 4 valores configurados nunca aparecen -puede ser que las categorías
+      Cambio/Queja/Saludo-Transferencia/Conversación no finalizada sean infrecuentes en la práctica, o
+      que el prompt las use de forma más estricta de lo que el volumen actual refleja-.'
+  - 'Los 16 criterios del checklist tienen enum limpio (Sí/No/N/A, 57 NULL consistentes en las 16
+      columnas simultáneamente -misma conversación rota-). Grupos temáticos del propio prompt:
+      ConocerSaludarYAmistad (4 campos), ConectarYEntenderNecesidades (2), FitExperience (2),
+      TraeloALaVida (4), ResumirYRecomendar (1), CierreYAmistad (3). Las tasas de N/A varían mucho
+      según el campo: fitExperience tiene N/A muy alto (5.860 de 9.198 en invitaafitexperience, 8.850
+      en explicabeneficiosfitexperience) porque sólo aplica cuando el cliente busca calzado con
+      necesidad real de calce -no es un problema de datos, es semántica correcta del criterio, similar
+      a manejaobjecionesconalternativas (N/A=5.711, sólo aplica si hubo objeción real).'
+  - 'No se detectó casing duplicado ni columnas muertas en el muestreo de los 16 campos de
+      rendimiento_vendedor -todas tienen distribución Sí/No/N/A con volumen real en las tres
+      categorías donde aplica, ninguna quedó en 0 filas pobladas como el caso de High Life-.'
+  - 'RAG no aplica a este cliente: verificado en Langfuse que clientes/Salomon/checklist no declara
+      geminiFileSearchStoreName (a diferencia de clientes/Salomon/feedback, que sí lo tiene pero es un
+      prompt de otro producto/feature, no de Vera Intelligence -mismo criterio de exclusión usado en el
+      resto del proyecto-).'
+decision_flow:
+- Identificar si la pregunta es respondible con checklist/demografía -si pide motivo, necesidad,
+  objeción, competencia o producto específico, advertir explícitamente que esa fuente no existe para
+  este cliente (ver known_findings_v1), no inventar una respuesta con datos de otra naturaleza.
+- Antes de escribir SQL, resolver profile, grano y tenant.
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si
+  NULL es parte legítima de la respuesta.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (compra/no compra/cambio/queja/etc), características
+      básicas de la conversación
+    avoid: no es la fuente de motivo/necesidad/objeción/competencia -esas fuentes no existen para
+      este cliente, ver known_findings_v1-
+  performance:
+    questions: criterios del protocolo de venta Salomon (bienvenida, conexión/rapport, Fit Experience,
+      presentación TECH, manejo de objeciones, venta complementaria, cierre, comunidad/CRM, despedida)
+    avoid: no tratar N/A como incumplimiento -varios campos (Fit Experience, manejo de objeciones,
+      CRM) sólo son evaluables cuando existió la oportunidad real correspondiente-
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Salomon') sobre el tenant_field de cada fuente
+    (seller_id en ambas vistas).
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null.
+  categorical_rate_general_rule: La misma convención de performance_rate aplica a cualquier campo
+    categórico con semántica afirmativo/negativo/no_aplica del Data Map.
+sources:
+  demography:
+    source: dashboard_v2.vw_salomon_demografia
+    use_when: Resultado de la interacción (compra/no compra/cambio/queja/saludo-transferencia/no
+      finalizada).
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [Compra, Cambio, Queja, 'No compra', 'Saludo/Transferencia a otro vendedor', 'Conversación no finalizada']
+        observed_values: ['No compra', Compra]
+        type: text
+        nullable: true
+        description: 'Resultado de la interacción. Compra sólo con evidencia clara de transacción
+          concretada. Cambio si la gestión principal es cambiar/devolver un producto. Queja si
+          predomina un reclamo. Saludo/Transferencia si sólo hay recepción breve sin desarrollo.
+          Conversación no finalizada si el audio corta antes del desenlace. En la práctica sólo se
+          observan No compra (7.426) y Compra (2.963) sobre 10.447 filas (58 NULL) -los otros 4
+          valores configurados nunca aparecieron en el muestreo, no investigado por qué.'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_salomon_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de venta (bienvenida y conexión, indagación de
+      necesidades, Fit Experience, presentación TECH, manejo de objeciones, venta complementaria,
+      cierre, comunidad/CRM, despedida).
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 16 criterios admiten Sí/No/N/A con la lógica estándar -"Sí" con evidencia
+      verbal clara atribuible al asesor, "No" con oportunidad real observable sin cumplimiento, "N/A"
+      sin oportunidad real o evidencia insuficiente-. Enum limpio verificado, 57 filas NULL en las 16
+      columnas simultáneamente (misma conversación rota).'
+    fields:
+      dalabienvenida:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conocer/Saludar/Amistad. Sí ante bienvenida verbal clara al inicio real. No si
+          el inicio real está capturado y tuvo oportunidad sin saludar. N/A si el audio empieza
+          después del inicio real. 5.983 Sí, 3.315 No, 1.092 N/A.'
+        operations: [filter, group, compare]
+      sepresentaconnombre:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conocer/Saludar/Amistad. Sí si el asesor dice explícitamente su propio nombre
+          (un saludo sin nombre no alcanza). 1.809 Sí, 7.750 No, 831 N/A -es el campo con menor tasa
+          de cumplimiento del checklist junto con generaconexion-.'
+        operations: [filter, group, compare]
+      generaconexion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conocer/Saludar/Amistad. Sí si desarrolla rapport más allá de la operación
+          inmediata (deporte, aventura, viaje, objetivos de uso). Un saludo amable o comentarios
+          puramente operativos NO cuentan. Aplica incluso en compra directa/simple -si hubo atención
+          evaluable sin rapport, es "No", no "N/A"-. 1.803 Sí, 7.756 No, 831 N/A.'
+        operations: [filter, group, compare]
+      explicadistribucionolanzamientos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conocer/Saludar/Amistad. Sí si explica distribución de tienda, novedades,
+          lanzamientos o promociones. N/A si el cliente llega con necesidad específica ya definida y
+          la atención pasa directo a resolverla. 5.382 Sí, 3.146 No, 1.862 N/A.'
+        operations: [filter, group, compare]
+      hacepreguntasabiertas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conectar/Entender Necesidades. Sí si formula al menos una pregunta abierta
+          (actividad, terreno, clima, ocasión, presupuesto) -preguntas de sí/no o de talla/color NO
+          cuentan-. N/A si el cliente ya aporta espontáneamente el contexto. 3.619 Sí, 5.823 No, 948
+          N/A. Evaluado independiente de indagapreferencias -una misma pregunta puede contar para
+          ambos si cumple los dos criterios-.'
+        operations: [filter, group, compare]
+      indagapreferencias:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conectar/Entender Necesidades. Sí si pregunta o confirma variables concretas
+          (talla, color, ajuste, tipo, uso). N/A si el cliente ya aporta toda la preferencia relevante.
+          4.636 Sí, 4.587 No, 1.167 N/A -único campo del checklist con Sí/No casi empatados-.'
+        operations: [filter, group, compare]
+      invitaafitexperience:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Fit Experience. Sí si ofrece medir el pie, confirmar talla o evaluar
+          pisada/calce -SÓLO aplica si hay necesidad real de calzado con duda de calce, no a toda
+          compra de calzado (ej. cliente que pide exactamente el mismo modelo/talla que ya usa hace
+          años sin dudas de ajuste = N/A)-. N/A alto por diseño: 5.860 de 9.198 (63,7%). 601 Sí, 3.929
+          No.'
+        operations: [filter, group, compare]
+      explicabeneficiosfitexperience:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Fit Experience. Sí si explica al menos un beneficio concreto (comodidad,
+          sujeción, distribución de presión). N/A si Fit Experience no aplicaba (ver
+          semantic_dependencies.fit_experience_gate). N/A aún más alto que invitaafitexperience: 8.850
+          de 10.390 (85,2%). 412 Sí, 1.128 No.'
+        operations: [filter, group, compare]
+      invitaaprobarosentirproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Tráelo a la Vida. Sí si invita verbalmente a probarse/tocar/sentir el producto.
+          N/A si no hubo producto concreto en evaluación. 3.953 Sí, 5.279 No, 1.158 N/A.'
+        operations: [filter, group, compare]
+      explicausoycuidadotech:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Tráelo a la Vida. Sí sólo si nombra la metodología T.E.C.H. explícitamente O
+          cubre los 4 componentes (Tecnología/Entorno de uso/Cuidado/Historia) de forma integrada -una
+          característica técnica aislada o 2-3 de 4 componentes NO alcanza, ver
+          semantic_dependencies.tech_completo_gate-. 2.178 Sí, 7.008 No, 1.204 N/A -tasa de Sí más baja
+          del grupo Tráelo a la Vida, criterio exigente por diseño-.'
+        operations: [filter, group, compare]
+      mencionatecnologiaocaracteristicas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Tráelo a la Vida. Sí si explica al menos una tecnología o característica
+          concreta (Gore-Tex, Contagrip, impermeabilidad, amortiguación). Más laxo que
+          explicausoycuidadotech -sólo exige UNA característica, no los 4 componentes TECH-. 4.899 Sí,
+          4.405 No, 1.086 N/A.'
+        operations: [filter, group, compare]
+      manejaobjecionesconalternativas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Tráelo a la Vida. Sí si hubo objeción real (resistencia/duda del cliente sobre
+          precio, stock, talla, color, producto, desempeño) y el asesor ofrece una alternativa
+          concreta -no exige convencer al cliente, sólo el intento pertinente-. N/A si no hubo objeción
+          real (mayoría de los casos: 5.711 de 10.390 N/A, por diseño). 3.774 Sí, 905 No.'
+        operations: [filter, group, compare]
+      sugiereproductoscomplementarios:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Resumir y Recomendar. Sí si recomienda otro producto que complete la actividad
+          (Adventure Checklist). N/A si no se llegó a evaluar un producto principal. 1.269 Sí, 7.838
+          No, 1.283 N/A -tasa de Sí más baja de todo el checklist junto con sepresentaconnombre-.'
+        operations: [filter, group, compare]
+      intentaelcierre:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y Amistad. Sí si propone un siguiente paso concreto orientado a cerrar
+          ("¿Te lo llevas?", "¿Pasamos a caja?"). No exige que finalmente haya compra. N/A si nunca
+          hubo oportunidad real de cierre. 2.401 Sí, 6.853 No, 1.136 N/A.'
+        operations: [filter, group, compare]
+      invitaaunirseacomunidadcrm:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y Amistad. Sí si invita a S/PLUS/comunidad o activa registro con
+          propósito de lealtad -pedir datos SÓLO para facturación NO cuenta-. 854 Sí, 8.458 No, 1.078
+          N/A.'
+        operations: [filter, group, compare]
+      acompanahastaelfinalydespide:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y Amistad. Semántica distinta según desenlace (ver
+          semantic_dependencies.despedida_gate): si hubo compra, exige transición a caja/pago Y
+          despedida cálida (ambos componentes); si no hubo compra, sólo exige despedida cordial. N/A si
+          el final real no está capturado o pasa a otro asesor antes. 5.048 Sí, 4.130 No, 1.212 N/A.'
+        operations: [filter, group, compare]
+semantic_dependencies:
+  fit_experience_gate: 'invitaafitexperience = N/A implica explicabeneficiosfitexperience = N/A (regla
+    explícita del prompt: sin Fit Experience aplicable, no hay beneficio que explicar). Fit Experience
+    sólo aplica con necesidad real de calce, no a toda compra de calzado.'
+  tech_completo_gate: 'explicausoycuidadotech exige los 4 componentes T.E.C.H. completos (o mención
+    explícita de la metodología) -no confundir con mencionatecnologiaocaracteristicas, que es más laxo
+    y sólo exige UNA característica concreta. Son campos independientes, no dual-source del mismo
+    hecho.'
+  despedida_gate: 'acompanahastaelfinalydespide cambia de definición según tipointeraccion: en compra
+    exige transición a caja + despedida; en no-compra sólo despedida. No comparar directamente contra
+    otros clientes donde el campo de despedida no depende del desenlace.'
+joins:
+  rule: Sin segunda fuente disponible en este cliente -no hay insights ni vistas de producto-, no
+    hay joins posibles. No usar CROSS JOIN ni inventar una relación entre demography y performance
+    más allá del conversation_id compartido dentro del mismo profile.
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL: no existe ninguna vista de insights para este cliente (categorical_insights,
+  descriptive_insights, categorical_product_insights, descriptive_product_insights) pese a que el
+  prompt de insights existe en Langfuse. Cualquier pregunta sobre motivo, necesidad, objeción,
+  competencia o producto específico no puede responderse. Ver metadata.known_findings_v1.'
+- No se investigó por qué 4 de los 6 valores configurados de tipointeraccion (Cambio, Queja,
+  Saludo/Transferencia, Conversación no finalizada) nunca aparecen poblados en el muestreo.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

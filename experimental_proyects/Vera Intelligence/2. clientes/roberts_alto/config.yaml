@@ -1,0 +1,49 @@
+client_id: roberts
+display_name: "Roberts"
+tenant: "Roberts"
+model: gemini-3.7-flash
+data_map: "2. clientes/roberts_alto/data_map/VI Data Map Roberts V3.yaml"
+
+# Cada fuente declara el campo que debe contener el tenant autorizado. El
+# validador SQL exige el filtro de forma deterministica antes de ejecutar.
+sources:
+  dashboard_v2.vw_roberts_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_roberts_rendimiento_vendedor:
+    tenant_field: seller_id
+  dashboard_v2.vw_roberts_insights_categoricos_generales:
+    tenant_field: seller_id
+  dashboard_v2.vw_roberts_insights_descriptivos_generales:
+    tenant_field: seller
+  dashboard_v2.vw_roberts_insights_categoricos_por_producto:
+    tenant_field: seller_id
+  dashboard_v2.vw_roberts_insights_descriptivos_por_producto:
+    tenant_field: seller_id
+
+# Fuentes semanticas autorizadas. El agente no puede listar ni solicitar otros
+# contenidos de Langfuse; siempre resuelve la version marcada production.
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Haber/Roberts/checklist"
+    label: production
+    business_scope: "Criterios de atención y desempeño del vendedor"
+  conversation_insights:
+    name: "clientes/Haber/Roberts/insights"
+    label: production
+    business_scope: "Criterios de resultados, motivos y comportamiento comercial"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Búsqueda semántica sobre conversaciones vectorizadas (generalización 2026-09-11, ver
+# "6. busqueda_vectorial/README.md" > Iteración 20). Cobertura de backfill verificada: 70,8%
+# (15.306/21.621 recordings con embedding, mismo EMBEDDING_CONFIG_ID que mens_fashion_alto).
+# vw_roberts_insights_descriptivos_generales tiene conversation_id y resumen_ejecutivo_conversacion
+# -mismo esquema que mens_fashion_alto, resumen_verificado disponible sin cambios de código.
+vector_search:
+  top_k: 5

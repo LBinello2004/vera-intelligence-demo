@@ -1,0 +1,260 @@
+metadata:
+  name: Preguntas de evaluación VI - Roberts
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas (ver README.md > "Incorporar otro cliente" — este banco también sirve de gate para
+    data_map_auto_update.py).
+  data_map_version: VI Data Map Roberts V1.yaml
+  tenant: Roberts
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07
+  nota_gemelo_mens_fashion: 'Roberts comparte prompt (checklist e insights) carácter por carácter con
+    Mens Fashion, pero este banco NO reusa las preguntas de Mens Fashion tal cual — cada respuesta_esperada
+    se verificó de forma independiente contra los datos propios de Roberts, que tienen tasas y
+    distribuciones distintas (ver VI Data Map Roberts V1.yaml > metadata.known_findings_v1).'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". "requisitos" explica qué tiene que resolver bien el agente
+    para llegar a esa respuesta. Las preguntas marcadas es_trampa=true están diseñadas específicamente
+    para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id), no filas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_demografia
+      WHERE seller_id = 'Roberts' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '8899'
+
+  - id: q02_tasa_se_presenta
+    pregunta: ¿Qué porcentaje de las veces que era evaluable, el vendedor se presentó al cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - vendedorsepresenta admite Sí/No/N/A; la tasa se calcula sobre Sí+No, excluyendo N/A y NULL.
+    - No confundir "porcentaje sobre el total de conversaciones" con "porcentaje sobre la base evaluada".
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorsepresenta = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorsepresenta = 'No') AS no,
+        COUNT(*) FILTER (WHERE vendedorsepresenta IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_roberts_rendimiento_vendedor
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: 'Sí=1948, No=7256, base evaluada=9204, tasa=21.16%'
+
+  - id: q03_distribucion_resultado_general
+    pregunta: Dame la distribución de resultado_general de las conversaciones (compra total, parcial, no compra, cambio, queja).
+    fuentes_requeridas: [categorical_insights]
+    max_missing_numbers: 2
+    requisitos:
+    - Incluir 'queja' y 'cambio' como categorías válidas.
+    - Usar COUNT(DISTINCT conversation_id) — con COUNT(*) el bucket NULL se infla de 23 a 875 por las
+      852 filas huérfanas (ver known_findings_v1 del Data Map).
+    sql: |
+      SELECT resultado_general, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+      GROUP BY resultado_general
+      ORDER BY total DESC
+    respuesta_esperada: 'no_compra=5973, compra_total=3074, compra_parcial=1149, NULL=23, queja=20, cambio=7'
+
+  - id: q04_top_motivo_venta_perdida
+    pregunta: De las conversaciones con venta perdida, ¿cuál es el motivo principal más frecuente?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Filtrar hubo_venta_perdida IS TRUE antes de agrupar por motivo_principal_venta_perdida.
+    - Excluir no_aplica del ranking salvo pedido explícito (aquí no se pidió).
+    sql: |
+      SELECT motivo_principal_venta_perdida, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts' AND hubo_venta_perdida IS TRUE
+      GROUP BY motivo_principal_venta_perdida
+      ORDER BY total DESC
+    respuesta_esperada: 'inventario=1830 es el motivo más frecuente (le siguen ejecucion_vendedor=1448, diseno_estilo=295, no_aplica=292, precio=152, tiempo_entrega=142, fit=125, calidad_valor=8)'
+
+  - id: q05_ocasion_uso_dual_source_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor preguntó la ocasión de uso?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: existen dos campos independientes para esto — hubo_pregunta_ocasion_de_uso
+      (categorical_insights) y vendedorpreguntaocasionuso (performance, checklist). Sólo coinciden
+      87,1% de las veces (ver semantic_dependencies.ocasion_uso_dual_source). La fuente primaria para
+      esta pregunta de negocio es hubo_pregunta_ocasion_de_uso — usar vendedorpreguntaocasionuso o
+      cruzarlos como si fueran lo mismo da un número distinto.'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_pregunta_ocasion_de_uso) AS con_pregunta,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: '3142 de 10246 conversaciones (30,67%), usando hubo_pregunta_ocasion_de_uso'
+
+  - id: q06_confeccion_medida_cascade_trap
+    pregunta: ¿Cuántas veces el vendedor no destacó las ventajas de la confección a medida?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: vendedordestacaventajasconfeccionmedida tiene un reliability_warning grave — el checklist
+      exige N/A cuando vendedormencionoconfeccionamedida=N/A, pero esa cascada se viola en el 55,4% de
+      esos casos (quedan en "No" en vez de "N/A"). Un conteo crudo de "No" sobrestima fuertemente el
+      incumplimiento real. La respuesta correcta debe advertir esta limitación, no dar el número crudo
+      sin salvedad.'
+    sql: |
+      SELECT vendedordestacaventajasconfeccionmedida, COUNT(*) AS total
+      FROM dashboard_v2.vw_roberts_rendimiento_vendedor
+      WHERE seller_id = 'Roberts'
+      GROUP BY vendedordestacaventajasconfeccionmedida
+    respuesta_esperada: 'El agente debe advertir que el valor "No" de este campo no es confiable (cascada
+      semántica violada 55,4% de las veces) antes de dar cualquier número.'
+
+  - id: q07_cashback_null_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor fue quien mencionó primero el cashback?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: primer_mencion_cashback es NULL en el 81,4% de las conversaciones (8.344 de 10.246) porque
+      el criterio simplemente no fue evaluado, no porque nunca se mencionó. La base correcta para calcular
+      el porcentaje es sólo las filas NO NULL (1.902), no el total de conversaciones.'
+    sql: |
+      SELECT primer_mencion_cashback, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+      GROUP BY primer_mencion_cashback
+    respuesta_esperada: 'vendedor=295, cliente=34, no_mencionado=1573, NULL=8344. Sobre la base evaluada
+      (1902), vendedor = 15,51%. El agente debe aclarar que ~81% de las conversaciones nunca evaluaron
+      este criterio.'
+
+  - id: q08_legacy_loyalty_trap
+    pregunta: ¿Qué porcentaje de vendedores explicó el programa de lealtad?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: vendedorexplicoprogramadelealtad es un campo LEGADO que no forma parte del checklist v8
+      vigente de Roberts (el criterio actual es cashback, no programa de lealtad). El agente debe aclarar
+      que es una lectura histórica de un criterio ya no evaluado, no presentarlo como si fuera parte del
+      checklist actual.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorexplicoprogramadelealtad = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorexplicoprogramadelealtad IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_roberts_rendimiento_vendedor
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: 'El agente debe aclarar que "programa de lealtad" es un criterio legado, no
+      evaluado por el checklist vigente (que sólo pide cashback), antes de dar cualquier número.'
+
+  - id: q09_motivador_visita_taxonomy_trap
+    pregunta: Dame la distribución completa de motivador de visita de todas las conversaciones históricas.
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 6
+    requisitos:
+    - 'TRAMPA: motivador_visita tiene dos generaciones de taxonomía conviviendo en Postgres. Como la
+      pregunta pide "todas las conversaciones históricas", el agente debería incluir ambos conjuntos
+      (no sólo la taxonomía vigente) y idealmente señalar que necesidad_especifica es un valor legado con
+      peso relevante (2.039 filas).'
+    sql: |
+      SELECT motivador_visita, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+      GROUP BY motivador_visita
+      ORDER BY total DESC
+    respuesta_esperada: 'no_claro=5245, necesidad_especifica=2039 (legado), NULL=1662, evento_formal_social=469,
+      promocion=408 (legado), uso_cotidiano=391, reposicion_renovacion=385, boda=194, trabajo=104,
+      aparador=69 (legado), graduacion=43, regalo=32, ecommerce=16 (legado), viaje=14,
+      otra_necesidad_especifica=13, cumpleanos_aniversario=7, recomendacion=4 (legado), redes_sociales=2 (legado),
+      referencia_externa=1 (legado)'
+
+  - id: q10_orphan_rows_trap
+    pregunta: ¿Cuántas conversaciones tiene registradas el análisis de insights?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: la vista tiene 852 filas huérfanas sin conversation_id (11.098 filas totales vs 10.246
+      conversation_id distintos). COUNT(*) sobrestima ~7,7%. El agente debe usar COUNT(DISTINCT
+      conversation_id).'
+    sql: |
+      SELECT COUNT(*) AS filas, COUNT(DISTINCT conversation_id) AS conversaciones
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: '10246 conversaciones (no 11098, esa cifra cuenta 852 filas huérfanas sin conversation_id)'
+
+  - id: q11_top5_producto_mencionado
+    pregunta: ¿Cuáles son los 5 productos más mencionados en las conversaciones?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Agrupar por producto sobre categorical_product_insights (grano por producto, no por conversación).
+    sql: |
+      SELECT producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_por_producto
+      WHERE seller_id = 'Roberts'
+      GROUP BY producto
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'traje=3823, camisa=2854, blazer_y_saco=1329, pantalon=1319, chamarra_y_chaleco=1198'
+
+  - id: q12_top_objecion_principal
+    pregunta: ¿Cuál es la objeción más común que expresan los clientes sobre los productos?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Filtrar objecion_principal IS NOT NULL antes de rankear (no confundir con la ausencia de objeción).
+    sql: |
+      SELECT objecion_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_por_producto
+      WHERE seller_id = 'Roberts' AND objecion_principal IS NOT NULL
+      GROUP BY objecion_principal
+      ORDER BY total DESC
+    respuesta_esperada: 'fit=1789 es la más común (siguen estilo_diseno=1541, precio=1110, urgencia=285,
+      calidad=156, tiempo_entrega=123, comparacion_competencia=6, marca=3)'
+
+  - id: q13_complementarios_dual_source_trap
+    pregunta: ¿En qué porcentaje de conversaciones el vendedor ofreció productos complementarios?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: existen dos mediciones independientes — hubo_ofrecimiento_complementarios
+      (categorical_insights, fuente primaria) y vendedorsugiriocomplementos (performance, checklist).
+      Coinciden 83,6% de las veces; no son intercambiables (ver
+      semantic_dependencies.ofrecimiento_complementarios_dual_source).'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_ofrecimiento_complementarios) AS con_oferta,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: 'Usando hubo_ofrecimiento_complementarios (fuente primaria), no
+      vendedorsugiriocomplementos del checklist.'
+
+  - id: q14_venta_perdida_rate
+    pregunta: ¿Qué porcentaje de conversaciones tuvo alguna venta perdida?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Calcular sobre el total de conversaciones distintas (COUNT DISTINCT), no sobre COUNT(*) de filas.
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_venta_perdida) AS con_perdida,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_roberts_insights_categoricos_generales
+      WHERE seller_id = 'Roberts'
+    respuesta_esperada: 'con_perdida (filas, referencia) ≈ 4292 de 11098 filas totales; expresado sobre
+      conversaciones distintas (10246), la tasa correcta ronda 38-39% — el agente debe usar COUNT DISTINCT
+      conversation_id para ambos términos de la fracción, no mezclar COUNT(*) con COUNT(DISTINCT).'
+
+  - id: q15_legacy_cashback_cutoff_trap
+    pregunta: ¿Desde cuándo se empezó a medir si el vendedor informó el cashback correctamente?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: vendedorinformocashback20porciento y los campos legado de "programa de lealtad" nunca se
+      solapan en la misma fila (0 filas con ambos poblados). El cashback empieza a registrarse recién
+      desde 2026-08-24 -es el criterio nuevo del checklist copiado de Mens Fashion, reemplaza al criterio
+      legado de programa de lealtad-. El agente debe poder explicar esta transición sin filtrar detalles
+      técnicos (nombres de columna, "checklist", "prompt").'
+    sql: |
+      SELECT MIN(uploaded_at_local) AS desde
+      FROM dashboard_v2.vw_roberts_rendimiento_vendedor
+      WHERE seller_id = 'Roberts' AND vendedorinformocashback20porciento IS NOT NULL
+    respuesta_esperada: '2026-08-24 aproximadamente (fecha exacta verificada: 2026-08-24 10:46:59)'

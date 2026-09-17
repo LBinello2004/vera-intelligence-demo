@@ -1,0 +1,1633 @@
+metadata:
+  name: VI Data Map Roberts V1
+  version: 1.0.0
+  client: Roberts
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo seis vistas dashboard_v2 de Roberts. El tenant ('Roberts') es fijo para este prototipo de un solo
+    cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Haber/Roberts/checklist (Langfuse, label production, v8 al construir este mapa)
+    insights_prompt: clientes/Haber/Roberts/insights (Langfuse, label production, v5 al construir este mapa)
+    note: 'IMPORTANTE: el texto de ambos prompts de Roberts es character-por-character IDÉNTICO a los de Mens
+      Fashion (clientes/Haber/Mens Fashion/checklist v10, clientes/Haber/Mens Fashion/insights v7) — tan literal
+      que el checklist de Roberts todavía dice "Actúa como auditor del protocolo de venta de Men''s Fashion" en
+      su rol y contexto, nunca se adaptó el texto a la marca. Confirmado explícitamente por el cliente de negocio
+      que Roberts opera con el mismo protocolo/rubric que Mens Fashion (no es un error de configuración). Por
+      eso este Data Map reutiliza la estructura completa de campos, enums y semántica de VI Data Map Mens
+      Fashion V6 -mismos nombres de campo, misma lógica Sí/No/N-A-, pero NINGÚN número (tasas, % de coincidencia,
+      NULL, hallazgos de calidad de datos) se copió de Mens Fashion: cada cifra de este mapa fue re-verificada
+      contra Postgres QA de Roberts de forma independiente el 2026-09-07, porque son específicas del dataset de
+      cada cliente aunque el prompt sea el mismo.'
+  known_findings_v1:
+  - 'PERFORMANCE.vendedordestacaventajasconfeccionmedida — mismo hallazgo grave que Mens Fashion V3, verificado
+      con números propios de Roberts: el checklist exige que este campo sea N/A siempre que
+      vendedormencionoconfeccionamedida sea N/A. Verificado contra Postgres: de 3.770 filas con
+      vendedormencionoconfeccionamedida=N/A, 2.087 (55,4%) tienen este campo en ''No'' en vez de ''N/A'' (sólo
+      1.679 sí quedaron N/A, 4 quedaron incorrectamente en ''Sí''). Menos grave que el 71% medido en Mens
+      Fashion pero el mismo patrón real: un conteo crudo de "No" en este campo sobrestima el incumplimiento
+      real. Marcado reliability_warning en el campo.'
+  - 'semantic_dependencies dual-source (mismo patrón que Mens Fashion V5/V6, verificado con datos propios de
+      Roberts): los tres pares checklist/categorical_insights que miden lo mismo desde dos fuentes independientes
+      NO coinciden siempre. Tasas de coincidencia medidas en Roberts (excluyendo la combinación N-A/false, no
+      informativa, mismo criterio que Mens Fashion): ocasion_uso 87,1% (6.790/7.796), confeccion_medida 77,9%
+      (5.316/6.824), complementarios 83,6% (5.830/6.971). Regla: usar siempre el campo de categorical_insights
+      como fuente primaria para preguntas de negocio, nunca cruzar ambos como si fueran la misma medición.'
+  - 'categorical_insights.data_quality_note: 852 filas huérfanas sobre 11.098 (7,7%) con conversation_id que no
+      cruza contra ninguna fila de performance/demography (verificado: 11.098 total vs 10.246 conversation_id
+      distintos). Mismo fenómeno que Mens Fashion (ahí era ~9,6%). SIEMPRE usar COUNT(DISTINCT conversation_id),
+      nunca COUNT(*).'
+  - 'categorical_insights cashback cluster: ~82,9% NULL (1.902 de 11.098 filas con primer_mencion_cashback no
+      nulo) — muy similar al ~85% de Mens Fashion. NO evaluado en la mayoría de las conversaciones; NULL no
+      equivale a no_mencionado/false.'
+  - 'motivador_visita taxonomy_drift: mismo fenómeno que Mens Fashion -dos generaciones de enum conviven en
+      Postgres-, pero con más peso relativo en Roberts: la taxonomía vieja (aparador=69, ecommerce=16,
+      promocion=408, recomendacion=4, redes_sociales=2, referencia_externa=1, necesidad_especifica=2.039) suma
+      2.539 filas, con necesidad_especifica siendo el segundo valor más frecuente de TODO el campo (2.039 filas,
+      más que casi cualquier valor de la taxonomía vigente salvo no_claro). Preferir configured_values (taxonomía
+      vigente) para preguntas del período reciente; incluir ambos conjuntos para preguntas históricas/agregadas.'
+  - 'performance.vendedorexplicoprogramadelealtad / vendedormencionoprogramadelealtad: igual que en Mens Fashion,
+      son campos legado (81,3% de filas pobladas, 8.360/10.285) que NO forman parte del checklist v8 vigente de
+      Roberts (que sólo pide vendedorinformocashback20porciento, poblado en 18,5%/1.902 filas). Verificado que
+      NUNCA se solapan en la misma fila (0 filas con ambos clusters poblados a la vez) y que el cashback empieza
+      a aparecer recién desde 2026-08-24 -consistente con que es el criterio del checklist copiado de Mens
+      Fashion, adoptado más tarde que el criterio legado de "programa de lealtad"-. Marcados legacy: true.'
+  - 'objecion_principal (por producto): marca y comparacion_competencia son valores válidos pero muy raros (3 y 6
+      filas de 8.700+ no-nulas). disparador_de_cierre: calidad_producto y urgencia también raros (35 y 15 filas).
+      Mismo patrón que Mens Fashion, confirmado con conteos propios de Roberts.'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe join
+  declarado.
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- 'Si el campo tiene nullable: true, decidir explícitamente si la pregunta requiere excluir NULL (IS NOT NULL) o si
+  NULL es parte legítima de la respuesta (por ejemplo "en cuántas conversaciones no se evaluó cashback").'
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: quién es el cliente, cómo llega, para quién compra, necesidad, decisión, precio o urgencia
+    avoid: no usar para motivos comerciales detallados ni evaluación del vendedor
+  performance:
+    questions: criterios, cumplimiento, incumplimiento, fortalezas, debilidades, ranking o evolución del vendedor
+    avoid: no usar textos narrativos como si fueran criterios; no usar los dos campos legacy de programa de lealtad
+      como si fueran parte del checklist vigente
+  categorical_insights:
+    questions: resultado general, venta perdida, motivador, cashback, competencia, a medida, cierre o cantidades
+    avoid: no usar para ejemplos o explicaciones textuales; no filtrar cashback como false/no_mencionado sin antes
+      considerar que ~83% de las filas son NULL (cashback no evaluado)
+  descriptive_insights:
+    questions: por qué, cómo fue la ejecución, ejemplos, errores, mejores prácticas o acciones sugeridas
+    avoid: no agrupar ni calcular frecuencia de textos
+  categorical_product_insights:
+    questions: producto, compra, ocasión, fit, talla, color, objeción, inventario, complementarios o a medida por producto
+    avoid: no afirmar ventas transaccionales
+  descriptive_product_insights:
+    questions: ejemplos y explicaciones narrativas de un producto
+    avoid: no usar sin la vista categórica cuando la condición del producto debe comprobarse físicamente
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: 'usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables. REGLA
+      NEGATIVA EXPLICITA (mismo criterio que Mens Fashion V5): si la pregunta NO menciona "analizables" ni pide
+      explícitamente excluir conversaciones de baja calidad, NO agregar este filtro por costumbre.'
+  descriptive_conversation:
+    row_key: conversation_id
+    tenant_field: seller
+    date_field: date
+    optional_dimensions: []
+    quality_filter: 'No asumir usefulforanalysis: esta vista no lo expone.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; parámetros psycopg; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión sobre profiles[profile].tenant_field; no inferirlo del texto de la
+    pregunta.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período. No inventar ventanas temporales.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir N/A y null.
+  categorical_rate_general_rule: La misma convención de performance_rate aplica a cualquier campo categórico booleano
+    o Sí/No/N-A del Data Map, no sólo a los criterios de performance.
+  categorical_filters: Usar valores de configured_values (no sólo observed_values) respetando tipo, mayúsculas y acentos;
+    excluir null/no_aplica de rankings salvo pedido explícito.
+  nullable_fields: Para un campo con nullable=true, decidir si NULL debe incluirse, excluirse (IS NOT NULL) o ser el foco
+    de la pregunta antes de agregar o filtrar.
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  lost_sale_general: hubo_venta_perdida IS TRUE habilita motivo_principal_venta_perdida; excluir no_aplica.
+  confeccion_medida_dual_source: 'vendedormencionoconfeccionamedida (performance, checklist, Sí/No/N-A) y
+    hubo_mencion_a_medida (categorical_insights, boolean) son DOS MEDICIONES INDEPENDIENTES. Verificado contra
+    Postgres QA de Roberts (cruce por conversation_id, excluyendo la combinación N-A/false por no informativa):
+    coinciden el 77,9% de las veces (Sí/true=2.453, No/false=2.863; discrepan No/true=1.077, N-A/true=362,
+    Sí/false=69). REGLA: usar SIEMPRE hubo_mencion_a_medida (categorical_insights) como fuente primaria para
+    preguntas de negocio; vendedormencionoconfeccionamedida es la evaluación del checklist, una lectura distinta,
+    no intercambiable.'
+  ofrecimiento_complementarios_dual_source: 'vendedorsugiriocomplementos (performance, checklist, Sí/No/N-A) y
+    hubo_ofrecimiento_complementarios (categorical_insights, boolean) son DOS MEDICIONES INDEPENDIENTES.
+    Verificado contra Postgres QA de Roberts: coinciden el 83,6% de las veces (Sí/true=2.535, No/false=3.295;
+    discrepan No/true=837, Sí/false=236, N-A/true=68). REGLA: usar SIEMPRE hubo_ofrecimiento_complementarios
+    (categorical_insights) como fuente primaria; vendedorsugiriocomplementos no es intercambiable.'
+  ocasion_uso_dual_source: 'hubo_pregunta_ocasion_de_uso (categorical_insights, boolean) y vendedorpreguntaocasionuso
+    (performance, checklist, enum Sí/No/N-A) son DOS MEDICIONES INDEPENDIENTES de si el vendedor preguntó la
+    ocasión de uso -no son la misma columna con dos nombres, ni intercambiables-. Verificado contra Postgres QA
+    de Roberts (cruce por conversation_id, excluyendo N-A/false): coinciden en el 87,1% de los casos
+    (No/false=4.208, Sí/true=2.582); discrepan en el resto (Sí/false=446, No/true=445, N-A/true=115). Coincidencia
+    más alta que en Mens Fashion (~72,5%) -mismo patrón cualitativo, magnitud distinta, verificada de forma
+    independiente-. REGLA: usar SIEMPRE hubo_pregunta_ocasion_de_uso (categorical_insights) como fuente primaria;
+    si se necesita la versión del checklist, usar vendedorpreguntaocasionuso explícitamente y aclarar que es una
+    lectura distinta.'
+  lost_sale_product: resultado_producto = 'no_comprado' habilita motivo_venta_perdida_producto.
+  bought_product: Para compra por producto preferir se_compro IS TRUE y mostrar resultado_producto para auditar consistencia.
+  objection_handling: objecion_principal identifica la objeción; hubo_manejo_objecion habilita resultado_manejo_objecion.
+  made_to_measure: hubo_ofrecimiento_a_medida habilita resultado_a_medida; excluir no_aplica al medir efectividad.
+  cashback: 'Antes de leer primer_mencion_cashback o conducta_vendedor_cashback, filtrar por IS NOT NULL: en
+    ~83% de las filas el cashback no fue evaluado (no es lo mismo NULL que no_mencionado/false). Una conjunción
+    sobre llegada y primera mención exige cliente_llega_con_cashback_para_usar IS TRUE y primer_mencion_cashback
+    con el valor pedido. Si además se cruza con performance.vendedorinformocashback20porciento (ver
+    joins.cashback_cross_check), declarar explícitamente si la tasa resultante incluye o excluye las filas de
+    performance con valor NULL: pueden dar números muy distintos según la convención elegida. No reportar una
+    sola cifra sin decir cuál convención se usó.'
+  inventory: solucion_ante_falta describe la respuesta; una brecha textual requiere descriptive_product_insights unido por
+    conversation_id + producto_index.
+  cascada_a_medida_no_confiable: 'vendedordestacaventajasconfeccionmedida = ''No'' NO es un conteo confiable de
+    incumplimiento real: ver fields.performance.vendedordestacaventajasconfeccionmedida.reliability_warning.
+    Antes de responder cuántas veces "no se destacaron ventajas" (o calcular una tasa con este campo), advertir
+    que el indicador está inflado por una cascada semántica que la extracción no respeta de forma consistente
+    (medido en Roberts: 55,4% de violación).'
+  legacy_performance_fields: vendedorexplicoprogramadelealtad y vendedormencionoprogramadelealtad no están en el
+    checklist v8 vigente de Roberts. Sólo usarlos si el usuario pregunta explícitamente por "programa de lealtad"
+    o pide una lectura histórica; aclarar en la respuesta que es un criterio legado, no evaluado por el checklist
+    actual.
+  motivador_visita_taxonomy: antes de filtrar por un valor puntual, considerar que hay dos generaciones de
+    taxonomía (ver fields.motivador_visita.taxonomy_drift). En Roberts la taxonomía vieja tiene peso relativo
+    alto (necesidad_especifica=2.039 filas). Si la pregunta es sobre el período reciente, preferir los valores de
+    configured_values (taxonomía vigente); si es histórica o agregada, puede requerir ambos conjuntos.
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys:
+    - conversation_id
+    - producto_index
+    cardinality: product_to_product
+  cashback_cross_check:
+    left: categorical_insights
+    right: performance
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: 'Cruza "mencionó cashback" (categorical_insights.primer_mencion_cashback/conducta_vendedor_cashback) con
+      "informó la mecánica completa" (performance.vendedorinformocashback20porciento) — son criterios distintos con
+      distinta severidad, no intercambiables. Ver semantic_dependencies.cashback sobre cómo tratar los NULL de
+      performance en este cruce antes de calcular una tasa.'
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_roberts_demografia
+    use_when: 'Características de las conversaciones y clientes: interacción, género, destinatario, tipo, necesidad, decisión,
+      precio y urgencia.'
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: &tipointeraccion_generico
+        - cambio
+        - compra
+        - no_compra
+        - queja
+        observed_values: *tipointeraccion_generico
+        type: text
+        nullable: true
+        description: 'Resultado operativo de la interacción según el insights: compra, no_compra, cambio o queja.
+          Es la copia de tipo_interaccion en esta vista (misma fuente, mismo campo). Verificado 23 filas NULL sobre
+          10.285 en demography (a diferencia del reporte NOT NULL de Mens Fashion, en Roberts sí aparecen algunos
+          NULL — declarado nullable=true en consecuencia).'
+        operations:
+        - filter
+        - group
+        - compare
+      genero_cliente:
+        configured_values: &genero_cliente
+        - femenino
+        - masculino
+        - no_claro
+        observed_values: *genero_cliente
+        type: text
+        nullable: true
+        description: 'Género del cliente. Sólo masculino/femenino con evidencia razonable (nunca por estereotipo
+          o tipo de producto); si no hay evidencia clara, no_claro. 23 filas NULL sobre 10.285.'
+        operations:
+        - filter
+        - group
+        - compare
+      cliente_compra_para:
+        configured_values: &cliente_compra_para
+        - no_claro
+        - regalo
+        - si_mismo
+        - tercero
+        observed_values: *cliente_compra_para
+        type: text
+        nullable: true
+        description: 'Destinatario de la compra: si_mismo (el propio cliente), regalo (obsequio explícito), tercero
+          (uso funcional de otra persona sin ser regalo), o no_claro si la evidencia es insuficiente o contradictoria.
+          23 filas NULL.'
+        operations:
+        - filter
+        - group
+        - compare
+      tipo_cliente:
+        configured_values: &tipo_cliente
+        - no_claro
+        - nuevo
+        - recurrente
+        observed_values: *tipo_cliente
+        type: text
+        nullable: true
+        description: 'nuevo = primera visita o poca familiaridad; recurrente = hay evidencia de compras previas o
+          trato habitual; no_claro si la evidencia es insuficiente. 23 filas NULL.'
+        operations:
+        - filter
+        - group
+        - compare
+      perfil_necesidad:
+        configured_values: &perfil_necesidad
+        - casual
+        - evento
+        - exploracion
+        - no_claro
+        - reposicion
+        - trabajo
+        observed_values: *perfil_necesidad
+        type: text
+        nullable: true
+        description: 'Necesidad dominante que organiza la visita: evento, trabajo, casual, reposicion (reemplazar/renovar
+          algo conocido), exploracion (búsqueda abierta sin necesidad definida), o no_claro si no es sostenible. 23
+          filas NULL.'
+        operations:
+        - filter
+        - group
+        - compare
+      nivel_decision_cliente:
+        configured_values: &nivel_decision_cliente
+        - comparando
+        - decidido
+        - indeciso
+        - no_claro
+        observed_values: *nivel_decision_cliente
+        type: text
+        nullable: true
+        description: 'decidido = decisión fuerte o muy encaminada; comparando = evalúa opciones activamente (no implica
+          indecisión); indeciso = duda sin avanzar con claridad; no_claro si la evidencia es insuficiente. 23 filas
+          NULL.'
+        operations:
+        - filter
+        - group
+        - compare
+      sensibilidad_precio_general:
+        configured_values: &sensibilidad_precio_general
+        - alta
+        - baja
+        - media
+        - no_claro
+        observed_values: *sensibilidad_precio_general
+        type: text
+        nullable: true
+        description: Nivel de sensibilidad del cliente frente al precio en la conversación completa. 23 filas NULL
+          sobre 10.285.
+        operations:
+        - filter
+        - group
+        - compare
+      urgencia_general:
+        configured_values: &urgencia_general
+        - inmediata
+        - no_claro
+        - planeada
+        observed_values: *urgencia_general
+        type: text
+        nullable: true
+        description: Urgencia temporal general de la necesidad del cliente. 23 filas NULL sobre 10.285.
+        operations:
+        - filter
+        - group
+        - compare
+  performance:
+    source: dashboard_v2.vw_roberts_rendimiento_vendedor
+    use_when: Criterios estructurados de desempeño del vendedor (checklist Sí/No/N/A), auditados por etapa de la
+      atención (recepción, investigación, asesoría, complementos, manejo de objeciones, cierre, conocimiento del
+      producto).
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: Todos los campos de esta vista (salvo los marcados legacy) admiten únicamente Sí, No o N/A,
+      con la misma lógica de desempate en las 27 columnas -> "Sí" = el vendedor tuvo una oportunidad real y hay
+      evidencia clara de que cumplió; "No" = tuvo una oportunidad real y suficiente pero no cumplió o cumplió de
+      forma insuficiente; "N/A" = no tuvo una oportunidad real (faltó la etapa/el disparador, el cliente resolvió
+      espontáneamente antes de que correspondiera actuar, la conversación terminó antes, o la responsabilidad pasó
+      a otro empleado).
+    fields:
+      vendedoramable:
+        configured_values: &si_no_na
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recepción/trato general. Sí: trato cordial, respetuoso y colaborativo. No: evidencia clara de
+          trato descortés, impaciente, despectivo, agresivo o indiferente. N/A: fragmento demasiado breve/neutro
+          para evaluar.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorsepresenta:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recepción. Sí: el vendedor dice su nombre o se identifica personalmente. No: la recepción está
+          capturada y saluda/atiende sin identificarse. N/A: el audio empieza después de la recepción.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorrealizocierrecompra:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí: propuesta inequívoca de avanzar/elegir/concretar la compra. No: aparece una señal
+          clara de decisión y el vendedor no propone avanzar. N/A: ninguna señal clara de decisión, o conversación
+          aún en exploración.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecioasistencia:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recepción. Sí: ofrece ayuda/asesoría/disponibilidad al iniciar la atención. No: se captura el
+          inicio, el cliente aún no expresó su necesidad, y no ofrece asistencia teniendo oportunidad. N/A: el
+          cliente expresa una necesidad concreta espontáneamente antes de que el vendedor tuviera oportunidad, o la
+          recepción quedó fuera del audio.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofreciotomarmedidas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Asesoría. Sí: ofrece medir al cliente o determinar medidas ante duda de talla/fit/necesidad de
+          sastrería o confección. No: aparece ese disparador y no ofrece tomar medidas. N/A: no aparece ningún
+          disparador.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormuestraprendas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Investigación. Sí: invita verbalmente a ver o probar una prenda. No: la etapa de
+          selección/muestra está capturada sin invitación verbal. N/A: no se llegó a una instancia de selección o
+          muestra.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionadescuentos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recepción. Sí: comunica una promoción, paquete, descuento o ventaja promocional vigente. No:
+          hay una instancia razonablemente evaluable y no comunica ningún descuento. N/A: la conversación no llega
+          a una instancia donde esto sea evaluable.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedoragradecioeinvitovolver:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí: en la despedida capturada, agradece/se despide cordialmente Y además invita
+          explícitamente a volver (requiere ambos componentes). No: falta alguno de los dos. N/A: no se capturó la
+          despedida.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorexplicoprogramadelealtad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        legacy: true
+        description: 'LEGADO (ver known_findings_v1): columna presente en Postgres con datos reales (81,3% de filas
+          pobladas), pero este criterio ("programa de lealtad") NO existe en el JSON de salida del checklist v8
+          vigente para Roberts. Usar sólo si el usuario pide explícitamente una lectura histórica, aclarando que no
+          es un criterio evaluado actualmente. No mezclar con vendedorinformocashback20porciento (el beneficio
+          vigente es cashback, no un programa de lealtad de puntos).'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorconfirmoenvioticketemail:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí: en la etapa de compra/caja/postventa, ofrece enviar el ticket por correo o
+          confirma su envío. No: participa en esa etapa y no lo hace. N/A: no hay evidencia suficiente de
+          compra/cierre, la conversación termina antes, o el vendedor deriva a otro empleado antes de esa etapa.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofreciomesessinintereses:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí: ofrece explícitamente meses sin intereses, aunque el cliente no lo haya
+          preguntado. No: se captura una instancia real de pago/financiación/cierre evaluable y no lo ofrece. N/A:
+          no se capturó una instancia real de pago/cierre.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionoprogramadelealtad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        legacy: true
+        description: 'LEGADO: mismo caso que vendedorexplicoprogramadelealtad. No está en el checklist v8 vigente.
+          Usar con la misma precaución (sólo lectura histórica explícita).'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorsugiriocomplementos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Complementos. Sí: recomienda activamente al menos otra prenda/accesorio relacionado con la
+          necesidad o compra principal. No: existe una prenda principal suficientemente definida y no complementa
+          teniendo oportunidad. N/A: la conversación permanece en exploración abierta sin una prenda principal
+          definida. VER semantic_dependencies.ofrecimiento_complementarios_dual_source: no intercambiable con
+          hubo_ofrecimiento_complementarios de categorical_insights (coinciden 83,6% de las veces).'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorpreguntaocasionuso:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Investigación. Sí: pregunta o confirma la ocasión, evento, finalidad o uso. No: hay una
+          instancia de descubrimiento donde la ocasión no había sido informada y no preguntó teniendo oportunidad.
+          N/A: no hubo instancia de descubrimiento de necesidad, o el cliente aportó la ocasión espontáneamente. VER
+          semantic_dependencies.ocasion_uso_dual_source: este campo NO es intercambiable con
+          hubo_pregunta_ocasion_de_uso de categorical_insights -son mediciones independientes, coinciden 87,1% de
+          las veces-.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionobeneficiosprendas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Asesoría. Sí: explica una característica o beneficio sustantivo de una prenda (tela, material,
+          comodidad, durabilidad, tecnología, cuidado, etc.). No: se evalúa una prenda concreta pero sólo menciona
+          precio, color, nombre, disponibilidad o talla, sin beneficio sustantivo. N/A: no se evalúa ninguna prenda
+          concreta.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionoconfeccionamedida:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Asesoría. Sí: comunica confección personalizada/a medida o servicio equivalente. No: aparece
+          un disparador (dificultad de talla/fit, necesidad de personalización, interés en materiales especiales,
+          falta de producto estándar, conversación directa sobre sastrería) y no menciona la opción. N/A: no
+          aparece ningún disparador. VER semantic_dependencies.confeccion_medida_dual_source: no intercambiable con
+          hubo_mencion_a_medida de categorical_insights (coinciden 77,9% de las veces).'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorinvitoaencuestasatisfaccion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Sí: en la etapa de compra/cierre/postventa, invita a responder una encuesta de
+          atención/satisfacción/experiencia. No: participa en esa etapa y no invita. N/A: sin evidencia suficiente
+          de compra/cierre, la conversación termina antes, o el vendedor deriva a otro empleado antes de esa etapa.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionanuevoslanzamientos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recepción. Sí: menciona novedades, nueva colección, nuevos diseños o modelos recién llegados.
+          No: hay una presentación/recomendación real de producto y no caracteriza ninguna como nueva. N/A: sólo
+          hay una respuesta funcional/transaccional (confirmar stock, talla, color o existencia de algo pedido por
+          el cliente, sin presentación comercial).'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionotrescomplementos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Complementos. Sí: existe una prenda principal definida y recomienda al menos 3 productos o
+          familias de productos complementarios distintos. No: prenda principal definida y oportunidad real de
+          venta complementaria, pero recomienda menos de 3 distintos. N/A: no se definió una prenda principal con
+          claridad suficiente, o la conversación terminó antes.'
+        operations:
+        - filter
+        - group
+        - compare
+      conocimientosuficiente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conocimiento del producto. Sí: responde correcta y coherentemente una pregunta que requiere
+          conocimiento, o brinda espontáneamente una explicación sustantiva y correcta. No: existe una pregunta que
+          requiere conocimiento y no la resuelve, responde mal, se contradice o evade. N/A: no existe ninguna
+          pregunta que requiera conocimiento ni explicación espontánea sustantiva evaluable.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorrecomiendasegunocasionuso:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Investigación. Sí: conecta una recomendación con la ocasión/finalidad identificada, sin
+          importar si la descubrió el vendedor o la aportó el cliente. No: la ocasión ya es conocida y recomienda de
+          forma genérica, sin adaptar. N/A: no se identificó ninguna ocasión/finalidad evaluable.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedordestacaventajasconfeccionmedida:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        reliability_warning: 'GRAVE (verificado 2026-09-07, ver known_findings_v1): el checklist exige que este
+          campo sea N/A cuando vendedormencionoconfeccionamedida=N/A, pero en Postgres esa cascada se viola en el
+          55,4% de esos casos (2.087 de 3.770 filas quedan en ''No'' en vez de ''N/A''). El valor ''No'' de este
+          campo está inflado por filas que en realidad nunca tuvieron una oportunidad real. NO reportar un conteo o
+          porcentaje crudo de ''No'' como si fuera una tasa de incumplimiento confiable — advertir siempre esta
+          limitación de calidad de datos antes de dar una cifra.'
+        description: 'Asesoría. Sí: la confección a medida aparece como opción real y explica al menos una ventaja
+          concreta. No: la confección a medida es opción real o fue mencionada/ofrecida pero no explica ninguna
+          ventaja concreta — PERO ver reliability_warning, este ''No'' no es confiable en la práctica. N/A: la
+          confección a medida no apareció como opción real, o vendedormencionoconfeccionamedida es N/A.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorpreguntapreferenciascliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Investigación. Sí: pregunta o confirma color, talla, fit, ajuste, corte o estilo. No: hay una
+          instancia de selección donde las preferencias no habían sido informadas y no preguntó teniendo
+          oportunidad. N/A: no hubo instancia de selección de producto, o el cliente aportó las preferencias
+          espontáneamente.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecesolucionantefaltadeproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Manejo de objeciones. Sí: ante una falta real de producto/talla/color/modelo, ofrece una
+          solución activa. No: hay falta real y oportunidad de responder, pero no ofrece ninguna solución activa.
+          N/A: no hubo falta real, o la falta se conoce recién después de que el vendedor dejó de participar.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecebeneficiosanteobjeccionprecio:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Manejo de objeciones. Sí: ante una objeción real de precio, responde con beneficios, valor,
+          descuento, promoción o meses sin intereses. No: existe objeción real de precio sin respuesta pertinente.
+          N/A: no hubo objeción real de precio.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecesolucionanteobjeccioncomosevesiente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Manejo de objeciones. Sí: ante una objeción real sobre apariencia/calce/ajuste/talla/sensación/
+          comodidad, ofrece una solución pertinente. No: existe esa objeción sin solución concreta. N/A: no hubo una
+          objeción real de ese tipo.'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorinformocashback20porciento:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Otros. Sí: durante la venta o el cobro, informa correctamente los 5 componentes de la
+          mecánica de cashback (compra genera 20% de cashback; se activa 24h después; vigencia 30 días; para
+          usarlo se requiere una nueva compra de ~3.33x el saldo; el descuento máximo aplicable es ~30% del valor
+          de esa compra). No: participa en venta/cobro con oportunidad real pero omite uno o más componentes. N/A:
+          no se captura ninguna parte del proceso de venta/cobro con oportunidad real. Sólo 18,5% de las filas
+          pobladas (ver known_findings_v1: empieza a registrarse recién desde 2026-08-24).'
+        operations:
+        - filter
+        - group
+        - compare
+  categorical_insights:
+    source: dashboard_v2.vw_roberts_insights_categoricos_generales
+    use_when: Resultados y hallazgos categóricos generales de la conversación.
+    grain: Una fila por conversación.
+    data_quality_note: 'Esta vista tiene 852 filas huérfanas sobre 11.098 (7,7% — verificado 2026-09-07:
+      11.098 filas totales vs 10.246 conversation_id distintos no nulos). Un COUNT(*) sin filtrar las cuenta
+      como si fueran conversaciones válidas e infla cualquier total/porcentaje. SIEMPRE usar COUNT(DISTINCT
+      conversation_id) (ya lo pide sql_rules.conversation_population), nunca COUNT(*) a secas.'
+    profile: standard_conversation
+    fields:
+      tipo_interaccion:
+        configured_values: *tipointeraccion_generico
+        observed_values: *tipointeraccion_generico
+        type: text
+        nullable: true
+        description: 'Clasificación del desenlace: compra (se compra al menos un producto nuevo), no_compra
+          (interacción comercial sin compra), cambio o queja (sólo si son el objetivo principal). 875 filas NULL
+          sobre 11.098.'
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_general:
+        configured_values: &resultado_general
+        - cambio
+        - compra_parcial
+        - compra_total
+        - no_compra
+        - queja
+        observed_values: *resultado_general
+        type: text
+        nullable: true
+        description: 'compra_total: todas las necesidades principales quedan resueltas en compra. compra_parcial:
+          se compra algo pero queda al menos una necesidad/producto relevante sin resolver. no_compra/cambio/queja:
+          según el desenlace dominante. 875 filas NULL.'
+        operations:
+        - filter
+        - group
+        - compare
+      motivador_visita:
+        configured_values: &motivador_visita_vigente
+        - boda
+        - cumpleanos_aniversario
+        - evento_formal_social
+        - graduacion
+        - no_claro
+        - otra_necesidad_especifica
+        - regalo
+        - reposicion_renovacion
+        - trabajo
+        - uso_cotidiano
+        - viaje
+        observed_values:
+        - aparador
+        - boda
+        - cumpleanos_aniversario
+        - ecommerce
+        - evento_formal_social
+        - graduacion
+        - necesidad_especifica
+        - no_claro
+        - otra_necesidad_especifica
+        - promocion
+        - recomendacion
+        - redes_sociales
+        - referencia_externa
+        - regalo
+        - reposicion_renovacion
+        - trabajo
+        - uso_cotidiano
+        - viaje
+        type: text
+        nullable: true
+        taxonomy_drift: 'Mismo fenómeno que Mens Fashion (dos generaciones de enum), verificado con conteos propios
+          de Roberts (ver known_findings_v1): la taxonomía vieja pesa más en Roberts -necesidad_especifica solo
+          tiene 2.039 filas, el segundo valor más frecuente de todo el campo después de no_claro (5.245). Preferir
+          configured_values (taxonomía vigente) para preguntas del período reciente; para históricas/agregadas
+          puede requerir ambos conjuntos.'
+        description: Necesidad concreta que explica por qué el cliente llega a la tienda (no el canal/fuente de
+          inspiración, eso es origen_inspiracion_cliente). Ver taxonomy_drift antes de filtrar por un valor
+          puntual. 1.662 filas NULL sobre 11.098.
+        operations:
+        - filter
+        - group
+        - compare
+      origen_inspiracion_cliente:
+        configured_values: &origen_inspiracion
+        - ecommerce_propio
+        - ecommerce_terceros
+        - no_claro
+        - redes_sociales
+        - referencia_externa
+        observed_values: *origen_inspiracion
+        type: text
+        nullable: true
+        description: 'Fuente externa que inspiró la visita: ecommerce_propio (sitio/app/canal digital de la marca),
+          ecommerce_terceros (marketplace/comparador/canal externo), redes_sociales, referencia_externa
+          (recomendación, foto u otra referencia), no_claro (hay influencia externa pero no se puede identificar).
+          NULL si no hay ninguna señal de fuente externa (mayoría de las filas: 5.906/11.098, ~53%).'
+        operations:
+        - filter
+        - group
+        - compare
+      intencion_compra_inicial:
+        configured_values: *sensibilidad_precio_general
+        observed_values: *sensibilidad_precio_general
+        type: text
+        nullable: true
+        description: 'alta: llega decidido o muy orientado a comprar. media: interés real, aún evaluando. baja:
+          exploración abierta sin decisión clara. no_claro: señales mezcladas. NULL: sin ninguna pista.'
+        operations:
+        - filter
+        - group
+        - compare
+      primer_mencion_cashback:
+        configured_values: &primer_mencion_cashback
+        - cliente
+        - no_claro
+        - no_mencionado
+        - vendedor
+        observed_values: *primer_mencion_cashback
+        type: text
+        nullable: true
+        description: 'Quién introduce primero el tema del cashback: cliente, vendedor, no_mencionado (nunca
+          aparece) o no_claro. IMPORTANTE: ~83% de las filas (9.196/11.098) son NULL, no no_mencionado -el
+          criterio de cashback simplemente no fue evaluado en esas conversaciones-. Filtrar por IS NOT NULL para
+          acotar al subconjunto donde sí se evaluó.'
+        operations:
+        - filter
+        - group
+        - compare
+      cliente_llega_con_cashback_para_usar:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: true
+        description: 'true sólo si hay evidencia razonable de que el cliente ya tenía cashback generado antes de
+          esta compra y quiere usarlo ahora. Igual que primer_mencion_cashback, es NULL en ~83% de las filas
+          cuando el cluster de cashback no fue evaluado; no asumir false por defecto sin filtrar antes por IS NOT
+          NULL si la pregunta depende de esa distinción.'
+        operations:
+        - filter
+        - group
+        - compare
+      conducta_vendedor_cashback:
+        configured_values: &conducta_vendedor_cashback
+        - explica_beneficio
+        - no_claro
+        - no_menciona
+        - promueve_compra_futura
+        - sugiere_dividir_o_diferir_compra_actual
+        observed_values: *conducta_vendedor_cashback
+        type: text
+        nullable: true
+        description: 'no_menciona: no habla de cashback o no lo desarrolla comercialmente aunque el cliente lo
+          introduzca. explica_beneficio: explica de forma neutral cómo funciona/cuánto genera/cuándo se usa.
+          promueve_compra_futura: usa el cashback para incentivar una compra incremental futura.
+          sugiere_dividir_o_diferir_compra_actual: propone separar/postergar parte de una compra actual para
+          aprovechar el cashback. no_claro: conducta vinculada a cashback pero no distinguible entre categorías.
+          Mismo patrón de ~83% NULL que los otros dos campos de cashback.'
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_mencion_competencia:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si aparece comparación o referencia real a otra marca/tienda/opción externa, incluso
+          implícita ("en otra tienda lo vi más barato"). No cuenta comparar opciones internas de la misma tienda.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_mencion_a_medida:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si cliente o vendedor mencionan interés, posibilidad o necesidad de confección a medida/
+          sastrería. Una mención no implica que haya sido ofrecida (ver hubo_ofrecimiento_a_medida). Ver
+          semantic_dependencies.confeccion_medida_dual_source.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_a_medida:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true sólo si el vendedor propone activamente la confección a medida/sastrería como opción o
+          solución (no basta con que se haya mencionado el tema).
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_complementarios:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el vendedor propone al menos un producto adicional comercialmente relacionado con el
+          principal. Ver semantic_dependencies.ofrecimiento_complementarios_dual_source.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_paquete:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el vendedor arma o intenta armar una solución integral con múltiples prendas/accesorios.
+          Un adicional aislado no constituye necesariamente un paquete.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_pregunta_ocasion_de_uso:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: true
+        description: 'true sólo si el vendedor pregunta o explora para qué necesita el producto el cliente. Una
+          ocasión aportada únicamente por el cliente no cuenta. VER semantic_dependencies.ocasion_uso_dual_source:
+          este es el campo PRIMARIO para preguntas de negocio sobre esto -NO es intercambiable con
+          vendedorpreguntaocasionuso de performance, coinciden 87,1% de las veces-.'
+        operations:
+        - filter
+        - group
+        - compare
+      atencion_pasiva_vendedor:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el vendedor es mayormente reactivo, responde lo mínimo y muestra poca iniciativa; false
+          si explora, propone y mueve la conversación. No se marca true por un momento aislado si el desempeño
+          global fue proactivo.
+        operations:
+        - filter
+        - group
+        - compare
+      falta_cierre_vendedor:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si, llegado un momento donde correspondía avanzar, el vendedor no intenta obtener una
+          decisión, concretar la compra o definir un siguiente paso. No confundir con no_compra.
+        operations:
+        - filter
+        - group
+        - compare
+      no_ofrece_solucion_completa:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el caso justificaba alternativas, complementarios, paquete, sustitución o a medida y el
+          vendedor no construye una solución razonablemente completa.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_venta_perdida:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si al menos una necesidad o producto comercialmente relevante queda sin resolverse en
+          compra. Puede coexistir con resultado_general=compra_parcial. Habilita motivo_principal_venta_perdida.
+        operations:
+        - filter
+        - group
+        - compare
+      motivo_principal_venta_perdida:
+        configured_values: &motivo_perdida_general
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - fit
+        - inventario
+        - no_aplica
+        - precio
+        - tiempo_entrega
+        observed_values: *motivo_perdida_general
+        type: text
+        nullable: false
+        description: Causa dominante de la venta perdida; sólo interpretable cuando hubo_venta_perdida=true (si no,
+          vale no_aplica).
+        operations:
+        - filter
+        - group
+        - compare
+      cantidad_productos_mencionados:
+        type: integer
+        observed_values:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        nullable: false
+        description: Cantidad de productos comercialmente relevantes mencionados; debe coincidir con la cantidad de
+          filas de ese conversation_id en categorical_product_insights.
+        operations:
+        - filter
+        - group
+        - aggregate
+      cantidad_productos_comprados:
+        type: integer
+        observed_values:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        nullable: false
+        description: Cantidad de productos con se_compro=true en categorical_product_insights para esa misma
+          conversación.
+        operations:
+        - filter
+        - group
+        - aggregate
+  descriptive_insights:
+    source: dashboard_v2.vw_roberts_insights_descriptivos_generales
+    use_when: Explicaciones y evidencia textual general de la conversación.
+    grain: Una fila por conversación; texto libre no agregable como categoría.
+    profile: descriptive_conversation
+    fields:
+      resumen_ejecutivo_conversacion:
+        type: text
+        nullable: true
+        description: Resume qué quería el cliente, qué se negoció, qué compró y qué quedó sin resolver.
+        operations:
+        - select_evidence
+      que_quiere_el_cliente_y_que_tenemos:
+        type: text
+        nullable: true
+        description: Explica el match, mismatch o solución parcial entre la necesidad y la oferta disponible;
+          destaca brechas de talla, color, fit, producto o inventario cuando son relevantes.
+        operations:
+        - select_evidence
+      que_no_estamos_resolviendo:
+        type: text
+        nullable: true
+        description: Describe la principal brecha accionable (producto, inventario, precio, ejecución o a medida)
+          que explica la no compra o compra parcial.
+        operations:
+        - select_evidence
+      por_que_llega_y_por_que_compra:
+        type: text
+        nullable: true
+        description: Conecta motivador de visita, fuente de inspiración y driver real de cierre; si no compra,
+          explica por qué llega y por qué no termina comprando.
+        operations:
+        - select_evidence
+      rol_de_a_medida_en_la_conversacion:
+        type: text
+        nullable: true
+        description: Explica si la confección a medida fue relevante, ganó la venta, pudo ayudar y no se ofreció,
+          fue rechazada, o no tuvo rol real.
+        operations:
+        - select_evidence
+      evaluacion_ejecucion_vendedor:
+        type: text
+        nullable: true
+        description: Evalúa investigación, iniciativa, cierre, soluciones y manejo de objeciones en términos
+          concretos y observables; no es una tasa de cumplimiento (para eso usar performance).
+        operations:
+        - select_evidence
+      mejores_practicas_detectadas:
+        type: text
+        nullable: true
+        description: Conductas replicables y claramente valiosas observadas. NULL si no hay ninguna destacable.
+        operations:
+        - select_evidence
+      errores_principales_detectados:
+        type: text
+        nullable: true
+        description: Fallas observables con impacto real, priorizadas. NULL si no hay error claro.
+        operations:
+        - select_evidence
+      insight_cruzado_principal:
+        type: text
+        nullable: true
+        description: Conecta al menos dos variables reales del caso (ej. producto+ocasión, precio+urgencia,
+          ejecución+resultado). No extrapola tendencias globales desde un solo caso.
+        operations:
+        - select_evidence
+      accion_sugerida:
+        type: text
+        nullable: true
+        description: Una única acción corta, concreta y ejecutable derivada de la fricción principal de esa
+          conversación.
+        operations:
+        - select_evidence
+  categorical_product_insights:
+    source: dashboard_v2.vw_roberts_insights_categoricos_por_producto
+    use_when: Atributos y resultados categóricos por producto mencionado.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        observed_values:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        nullable: false
+        description: Índice del producto dentro de la conversación (empieza en 1, correlativo por orden de primera
+          aparición comercial relevante). Clave de join con descriptive_product_insights.
+        operations:
+        - join_key
+        - filter
+      producto_index_relacionado:
+        type: integer
+        observed_values:
+        - 1
+        - 2
+        - 3
+        - 4
+        nullable: true
+        description: Vincula un producto complementario o alternativo con su producto principal (apunta a otro
+          producto_index de la misma conversación, nunca al propio). NULL para productos principales o cuando no
+          hay relación clara.
+        operations:
+        - join_key
+        - filter
+      producto:
+        configured_values: &producto_enum
+        - abrigo
+        - accesorios
+        - blazer_y_saco
+        - calzado
+        - camisa
+        - chamarra_y_chaleco
+        - jeans
+        - otro
+        - pantalon
+        - polos_y_playeras
+        - separ_pantalon
+        - separ_saco
+        - sweater
+        - traje
+        observed_values: *producto_enum
+        type: text
+        nullable: false
+        description: 'Categoría normalizada. separ_saco = saco de traje vendido sin su pantalón; separ_pantalon =
+          pantalón de traje vendido sin su saco; blazer_y_saco = saco/blazer que no pertenece a un traje o no puede
+          determinarse; otro sólo si no encaja razonablemente en el resto.'
+        operations:
+        - filter
+        - group
+        - compare
+      rol_producto_en_conversacion:
+        configured_values: &rol_producto
+        - alternativo
+        - complementario
+        - no_claro
+        - principal
+        observed_values: *rol_producto
+        type: text
+        nullable: false
+        description: 'Rol dominante en la historia comercial: principal (centro de la necesidad), complementario
+          (agregado a otro producto), alternativo (reemplaza o compite con otro producto de la misma conversación),
+          no_claro si es insuficientemente claro.'
+        operations:
+        - filter
+        - group
+        - compare
+      ocasion_de_uso:
+        configured_values: &ocasion_de_uso
+        - boda
+        - casual
+        - evento
+        - no_claro
+        - regalo
+        - trabajo
+        observed_values: *ocasion_de_uso
+        type: text
+        nullable: true
+        description: Ocasión para la que el cliente considera usar el producto. regalo sólo si es explícitamente un
+          obsequio. NULL si no hay evidencia.
+        operations:
+        - filter
+        - group
+        - compare
+      fit_buscado:
+        configured_values: &fit_buscado
+        - no_claro
+        - regular
+        - relaxed
+        - slim
+        observed_values: *fit_buscado
+        type: text
+        nullable: true
+        description: 'Calce buscado, sólo con evidencia suficiente: entallado/ajustado -> slim; clásico/normal ->
+          regular; holgado/amplio/suelto -> relaxed. NULL si no hay evidencia.'
+        operations:
+        - filter
+        - group
+        - compare
+      color_solicitado_producto:
+        configured_values: &color_enum
+        - amarillo_naranja
+        - azul
+        - blanco_hueso
+        - cafe_beige
+        - gris
+        - multicolor_otros
+        - negro
+        - rojo_vino
+        - rosa_morado
+        - verde
+        observed_values: *color_enum
+        type: text
+        nullable: true
+        description: 'Color principal solicitado (si hay varios, el claramente dominante). Mapeos: vino/borgoña/
+          guinda -> rojo_vino; crema/marfil -> blanco_hueso; camel/beige -> cafe_beige. NULL si no hay evidencia.'
+        operations:
+        - filter
+        - group
+        - compare
+      color_comprado_producto:
+        configured_values: *color_enum
+        observed_values: *color_enum
+        type: text
+        nullable: true
+        description: Color final del producto comprado. Sólo se completa cuando se_compro=true y el color final
+          queda claro; si no, NULL.
+        operations:
+        - filter
+        - group
+        - compare
+      color_o_diseno_relevante:
+        configured_values: &si_no_minuscula
+        - 'no'
+        - si
+        observed_values: *si_no_minuscula
+        type: text
+        nullable: true
+        description: 'si: color/diseño influyó realmente en la evaluación, objeción o decisión. no: claramente no
+          tuvo peso. NULL: no puede saberse.'
+        operations:
+        - filter
+        - group
+        - compare
+      talla_solicitada_producto:
+        configured_values: &talla_enum
+        - a_medida
+        - chica_34-36
+        - dos_extra_grande_50+
+        - extra_grande_44-46-48
+        - grande_42
+        - mediana_38-40
+        observed_values: *talla_enum
+        type: text
+        nullable: true
+        description: Rango de talla principal buscado. NULL si no hay evidencia.
+        operations:
+        - filter
+        - group
+        - compare
+      talla_comprada_producto:
+        configured_values: *talla_enum
+        observed_values: *talla_enum
+        type: text
+        nullable: true
+        description: Talla final comprada. Sólo se completa cuando se_compro=true y la talla final queda clara; si
+          no, NULL.
+        operations:
+        - filter
+        - group
+        - compare
+      percepcion_calidad:
+        configured_values: &percepcion_calidad
+        - confeccion
+        - marca
+        - multiples
+        - no_claro
+        - relacion_valor_precio
+        - tela
+        observed_values: *percepcion_calidad
+        type: text
+        nullable: true
+        description: 'Dimensión que sostiene la percepción de calidad/valor: tela, marca, confeccion,
+          relacion_valor_precio, multiples, no_claro. NULL si la calidad no jugó un rol real.'
+        operations:
+        - filter
+        - group
+        - compare
+      se_compro:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true sólo cuando el producto termina resuelto en compra. Equivale 1:1 a
+          resultado_producto=comprado. No es una transacción certificada, es una inferencia conversacional.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_producto:
+        configured_values: &resultado_producto
+        - comprado
+        - no_comprado
+        - pendiente
+        - reemplazado
+        observed_values: *resultado_producto
+        type: text
+        nullable: true
+        description: 'comprado (equivale a se_compro=true); no_comprado (se evalúa y se descarta sin reemplazo);
+          reemplazado (la necesidad se resuelve con otro producto distinto); pendiente (desenlace abierto o no
+          visible). NULL sólo si ni siquiera puede distinguirse razonablemente entre pendiente/no_comprado.'
+        operations:
+        - filter
+        - group
+        - compare
+      motivo_venta_perdida_producto:
+        configured_values: &motivo_perdida_producto
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - falta_color
+        - falta_modelo
+        - falta_talla
+        - fit
+        - no_claro
+        - precio
+        - tiempo_entrega
+        observed_values: *motivo_perdida_producto
+        type: text
+        nullable: true
+        description: Causa dominante de la pérdida de este producto específico; interpretar junto con
+          resultado_producto=no_comprado. NULL si no aplica o no hay evidencia suficiente.
+        operations:
+        - filter
+        - group
+        - compare
+      urgencia_cliente:
+        configured_values: *urgencia_general
+        observed_values: *urgencia_general
+        type: text
+        nullable: true
+        description: Urgencia de la necesidad asociada específicamente a este producto (a diferencia de
+          urgencia_general en demography, este campo sí puede ser NULL).
+        operations:
+        - filter
+        - group
+        - compare
+      sensibilidad_precio:
+        configured_values: *sensibilidad_precio_general
+        observed_values: *sensibilidad_precio_general
+        type: text
+        nullable: true
+        description: 'Sensibilidad al precio asociada a este producto: alta, media, baja, no_claro. NULL si el
+          precio no aparece de forma útil.'
+        operations:
+        - filter
+        - group
+        - compare
+      objecion_principal:
+        configured_values: &objecion_principal
+        - calidad
+        - comparacion_competencia
+        - estilo_diseno
+        - fit
+        - marca
+        - precio
+        - tiempo_entrega
+        - urgencia
+        observed_values: *objecion_principal
+        type: text
+        nullable: true
+        description: Objeción comercial dominante expresada sobre este producto. marca y comparacion_competencia
+          son valores válidos pero muy poco frecuentes en Roberts (3 y 6 filas). NULL si no hubo objeción clara.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_manejo_objecion:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true sólo si el vendedor trabaja realmente la objeción. false si no hubo objeción o si quedó
+          sin trabajo real.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_manejo_objecion:
+        configured_values: &resultado_manejo_objecion
+        - exitoso
+        - fallido
+        - no_aplica
+        - parcial
+        observed_values: *resultado_manejo_objecion
+        type: text
+        nullable: false
+        description: 'exitoso: la objeción deja de frenar la venta. parcial: avanza pero no se resuelve del todo.
+          fallido: no se resuelve o no fue trabajada pese a existir. no_aplica: no hubo objeción clara.'
+        operations:
+        - filter
+        - group
+        - compare
+      solucion_ante_falta:
+        configured_values: &solucion_ante_falta
+        - a_medida
+        - ajuste_sastreria
+        - busqueda_otra_tienda
+        - no_aplica
+        - sin_solucion
+        - sustitucion_funciona
+        - sustitucion_no_funciona
+        observed_values: *solucion_ante_falta
+        type: text
+        nullable: false
+        description: Solución ofrecida ante una falta real de talla, color, modelo o disponibilidad de este producto.
+          no_aplica cuando no hubo falta real.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_complementario:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el vendedor propone activamente un complemento vinculado específicamente a este
+          producto.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_a_medida:
+        type: boolean
+        configured_values:
+        - false
+        - true
+        observed_values:
+        - false
+        - true
+        nullable: false
+        description: true si el vendedor propone explícitamente confección a medida/sastrería para este producto en
+          particular.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_a_medida:
+        configured_values: &resultado_a_medida
+        - cierra_venta
+        - no_aplica
+        - no_cierra_venta
+        observed_values: *resultado_a_medida
+        type: text
+        nullable: false
+        description: 'cierra_venta: la confección a medida destraba o ayuda a concretar la compra. no_cierra_venta:
+          tuvo rol comercial real pero no cerró. no_aplica: no apareció o fue tangencial.'
+        operations:
+        - filter
+        - group
+        - compare
+      disparador_de_cierre:
+        configured_values: &disparador_cierre
+        - a_medida
+        - asesoria_vendedor
+        - calidad_producto
+        - fit_correcto
+        - paquete_completo
+        - promocion
+        - urgencia
+        observed_values: *disparador_cierre
+        type: text
+        nullable: true
+        description: Factor principal que destraba/impulsa el cierre de este producto (sólo aplica si hubo compra).
+          urgencia y calidad_producto son valores válidos pero poco frecuentes en Roberts (15 y 35 filas). NULL si
+          no hubo compra o no hay driver identificable.
+        operations:
+        - filter
+        - group
+        - compare
+  descriptive_product_insights:
+    source: dashboard_v2.vw_roberts_insights_descriptivos_por_producto
+    use_when: Evidencia y explicación textual por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index.
+        operations:
+        - join_key
+        - filter
+      resumen_producto:
+        type: text
+        nullable: true
+        description: Mini-historia comercial del producto -qué buscaba, qué ocurrió y cómo terminó.
+        operations:
+        - select_evidence
+      preferencias_cliente_producto:
+        type: text
+        nullable: true
+        description: Fit, color, diseño, ocasión y preferencias positivas o negativas sostenibles sobre este
+          producto.
+        operations:
+        - select_evidence
+      brechas_de_inventario_producto:
+        type: text
+        nullable: true
+        description: Faltas de talla, color, modelo o producto y su impacto. NULL si no hubo brecha relevante.
+        operations:
+        - select_evidence
+      sensibilidad_precio_y_umbral_producto:
+        type: text
+        nullable: true
+        description: Cómo pesó el precio y cualquier umbral concreto mencionado. NULL si no fue relevante.
+        operations:
+        - select_evidence
+      objeciones_y_respuesta_vendedor_producto:
+        type: text
+        nullable: true
+        description: La objeción, la respuesta del vendedor y su resultado. NULL si no hubo objeción.
+        operations:
+        - select_evidence
+      complementarios_y_paquete_producto:
+        type: text
+        nullable: true
+        description: Complementarios/paquete vinculados a este producto y su resultado. NULL si no hubo dinámica
+          relevante.
+        operations:
+        - select_evidence
+      rol_de_a_medida_producto:
+        type: text
+        nullable: true
+        description: Si la confección a medida fue ofrecida, considerada, rechazada o tuvo impacto en este producto.
+          NULL si no fue relevante.
+        operations:
+        - select_evidence
+      resultado_final_producto:
+        type: text
+        nullable: true
+        description: Si terminó comprado, no comprado, reemplazado o pendiente, y el matiz principal del desenlace.
+        operations:
+        - select_evidence
+      accion_sugerida_producto:
+        type: text
+        nullable: true
+        description: Una única acción concreta de surtido, inventario, pricing, capacitación o venta complementaria
+          vinculada a la fricción real de este producto.
+        operations:
+        - select_evidence
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- Los enums de configured_values reflejan el texto de los prompts de producción (checklist v8, insights v5) al
+  momento de construir este mapa; si Langfuse sube de versión hay que revalidar. Los observed_values reflejan
+  Postgres QA verificado el 2026-09-07 y pueden incluir valores de generaciones anteriores del prompt que ya no
+  están en configured_values (ver motivador_visita.taxonomy_drift).
+- 'El cluster de cashback (primer_mencion_cashback, cliente_llega_con_cashback_para_usar, conducta_vendedor_cashback)
+  es NULL en aproximadamente 83% de las filas: no fue evaluado en esas conversaciones, no es lo mismo que
+  no_mencionado/false.'
+- Dos columnas de performance (vendedorexplicoprogramadelealtad, vendedormencionoprogramadelealtad) son legado y no
+  forman parte del checklist v8 vigente; tienen datos pero no deben tratarse como criterios actuales.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.
+- Este Data Map reutiliza la estructura de Mens Fashion V6 porque los prompts de negocio son idénticos, pero
+  todos los números fueron re-verificados de forma independiente contra los datos propios de Roberts (ver
+  metadata.known_findings_v1). Si en el futuro los prompts de Roberts y Mens Fashion divergen, dejar de asumir
+  que ambos Data Maps deben evolucionar en paralelo.

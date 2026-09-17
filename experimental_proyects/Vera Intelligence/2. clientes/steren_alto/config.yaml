@@ -1,0 +1,52 @@
+client_id: steren
+display_name: "Steren"
+tenant: "Steren"
+model: gemini-3.7-flash
+data_map: "2. clientes/steren_alto/data_map/VI Data Map Steren V1.yaml"
+
+# Steren es "esquema no estándar": tiene 4 vistas (no 6 como el molde completo, no 2 como
+# el schema delgado). No existe una vista "insights_categoricos_generales" separada -los
+# campos generales de comportamiento/demografía (TipoInteraccion, MotivoNoCompra,
+# AcercamientoCliente, ClienteCompraObjetivo, GeneroCliente) están definidos en el prompt
+# de INSIGHTS pero materializados dentro de la vista demografia, no en una vista propia.
+# Ver README y el Data Map, metadata.source_of_truth.
+sources:
+  dashboard_v2.vw_steren_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_steren_rendimiento_vendedor:
+    tenant_field: seller_id
+  dashboard_v2.vw_steren_insights_categoricos_por_producto:
+    tenant_field: seller_id
+  dashboard_v2.vw_steren_insights_descriptivos:
+    tenant_field: seller_name
+
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Steren/checklist"
+    label: production
+    business_scope: "Criterios de atención y desempeño del vendedor en tienda de electrónica (Steren)"
+  conversation_insights:
+    name: "clientes/Steren/insights"
+    label: production
+    business_scope: "Comportamiento de compra, motivo de no compra, productos consultados, objeciones y quejas"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Steren no tiene RAG: su prompt de checklist/insights no declara geminiFileSearchStoreName -el
+# store de clientes/Steren/feedback es de otro producto/feature, no de Vera Intelligence-.
+
+# Búsqueda semántica sobre conversaciones vectorizadas (generalización 2026-09-11, ver
+# "6. busqueda_vectorial/README.md" > Iteración 17). Cobertura de backfill verificada: 73,2%
+# (23.235/31.752 recordings con embedding, mismo EMBEDDING_CONFIG_ID que mens_fashion_alto).
+# Limitación propia de Steren: su fuente de resumen ejecutivo se llama
+# "vw_steren_insights_descriptivos" (sin sufijo "_generales", esquema no estándar -ver comentario
+# arriba), así que _find_descriptivos_source no la reconoce por convención de nombre -
+# resumen_verificado sale None para este cliente, sólo el fragmento reconstruido está disponible.
+vector_search:
+  top_k: 5

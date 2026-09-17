@@ -1,0 +1,77 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE. Debe advertir el volumen chico.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_dalton_demografia
+      WHERE seller_id = 'Dalton' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '26 conversaciones analizables, advirtiendo el volumen chico'
+
+  - id: q02_insights_no_existe_trap
+    pregunta: ¿Cuál es la principal objeción de precio que mencionan los clientes?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe una categorización de objeciones para este cliente -sólo hay un campo
+      booleano de "atendió la objeción", no qué tipo de objeción fue. El agente debe aclarar esto, no
+      inventar una categoría de precio.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con una categorización del tipo de
+      objeción para este cliente, sólo si el asesor la atendió o no.'
+
+  - id: q03_tasa_prueba_manejo
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor invita a hacer una prueba de manejo?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL. Debe presentar cifras absolutas.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE asesorinvitapruebamanejo = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE asesorinvitapruebamanejo IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_dalton_rendimiento_vendedor
+      WHERE seller_id = 'Dalton'
+    respuesta_esperada: '13 de 16 (81,3%), con cifras absolutas dado el volumen chico'
+
+  - id: q04_arrendamiento_daf_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor ofrece el arrendamiento DAF?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: nunca se observó un "Sí" en la muestra para este campo -el agente debe responder 0%,
+      no redondear ni inventar un número distinto de cero.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE asesorofrecearrendamientodaf = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE asesorofrecearrendamientodaf IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_dalton_rendimiento_vendedor
+      WHERE seller_id = 'Dalton'
+    respuesta_esperada: '0 de 14 (0%) — ningún caso observado en la muestra'
+
+  - id: q05_tasa_atiende_objeciones
+    pregunta: Cuando un cliente plantea una objeción, ¿el asesor la atiende?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A (sin objeción real) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE asesoratiendeobjeciones = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE asesoratiendeobjeciones IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_dalton_rendimiento_vendedor
+      WHERE seller_id = 'Dalton'
+    respuesta_esperada: '17 de 19 (89,5%)'
+
+  - id: q06_tasa_siguiente_paso
+    pregunta: ¿Con qué frecuencia el asesor propone un siguiente paso concreto?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE asesorproponesiguientepasoconcreto = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE asesorproponesiguientepasoconcreto IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_dalton_rendimiento_vendedor
+      WHERE seller_id = 'Dalton'
+    respuesta_esperada: '20 de 23 (87%)'

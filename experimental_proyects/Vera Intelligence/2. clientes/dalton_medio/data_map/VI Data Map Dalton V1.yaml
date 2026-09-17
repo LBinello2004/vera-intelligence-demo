@@ -1,0 +1,307 @@
+metadata:
+  name: VI Data Map Dalton V1
+  version: 1.0.0
+  client: Dalton
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo dos vistas dashboard_v2 de Dalton (demografia + rendimiento_vendedor). El tenant
+    ('Dalton') es fijo para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Dalton/Ventas/checklist (Langfuse, label production, v6 al construir
+      este mapa)
+    note: 'Dalton es "schema delgado" (existe clientes/Dalton/Ventas/insights en Langfuse pero no hay
+      vista de insights materializada). Dominio: concesionaria de vehículos Kia. IMPORTANTE: Langfuse
+      tiene DOS sub-marcas de Dalton (Hostess y Ventas) pero la vista de Postgres corresponde
+      exclusivamente a Ventas -verificado con el prompt_id de la columna homónima en
+      rendimiento_vendedor (a2rFW9VbTU6hNVdlD32z), coincide exacto con Dalton/Ventas/checklist, no con
+      Dalton/Hostess/checklist-. Este Data Map NO cubre nada de Dalton/Hostess.'
+  known_findings_v1:
+  - 'VOLUMEN CHICO: 30 conversaciones totales, 26 analizables. Rango 2026-05-14 a 2026-07-06 (sin
+      actividad después, hace más de 2 meses respecto a hoy 2026-09-07) -no investigado si el pipeline
+      de Dalton sigue activo. Bases de 20-30 filas, cifras sensibles a pocos casos.'
+  - 'REVISIÓN DE GRADO (2026-09-07): inicialmente graduado "bajo" por volumen. Reconsiderado a
+      pedido del usuario: 26 conversaciones ya no es un volumen ridículamente chico como Shoe Box (7)
+      o Agrosuper (9) -empieza a dar señal real, aunque ruidosa-. Ejecución verificada limpia (6/6 del
+      banco dorado, sin fallback, ambas preguntas trampa -inexistencia de categorización de objeciones
+      y "0% real" en arrendamiento DAF- resueltas correctamente). Subido a "medio", NO a "alto": a
+      diferencia de GAC (también subido a medio el mismo día), Dalton además sigue sin actividad
+      desde 2026-07-06 -dos razones de cautela combinadas (volumen chico + posible inactividad), no
+      una sola-, así que el ajuste es más conservador. Carpeta renombrada de dalton_bajo a
+      dalton_medio.'
+  - 'Enum estándar Sí/No/N/A con mayúscula inicial -verificado con SELECT DISTINCT en los 24 campos-.'
+  - 'Los 24 criterios están agrupados por el propio prompt en 5 etapas: Detección de Necesidades (6),
+      Presentación del Vehículo (4), Prueba de Manejo (5), Oferta Comercial y Objeciones (5), Cierre y
+      Fidelización (4). La etapa de Prueba de Manejo tiene N/A muy alto en sus 3 últimos campos
+      (asesorpreparayguiapruebamanejo N/A=18, asesorrefuerzabeneficiosduranteprueba N/A=23,
+      asesorvalidaexpectativaspostprueba N/A=26 sobre 30) -consistente con que la prueba de manejo en
+      sí (asesorinvitapruebamanejo) sólo tiene 13 Sí de 30-, no es un problema de datos, es que la
+      mayoría de las conversaciones de la muestra no llegan a esa etapa.'
+  - 'asesorofrecearrendamientodaf nunca tuvo un "Sí" en la muestra (N/A=15, No=14) -el esquema de
+      arrendamiento DAF de Dalton nunca se ofreció en ninguna de las 29 conversaciones evaluables. No
+      investigado si es porque el perfil de cliente de la muestra no lo ameritaba (empresa/actividad
+      fiscal) o porque los asesores no lo usan.'
+  - 'RAG no aplica: verificado en Langfuse que clientes/Dalton/Ventas/checklist no declara
+      geminiFileSearchStoreName (el store de clientes/Dalton/Ventas/feedback es de otro
+      producto/feature).'
+decision_flow:
+- Identificar si la pregunta es respondible con checklist/demografía -si pide motivo, necesidad,
+  objeción o competencia como categoría estructurada, advertir que esa fuente no existe para este
+  cliente (aunque el checklist SÍ tiene un campo booleano de "atiende objeciones", no una categorización
+  de qué objeción fue).
+- Aclarar el volumen chico (26 conversaciones analizables) antes de presentar cualquier cifra.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado general de la interacción
+    avoid: no es la fuente de motivo/necesidad detallada -eso vive en performance como campos
+      booleanos de etapa, no como categorías-
+  performance:
+    questions: criterios del protocolo de venta de la concesionaria (detección de necesidades,
+      presentación del vehículo, prueba de manejo, oferta comercial y objeciones, cierre y
+      fidelización)
+    avoid: no tratar N/A como incumplimiento -la etapa de prueba de manejo en particular tiene N/A
+      alto por diseño, ver known_findings_v1-
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Dalton') sobre el tenant_field de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null. Presentar junto con cifras absolutas dado el volumen chico.
+sources:
+  demography:
+    source: dashboard_v2.vw_dalton_demografia
+    use_when: Resultado general de la interacción.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        type: text
+        nullable: true
+        description: 'Prácticamente sin poblar de forma útil: 29 de 30 filas con "no_compra"
+          (minúscula con guion bajo, valor distinto a los demás clientes del proyecto -no
+          investigado por qué este cliente usa esa convención-), 1 NULL. No hay ningún "compra"
+          observado en la muestra -no investigado si es representativo o sólo refleja las 30
+          conversaciones capturadas.'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_dalton_rendimiento_vendedor
+    use_when: Criterios del protocolo de venta de la concesionaria.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 24 criterios admiten Sí/No/N/A con la lógica estándar del prompt.'
+    fields:
+      asesorsolicitanombreyvehiculointeres:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Pregunta o confirma qué vehículo le interesa al
+          cliente -no evalúa si pregunta el NOMBRE del cliente, pese al nombre del campo, sólo el
+          vehículo de interés-. Sí=18, No=6, N/A=6.'
+        operations: [filter, group, compare]
+      asesorrespondedisponibilidadrevisandoinventario:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Sí=19, N/A=10, No=1 -tasa muy alta, casi siempre que
+          se pregunta disponibilidad el asesor responde-.'
+        operations: [filter, group, compare]
+      asesorrealizapreguntasinvestigacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Preguntas sobre uso, familia, trabajo, contexto del
+          cliente. Sí=19, No=6, N/A=4.'
+        operations: [filter, group, compare]
+      asesoridentificanecesidadesymotivadorescompra:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Sí=16, No=9, N/A=4.'
+        operations: [filter, group, compare]
+      asesorexplorapresupuestoformacompraoactividadfiscal:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Presupuesto, mensualidad, contado/crédito, actividad
+          fiscal. Sí=16, No=7, N/A=7.'
+        operations: [filter, group, compare]
+      asesormencionatomaautoacuenta:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Detección de necesidades. Toma de auto usado a cuenta. No=18, N/A=7, Sí=5 -tasa
+          de cumplimiento más baja de esta etapa-.'
+        operations: [filter, group, compare]
+      asesordemuestraconocimientotecnicoproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación del vehículo. Motor, seguridad, ADAS, equipamiento, tecnología.
+          Sí=16, N/A=10, No=3.'
+        operations: [filter, group, compare]
+      asesorexplicacaracteristicasbeneficiospersonalizados:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación del vehículo. Exige conectar una característica con una necesidad
+          expresada por el cliente -no alcanza con enumerar características genéricas-. Sí=15,
+          N/A=10, No=5.'
+        operations: [filter, group, compare]
+      asesorrealizademostracioninteriorexterior:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación del vehículo. Requiere evidencia verbal de la demostración -no
+          alcanza que haya ocurrido físicamente sin quedar dicho en el audio-. Sí=14, N/A=11, No=5.'
+        operations: [filter, group, compare]
+      asesormencionadiferenciadoreskia:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación del vehículo. Garantía, postventa, Kia Assistance, My Kia Plus,
+          respaldo de marca. No=10, N/A=10, Sí=9 -casi empatado, tasa de cumplimiento moderada-.'
+        operations: [filter, group, compare]
+      asesorinvitapruebamanejo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Prueba de manejo. N/A=14 (por diseño, no todas las conversaciones llegan a esa
+          etapa), Sí=13, No=3.'
+        operations: [filter, group, compare]
+      asesorpreparayguiapruebamanejo:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Prueba de manejo. Sólo evaluable si hubo prueba. N/A=18, No=8, Sí=3 -de las
+          conversaciones con prueba, la mayoría no la preparó/guio explícitamente-.'
+        operations: [filter, group, compare]
+      asesorrefuerzabeneficiosduranteprueba:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Prueba de manejo. N/A=23 (mayoría, ver known_findings_v1), Sí=3, No=3.'
+        operations: [filter, group, compare]
+      asesorrealizamicrocierres:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Prueba de manejo. Preguntas breves de validación de interés ("¿cómo la
+          sintió?"). Sí=14, N/A=13, No=2.'
+        operations: [filter, group, compare]
+      asesorvalidaexpectativaspostprueba:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Prueba de manejo. N/A=26 (casi toda la muestra, ver known_findings_v1), Sí=2,
+          No=1.'
+        operations: [filter, group, compare]
+      asesorpresentaofertaacordecliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Oferta comercial y objeciones. Sí=17, N/A=12, No=1 -tasa muy alta cuando
+          aplica-.'
+        operations: [filter, group, compare]
+      asesorexplicaofertaconvalorynosoloprecio:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Oferta comercial y objeciones. Sí=14, N/A=13, No=2.'
+        operations: [filter, group, compare]
+      asesorofrecekiafinance:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Oferta comercial y objeciones. Sólo cuenta mención EXPLÍCITA de "Kia Finance".
+          N/A=13, No=11, Sí=5.'
+        operations: [filter, group, compare]
+      asesorofrecearrendamientodaf:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No']
+        type: text
+        nullable: true
+        description: 'Oferta comercial y objeciones. Esquema de arrendamiento propio de Dalton. N/A=15,
+          No=14 -ningún "Sí" observado en toda la muestra, ver known_findings_v1-.'
+        operations: [filter, group, compare]
+      asesoratiendeobjeciones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Oferta comercial y objeciones. Sólo evaluable si hubo objeción real -preguntas
+          informativas normales no cuentan como objeción-. Sí=17, N/A=11, No=2.'
+        operations: [filter, group, compare]
+      asesorrealizapreguntadecierre:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y fidelización. Sí=17, N/A=8, No=5.'
+        operations: [filter, group, compare]
+      asesorproponesiguientepasoconcreto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y fidelización. Sí=20, N/A=7, No=3 -tasa más alta de esta etapa-.'
+        operations: [filter, group, compare]
+      asesordefineseguimientosinohaycierre:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y fidelización. Sólo evaluable si NO hubo cierre en la conversación.
+          Sí=15, No=7, N/A=7.'
+        operations: [filter, group, compare]
+      asesoragradeceydespide:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre y fidelización. Sí=20, N/A=7, No=3.'
+        operations: [filter, group, compare]
+joins:
+  rule: Sin segunda fuente disponible en este cliente, no hay joins posibles.
+limitations:
+- Resultado y desempeño son inferencias conversacionales del modelo, no ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL: no existe ninguna vista de insights para este cliente. Cualquier pregunta
+  sobre motivo, necesidad detallada, competencia u objeción categorizada (más allá del booleano
+  "atiende objeciones") no puede responderse.'
+- 'VOLUMEN CHICO: 30 conversaciones totales, 26 analizables, sin actividad desde 2026-07-06 (más de 2
+  meses antes de hoy). No se investigó si el pipeline de Dalton sigue activo.'
+- Este Data Map cubre exclusivamente Dalton/Ventas (concesionaria de autos) — Dalton/Hostess (otra
+  sub-marca en Langfuse, probablemente eventos/promotoría) no tiene vista propia en Postgres y no
+  está cubierta.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

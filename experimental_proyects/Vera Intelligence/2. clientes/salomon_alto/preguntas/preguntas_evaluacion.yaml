@@ -1,0 +1,177 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE y contar conversaciones distintas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_salomon_demografia
+      WHERE seller_id = 'Salomon' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '9.189 conversaciones analizables'
+
+  - id: q02_insights_no_existe_trap
+    pregunta: ¿Cuál es el motivo principal por el que los clientes no compran?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe ninguna fuente de insights (motivo/necesidad/objeción) para este cliente -sólo
+      hay demografia y performance-. El agente debe decir explícitamente que no puede responder esto
+      con las fuentes disponibles, no inventar una categoría ni confundir con tipointeraccion.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información sobre motivos de no compra
+      para este cliente, sin inventar una categoría.'
+
+  - id: q03_tasa_saludo
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor dio la bienvenida?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE dalabienvenida = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE dalabienvenida IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '5.983 de 9.298 (64,3%)'
+
+  - id: q04_resultado_general
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Base = conversaciones analizables.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE tipointeraccion = 'Compra') AS compras,
+        COUNT(*) FILTER (WHERE usefulforanalysis) AS base
+      FROM dashboard_v2.vw_salomon_demografia
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '2.963 de 9.189 (32,3%)'
+
+  - id: q05_tasa_fit_experience_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor invitó al cliente a hacer Fit Experience?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: Fit Experience sólo aplica cuando hay necesidad real de calce -N/A es mayoría (63,7%) por
+      diseño del criterio, no por falta de datos. El agente debe advertir esto, no presentar el N/A
+      como incumplimiento.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE invitaafitexperience = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE invitaafitexperience IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '601 de 4.530 (13,3%), aclarando que sólo aplica cuando hay necesidad real de
+      calce (N/A=5.860 por diseño, no por falta de datos)'
+
+  - id: q06_tasa_genera_conexion
+    pregunta: ¿Los vendedores generan conexión o rapport con el cliente más allá de lo transaccional?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE generaconexion = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE generaconexion IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '1.803 de 9.559 (18,9%) — tasa baja, uno de los criterios con menor cumplimiento'
+
+  - id: q07_tasa_tech_vs_caracteristicas_trap
+    pregunta: ¿Con qué frecuencia el vendedor explica la tecnología del producto?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: hay dos campos distintos que pueden confundirse -mencionatecnologiaocaracteristicas
+      (más laxo, una sola característica) y explicausoycuidadotech (exige los 4 componentes T.E.C.H.
+      completos). El agente debe aclarar la diferencia o al menos no mezclarlos como si fueran el mismo
+      criterio.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE mencionatecnologiaocaracteristicas = 'Sí') AS si_caracteristicas,
+        COUNT(*) FILTER (WHERE mencionatecnologiaocaracteristicas IN ('Sí','No')) AS base_caracteristicas,
+        COUNT(*) FILTER (WHERE explicausoycuidadotech = 'Sí') AS si_tech,
+        COUNT(*) FILTER (WHERE explicausoycuidadotech IN ('Sí','No')) AS base_tech
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: 'mencionar al menos una característica: 4.899 de 9.304 (52,7%); explicar la
+      metodología TECH completa (más exigente): 2.178 de 9.186 (23,7%) — son dos criterios distintos'
+
+  - id: q08_tasa_maneja_objeciones
+    pregunta: Cuando un cliente presenta una objeción real, ¿el vendedor ofrece una alternativa?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A (sin objeción real) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE manejaobjecionesconalternativas = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE manejaobjecionesconalternativas IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '3.774 de 4.679 (80,7%)'
+
+  - id: q09_tasa_venta_complementaria
+    pregunta: ¿Qué porcentaje de las conversaciones el vendedor sugirió productos complementarios?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE sugiereproductoscomplementarios = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE sugiereproductoscomplementarios IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '1.269 de 9.107 (13,9%) — tasa más baja de todo el checklist'
+
+  - id: q10_tasa_cierre
+    pregunta: ¿En qué porcentaje de las conversaciones con oportunidad real el vendedor intentó el cierre?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A (sin oportunidad real) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE intentaelcierre = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE intentaelcierre IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '2.401 de 9.254 (25,9%)'
+
+  - id: q11_tasa_crm
+    pregunta: ¿Con qué frecuencia el vendedor invita al cliente a unirse a la comunidad o programa de lealtad?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE invitaaunirseacomunidadcrm = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE invitaaunirseacomunidadcrm IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '854 de 9.312 (9,2%)'
+
+  - id: q12_tipointeraccion_enum_trap
+    pregunta: ¿Cuántas conversaciones terminaron en cambio o devolución?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: "Cambio" es un valor configurado del enum tipointeraccion pero no se observó ninguna
+      fila con ese valor en el muestreo -el agente debe verificar y responder 0 o aclarar que no se
+      observan casos, no asumir ni inventar un número.'
+    sql: |
+      SELECT COUNT(*) FROM dashboard_v2.vw_salomon_demografia
+      WHERE seller_id = 'Salomon' AND tipointeraccion = 'Cambio'
+    respuesta_esperada: '0 conversaciones observadas con ese valor (el agente no debe inventar un número)'
+
+  - id: q13_tasa_indaga_preferencias
+    pregunta: ¿Los vendedores indagan las preferencias del cliente (talla, color, ajuste) antes de recomendar?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE indagapreferencias = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE indagapreferencias IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_salomon_rendimiento_vendedor
+      WHERE seller_id = 'Salomon'
+    respuesta_esperada: '4.636 de 9.223 (50,3%) — casi empatado entre Sí y No'

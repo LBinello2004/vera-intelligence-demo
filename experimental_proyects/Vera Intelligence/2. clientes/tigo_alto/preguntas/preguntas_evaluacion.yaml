@@ -1,0 +1,246 @@
+metadata:
+  name: Preguntas de evaluación VI - Tigo
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas.
+  data_map_version: VI Data Map Tigo V1.yaml
+  tenant: Tigo
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07
+  nota_compliance: 'Tigo es el único cliente del proyecto con triggers explícitos de cumplimiento/ética
+    (t01-t15). Con aprobación explícita del usuario (2026-09-07), Vera Intelligence SÍ puede responder
+    preguntas de negocio sobre estos campos. Varias preguntas de este banco los prueban directamente —
+    incluida su polaridad invertida respecto a los campos "a" (ver Data Map > semantic_dependencies.t_series_polarity).'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". Las preguntas marcadas es_trampa=true están diseñadas
+    específicamente para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_tigo_demografia
+      WHERE seller_id = 'Tigo' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '49664 (sobre 66838 conversaciones totales)'
+
+  - id: q02_a_series_split_trap
+    pregunta: ¿Qué tan bien maneja el asesor emocionalmente a un cliente molesto?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: a04_manejo_emocional_del_cliente_molesto es un campo de ESCALA 1-5 que vive en
+      categorical_insights, no en performance (donde vive la mayoría de los campos "a"). El agente no debe
+      buscarlo como Sí/No/N/A ni confundirlo con un campo de performance.'
+    sql: |
+      SELECT a04_manejo_emocional_del_cliente_molesto, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo'
+      GROUP BY 1
+      ORDER BY 1
+    respuesta_esperada: 'El agente debe consultar categorical_insights (escala 1-5), no performance, y
+      reportar la distribución o el promedio, no una tasa de "Sí".'
+
+  - id: q03_t01_soborno_trap
+    pregunta: ¿Hubo casos donde el asesor pidió dinero por fuera de lo oficial?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: t01_solicita_dinero_o_pago_no_oficial es un trigger crítico donde "Sí" significa que el
+      incumplimiento SÍ ocurrió (polaridad de detección, no de cumplimiento positivo como los campos "a").
+      El agente no debe interpretar "Sí" como algo positivo ni suavizar la respuesta.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE t01_solicita_dinero_o_pago_no_oficial = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE t01_solicita_dinero_o_pago_no_oficial IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+    respuesta_esperada: 'Sí=48 (casos donde sí se detectó), base evaluada=67383. El agente debe presentar
+      esto con claridad como un hallazgo de cumplimiento real, no restarle importancia ni confundir "Sí" con
+      un desempeño positivo.'
+
+  - id: q04_t13_trato_discriminatorio
+    pregunta: ¿Cuántos casos de trato grosero, agresivo o discriminatorio se detectaron?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - t13 nunca admite N/A por diseño; "Sí" = el trigger SÍ se detectó.
+    sql: |
+      SELECT t13_trato_grosero_agresivo_o_discriminatorio, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+      GROUP BY 1
+    respuesta_esperada: 'Sí=221, No=67167 (más N/A/NULL residuales, ver limitations del Data Map)'
+
+  - id: q05_t14_oculta_condiciones
+    pregunta: ¿En cuántas conversaciones el asesor ocultó o tergiversó condiciones críticas del servicio?
+    fuentes_requeridas: [performance]
+    sql: |
+      SELECT t14_oculta_o_tergiversa_condiciones_criticas, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+      GROUP BY 1
+    respuesta_esperada: 'Sí=1023, No=66363 (más N/A/NULL residuales)'
+
+  - id: q06_nps_induction_trap
+    pregunta: ¿Los asesores inducen a los clientes a calificar 5 en las encuestas de satisfacción?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: i05_induce_calificacion_nps_5 es un hallazgo de integridad de métrica, no un logro comercial —
+      el agente no debe presentarlo como algo positivo ("el equipo se preocupa por el NPS"), sino como una
+      práctica que compromete la validez de la métrica.'
+    sql: |
+      SELECT i05_induce_calificacion_nps_5, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo'
+      GROUP BY 1
+    respuesta_esperada: 'si=2198, no=9777, n/a=54861 (la mayoría no menciona NPS). Sobre la base evaluada
+      (si+no=11975), 18,4% induce la calificación — el agente debe presentarlo como un riesgo de integridad
+      de la métrica, no como algo positivo.'
+
+  - id: q07_tramite_principal_distribucion
+    pregunta: ¿Cuál es el trámite más frecuente en las conversaciones?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Excluir n/a del ranking salvo pedido explícito.
+    sql: |
+      SELECT i03_solicitud_o_tramite_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo' AND i03_solicitud_o_tramite_principal != 'n/a'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'factura=15701 es el más frecuente (siguen cancelacion_retiro=9210,
+      pqr_reclamo=7456, reposicion_chip_esim=4680, otro=3515, venta_movil=3086)'
+
+  - id: q08_venta_es_minoria_trap
+    pregunta: ¿Qué porcentaje de las conversaciones son de venta?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 7  # calibrado 2026-09-14 (gate_fallo_no_promovido, migración sales_evaluation v20->v22):
+      # la respuesta legítimamente puede o no repetir el desglose ítem por ítem de trámites (factura,
+      # cancelación, PQR, etc.) como evidencia de contexto -verificado con SQL directo que ambas versiones citan
+      # cifras exactas, ver "VI Data Map Tigo V3.yaml" > metadata.changes_from_v2-. No es lenguaje relativo, es
+      # una pregunta con muchos números de contexto opcional que el modelo reagrupa distinto entre corridas.
+    requisitos:
+    - 'TRAMPA: Tigo es mayormente una operación de servicio/soporte/retención, no de venta. El agente debe
+      dar el número real y contextualizar que venta (móvil+hogar) es una fracción menor del volumen total,
+      no asumir que la mayoría de las conversaciones son comerciales.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE i03_solicitud_o_tramite_principal IN ('venta_movil','venta_hogar')) AS venta,
+        COUNT(*) FILTER (WHERE i03_solicitud_o_tramite_principal != 'n/a') AS total_con_tramite
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo'
+    respuesta_esperada: 'venta=3955 (venta_movil=3086 + venta_hogar=869) de 62836 con trámite identificado
+      (~6,3%). El agente debe aclarar que la venta es una fracción menor del volumen total, dominado por
+      factura/cancelación/PQR.'
+
+  - id: q09_causa_retiro_vs_no_retencion_trap
+    pregunta: ¿Por qué se van los clientes que cancelan?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 3  # calibrado 2026-09-14 (gate_fallo_no_promovido, migración sales_evaluation v20->v22):
+      # verificado con SQL directo que la respuesta puede agrupar las causas menores en un solo bucket ("otras
+      # causas menores: N casos") o listarlas por separado sin que eso sea una regresión -la suma cuadra exacto
+      # en ambos casos, ver "VI Data Map Tigo V3.yaml" > metadata.changes_from_v2-.
+    requisitos:
+    - 'TRAMPA: existen dos campos con el mismo enum pero preguntas distintas -i09 (por qué el cliente quiere
+      irse) e i07 (por qué la retención no funcionó)-. Para esta pregunta corresponde i09, no i07.'
+    sql: |
+      SELECT i09_causa_principal_de_retiro, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo' AND i09_causa_principal_de_retiro != 'n/a'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'factura_alta=6538 es la causa más frecuente (siguen mal_servicio_experiencia=2603,
+      precio=2367, otro=1947, no_necesita_servicio=1699, mala_senal_cobertura=1544)'
+
+  - id: q10_tasa_retencion_exitosa
+    pregunta: ¿Qué porcentaje de los intentos de retención son exitosos?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - a30_retencion_exitosa admite Sí/No/N/A; base evaluada = Sí+No.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE a30_retencion_exitosa = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE a30_retencion_exitosa IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+    respuesta_esperada: 'Sí=2556, base evaluada=14309, tasa=17,86%'
+
+  - id: q11_tasa_indaga_causa_retiro
+    pregunta: ¿En qué porcentaje de las gestiones de cancelación el asesor indagó la causa antes de ofrecer la salida?
+    fuentes_requeridas: [performance]
+    max_missing_numbers: 3  # calibrado 2026-09-14 (gate_fallo_no_promovido, migración sales_evaluation v20->v22):
+      # la respuesta correcta puede dar sólo el framing acotado a trámite=cancelación/retiro (base 8.882) o
+      # también el framing más amplio sobre todo el campo a25 (base 14.964) -verificado con SQL directo que
+      # ambos framings siguen siendo exactos hoy, ver "VI Data Map Tigo V3.yaml" > metadata.changes_from_v2-.
+      # Dar sólo uno de los dos no es un error, es contexto opcional.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE a25_indaga_causa_de_retiro_antes_de_ofrecer_salida = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE a25_indaga_causa_de_retiro_antes_de_ofrecer_salida IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+    respuesta_esperada: 'Sí=7345, base evaluada=19544, tasa=37,58%'
+
+  - id: q12_tasa_cierre_comercial
+    pregunta: ¿En qué porcentaje de las oportunidades el asesor intenta el cierre comercial?
+    fuentes_requeridas: [performance]
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE a42_intenta_cierre_comercial_o_confirma_decision = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE a42_intenta_cierre_comercial_o_confirma_decision IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_tigo_rendimiento_vendedor
+      WHERE seller_id = 'Tigo'
+    respuesta_esperada: 'Sí=21165, base evaluada=39250, tasa=53,92%'
+
+  - id: q13_top_dolor_cliente
+    pregunta: ¿Cuál es el principal dolor o molestia de los clientes?
+    fuentes_requeridas: [categorical_insights]
+    max_missing_numbers: 5  # calibrado 2026-09-14 (gate_fallo_no_promovido, migración sales_evaluation v20->v22):
+      # la respuesta correcta puede expresar el peso de cada categoría como % sobre el total de conversaciones o
+      # como % sobre el subconjunto con fricción (denominador distinto, ambos válidos) y puede citar la cifra
+      # bruta de "sin dolor" (27.020) o su equivalente en % (32,7%) -verificado con SQL directo, ver
+      # "VI Data Map Tigo V3.yaml" > metadata.changes_from_v2-.
+    requisitos:
+    - Excluir n/a del ranking.
+    sql: |
+      SELECT i22_dolor_o_molestia_principal_del_cliente, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos
+      WHERE seller_id = 'Tigo' AND i22_dolor_o_molestia_principal_del_cliente != 'n/a'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'factura_alta_incorrecta=22261 es, por lejos, el dolor más frecuente (siguen
+      mal_servicio_atencion=3566, falla_tecnica_movil=3428, cobro_no_reconocido=3146,
+      falla_tecnica_hogar=2785)'
+
+  - id: q14_categoria_producto_distribucion
+    pregunta: ¿Qué categorías de producto o servicio se mencionan más?
+    fuentes_requeridas: [categorical_product_insights]
+    sql: |
+      SELECT categoria_producto_servicio, COUNT(*) AS total
+      FROM dashboard_v2.vw_tigo_insights_categoricos_por_producto
+      WHERE seller_id = 'Tigo'
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 6
+    respuesta_esperada: 'planes=10238, hogar_fijo=9583, movil=8130, devices=5261, add_ons=2021,
+      devices_en_cuotas=1579'
+
+  - id: q15_resultado_general
+    pregunta: ¿Cuántas conversaciones terminaron en compra?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - 'OJO: tipointeraccion usa valores con espacio ("compra"/"no compra"), no snake_case como en otros
+      clientes del proyecto.'
+    sql: |
+      SELECT tipointeraccion, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_tigo_demografia
+      WHERE seller_id = 'Tigo'
+      GROUP BY tipointeraccion
+    respuesta_esperada: '"no compra"=58025, "compra"=8811 (2 NULL)'

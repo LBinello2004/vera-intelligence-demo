@@ -1,0 +1,496 @@
+metadata:
+  name: Preguntas de evaluación VI - Farma 24
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py
+    con --client farma24. Cada pregunta tiene el SQL que la responde correctamente y el
+    resultado real (verificado contra Postgres QA por Claude, no por el agente) al momento
+    de construir este archivo. Sigue el mismo formato y método que
+    clientes/mens_fashion/preguntas/preguntas_evaluacion.yaml.
+  data_map_version: VI Data Map Farma24 V1.yaml
+  tenant: Farma 24
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-08-31
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py (--client
+    farma24) y comparar su respuesta contra "respuesta_esperada". "requisitos" explica qué
+    tiene que resolver bien el agente para llegar a esa respuesta (no es parte de lo que se
+    le pregunta). Las preguntas marcadas es_trampa=true apuntan específicamente a los
+    hallazgos críticos documentados en VI Data Map Farma24 V1.yaml >
+    metadata.hallazgos_criticos_verificados_2026-08-31.'
+  nota_dominio: 'Farma 24 es una farmacia, dominio muy distinto de Mens Fashion. El checklist
+    marca N/A automático en interacciones administrativas y todo lo posterior al cierre de
+    venta (semantic_dependencies.administrative_interactions / sale_closed_cutoff en el Data
+    Map) — ninguna pregunta de este banco depende de esas dos reglas de forma verificable por
+    SQL (dependen del contenido de la transcripción), así que no se armaron preguntas trampa
+    específicas sobre ellas; sí se documentan como contexto de por qué el N/A de varios pasos
+    es alto.'
+  nota_rag: 'Los pasos 5 (sugierecomplementariorelacionado) y 6 (intentasustitucionpertinente)
+    del checklist usan RAG contra una Base de Conocimiento externa que no es parte de este
+    Data Map. evidencia_ventacruzada_rag / evidencia_sustitucion_rag son evidencia textual de
+    ESE resultado, no una fuente agregable — no confundir con el RAG nuevo de vi_agent.py
+    (product_catalog, ver README.md > "RAG"), que es una capacidad del agente en tiempo de
+    respuesta, no un campo del Data Map.'
+  nota_gate_automatico: 'Este banco también lo usa data_map_auto_update.py (scripts/) como gate
+    automático de la actualización del Data Map — ver README.md > "Actualización automática del
+    Data Map". Dos campos opcionales por pregunta afectan ese gate, no la evaluación manual:
+    "omit_from_numeric_gate: true" (preguntas cuya respuesta correcta cambia de contenido entre
+    corridas por diseño, ej. "dame algunos ejemplos" — el gate valida el SQL pero no exige
+    coincidencia numérica) y "max_missing_numbers: N" (override del default global de 1, calibrado
+    2026-09-02 con datos reales para preguntas donde el modelo agrega/omite detalle opcional de
+    forma consistente entre corridas válidas — ver hallazgo 4 en el README; NO usar este campo para
+    tapar una ambigüedad real de denominador, esas se corrigen en el Data Map, como se hizo con
+    q10 en V4).'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id), no filas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_demografia
+      WHERE seller_id = 'Farma 24' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '247196'
+
+  - id: q02_total_conversaciones
+    pregunta: ¿Cuántas conversaciones hay en total, analizables o no?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - No filtrar por usefulforanalysis (a diferencia de q01). El total sin filtro es 257551,
+      distinto de las 247196 analizables — si el agente responde el mismo número que q01 sin
+      aclarar la diferencia, está confundiendo ambos conceptos.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_demografia
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: '257551 conversaciones totales (247196 analizables, 10355 no analizables)'
+
+  - id: q03_tipointeraccion_dist_checklist
+    pregunta: ¿Cuántas conversaciones terminaron en compra según el checklist de atención?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Usar demography.tipointeraccion (versión checklist), no categorical_insights.
+    - Valores con mayúscula inicial y espacio ('Compra'/'No compra'), no confundir con el
+      casing de la versión de insights.
+    sql: |
+      SELECT tipointeraccion, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_demografia
+      WHERE seller_id = 'Farma 24'
+      GROUP BY tipointeraccion
+      ORDER BY total DESC
+    respuesta_esperada: 'Compra=247064, No compra=10486, NULL=1'
+
+  - id: q04_categoricos_resultado_dist_insights
+    pregunta: ¿Cuántas conversaciones terminaron en compra según el análisis de insights?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'Usar categorical_insights.categoricos_generales_resultado (versión insights), NO
+      demography.tipointeraccion. Son dos cálculos independientes (semantic_dependencies.resultado_dual_source)
+      que discrepan ~7% de las veces: esta versión da compra=216276/no_compra=24884/NULL=16357,
+      mientras que la del checklist (q03) da Compra=247064/No compra=10486. Si el agente
+      responde este número usando la fuente del checklist (o viceversa en q03), o si iguala
+      ambas respuestas sin aclarar que son lecturas distintas, es un error.'
+    - Casing en minúsculas/snake_case ('compra'/'no_compra'), distinto del PascalCase de
+      demography.tipointeraccion.
+    sql: |
+      SELECT categoricos_generales_resultado, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_generales
+      WHERE seller_id = 'Farma 24'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'compra=216276, no_compra=24884, NULL=16357'
+
+  - id: q05_discrepancia_resultado_cruzada
+    pregunta: ¿En cuántas conversaciones no coincide el resultado del checklist con el resultado de insights?
+    fuentes_requeridas: [demography, categorical_insights]
+    max_missing_numbers: 6
+    es_trampa: true
+    requisitos:
+    - Cruzar ambas fuentes por conversation_id (join resultado_cross_check del Data Map).
+    - La discrepancia relevante es Compra/no_compra (16659) + No compra/compra (1530) = 18189
+      conversaciones donde ambas fuentes tienen valor pero no coinciden. Los casos con NULL en
+      alguna de las dos (15625 + 731) no son "discrepancia" en sentido estricto, son falta de
+      dato en una de las fuentes — un agente cuidadoso debería distinguir ambos grupos.
+    sql: |
+      SELECT d.tipointeraccion, c.categoricos_generales_resultado, COUNT(DISTINCT d.conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_demografia d
+      JOIN dashboard_v2.vw_farma24_insights_categoricos_generales c
+        ON d.conversation_id = c.conversation_id AND c.seller_id = 'Farma 24'
+      WHERE d.seller_id = 'Farma 24'
+      GROUP BY 1, 2
+      ORDER BY total DESC
+    respuesta_esperada: >-
+      Compra/compra=214746 (coinciden), Compra/no_compra=16659, Compra/NULL=15625,
+      No compra/no_compra=8225 (coinciden), No compra/compra=1530, No compra/NULL=731.
+      Discrepancia real (ambas fuentes con valor pero distinto) = 18189 conversaciones (~7%).
+
+  - id: q06_gestionnocompra_por_stock
+    pregunta: Cuando la no-compra fue por falta de stock, ¿qué hizo el vendedor la mayoría de las veces?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'gestionnocompra sólo es interpretable cuando categorianocompra=''Stock''
+      (semantic_dependencies.stock); sin ese filtro, la inmensa mayoría de las filas vale
+      ''no_aplica'' (243.560 conversaciones que no son casos de stock) y diluye la
+      distribución real. Filtrando correctamente por categorianocompra=''Stock'' (3533 filas),
+      la distribución es distinta.'
+    - '''no_ofrecio_nada'' no es el valor por defecto: exige evidencia verbal de que hubo falta
+      de stock.'
+    sql: |
+      SELECT gestionnocompra, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_demografia
+      WHERE seller_id = 'Farma 24' AND categorianocompra = 'Stock'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: >-
+      Sobre 3533 casos de no-compra por stock: no_ofrecio_nada=1625, ofrecio_otra_sucursal_o_envio=771,
+      ofrecio_sustituto=489, ofrecio_vale_o_drogueria=439, NULL=209.
+
+  - id: q07_tasa_saludo
+    pregunta: ¿Qué porcentaje de las conversaciones evaluables el vendedor saludó al inicio?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - saludaalinicio admite Sí/No/N/A; la tasa se calcula sobre Sí+No (base evaluada),
+      excluyendo N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE saludaalinicio = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE saludaalinicio = 'No') AS no,
+        COUNT(*) FILTER (WHERE saludaalinicio IN ('Sí','No')) AS base_evaluada,
+        ROUND(
+          COUNT(*) FILTER (WHERE saludaalinicio = 'Sí')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE saludaalinicio IN ('Sí','No')), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_farma24_rendimiento_vendedor
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: 'Sí=239122, No=8564, base evaluada=247686, tasa=96.54%'
+
+  - id: q08_tasa_sustitucion_pertinente
+    pregunta: ¿Qué porcentaje de las conversaciones donde correspondía evaluar la sustitución, el vendedor intentó una sustitución pertinente?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'PASO 6 tiene una base N/A muy grande (153067 de 257551, ~59%): interacciones
+      administrativas, faltas de stock del producto principal (donde el criterio relevante es
+      otro paso) y productos ''No sustituible'' con receta/obra social/PAMI. Un agente que
+      reporte "sólo el 34% intentó sustitución pertinente" sobre el total de conversaciones
+      (sin excluir N/A) está inflando artificialmente el incumplimiento. La tasa correcta se
+      calcula sobre la base evaluada (Sí+No=104547), no sobre el total.'
+    - 'Regla de oro del prompt: ante silencio o audio inaudible del vendedor, el valor es
+      siempre N/A, nunca "No" — otro motivo por el que N/A no debe tratarse como
+      incumplimiento.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente = 'No') AS no,
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente = 'N/A') AS na,
+        COUNT(*) FILTER (WHERE intentasustitucionpertinente IN ('Sí','No')) AS base_evaluada,
+        ROUND(
+          COUNT(*) FILTER (WHERE intentasustitucionpertinente = 'Sí')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE intentasustitucionpertinente IN ('Sí','No')), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_farma24_rendimiento_vendedor
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: 'Sí=88869, No=15678, N/A=153067, base evaluada=104547, tasa=85.0%'
+
+  - id: q09_tasa_venta_cruzada
+    pregunta: ¿Con qué frecuencia el vendedor sugiere un producto complementario relacionado (venta cruzada), sobre los casos en que correspondía?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Paso 5, apoyado en RAG contra la Base de Conocimiento externa (fuera del alcance del
+      Data Map); calcular la tasa sobre la base evaluada (Sí+No), excluyendo N/A.
+    - No confundir con ofreceadicionalnorelacionado (paso 7, producto NO relacionado con la
+      necesidad principal).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE sugierecomplementariorelacionado = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE sugierecomplementariorelacionado = 'No') AS no,
+        COUNT(*) FILTER (WHERE sugierecomplementariorelacionado = 'N/A') AS na,
+        ROUND(
+          COUNT(*) FILTER (WHERE sugierecomplementariorelacionado = 'Sí')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE sugierecomplementariorelacionado IN ('Sí','No')), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_farma24_rendimiento_vendedor
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: 'Sí=177101, No=48166, N/A=32347, base evaluada=225267, tasa=78.6%'
+
+  - id: q10_banco_abordo_dist
+    pregunta: ¿En cuántas conversaciones el vendedor abordó Banco Provincia o Cuenta DNI?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - Usar categoricos_generales_abordo_banco_provincia_o_cuenta_dni.
+    - 'NULL (mayoritario en la distribución) no debería tratarse como "no abordó" — no hay
+      suficiente evidencia en el Data Map para afirmar la causa exacta de ese NULL, hay que
+      presentarlo como dato faltante, no como negativo.'
+    - 'AGREGADO 2026-09-02 (hallazgo real del pipeline de actualización automática del Data Map,
+      ver README.md > "Actualización automática del Data Map", hallazgo 4, y Data Map V4
+      sql_rules.categorical_rate_general_rule): si la pregunta pide una TASA o PORCENTAJE de
+      abordaje (no sólo el conteo crudo), la base evaluada es si+no, EXCLUYENDO no_aplica y NULL —
+      mismo criterio que sql_rules.performance_rate. Verificado 2026-09-02 que calcular sobre
+      si+no+no_aplica da un número distinto y es la convención incorrecta; dos corridas
+      independientes del agente contra el mismo Data Map dieron 47,6% y 42,2% respectivamente antes
+      de este fix, exactamente por esta ambigüedad.'
+    sql: |
+      SELECT categoricos_generales_abordo_banco_provincia_o_cuenta_dni, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_generales
+      WHERE seller_id = 'Farma 24'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'NULL=178335, no=36215, si=33956, no_aplica=9011'
+
+  - id: q11_regla_banco_provincia_producto_a_conversacion
+    pregunta: Si un producto se vendió con la promoción de Banco Provincia, ¿siempre queda registrado que el cliente tiene Banco Provincia o Cuenta DNI a nivel conversación?
+    fuentes_requeridas: [categorical_product_insights, categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'semantic_dependencies.banco_provincia declara la regla como determinística ("si algún
+      producto tiene se_vendio_con_promo_banco_provincia=si, entonces
+      cliente_tiene_banco_provincia_o_cuenta_dni=si"), pero verificado contra datos reales hay
+      112 excepciones (111 no_determinable + 1 no) sobre 6608 conversaciones con al menos un
+      producto vendido con la promo. La regla se cumple ~98.3% de las veces, no 100%. Un
+      agente que responda "sí, siempre" sin matiz está sobre-confiando en la regla declarada
+      por sobre la evidencia empírica.'
+    - 'FALLÓ en la primera corrida real (run_evaluation.py --client farma24, 2026-08-31): el
+      agente respondió "Sí, siempre" sin ejecutar ninguna consulta SQL — repitió literalmente
+      la regla del Data Map V1 (que la declaraba sin matices) como si fuera un hecho verificado.
+      Se corrigió agregando un `reliability_warning` empírico a
+      semantic_dependencies.banco_provincia en VI Data Map Farma24 V1.yaml, con el mismo
+      criterio que el reliability_warning de Mens Fashion V4: no basta con lo que dice el
+      prompt, hay que documentar la excepción real para que el agente no la ignore.'
+    sql: |
+      SELECT ci.categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn, COUNT(DISTINCT p.conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto p
+      JOIN dashboard_v2.vw_farma24_insights_categoricos_generales ci
+        ON p.conversation_id = ci.conversation_id AND ci.seller_id = 'Farma 24'
+      WHERE p.seller_id = 'Farma 24' AND p.se_vendio_con_promo_banco_provincia = 'si'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: 'si=6496, no_determinable=111, no=1 (la regla se cumple en ~98.3% de los 6608 casos)'
+
+  - id: q12_rol_comercial_cobertura_historica
+    pregunta: ¿Qué porcentaje de los productos mencionados fueron ofrecidos como adicional por iniciativa del vendedor?
+    fuentes_requeridas: [categorical_product_insights]
+    max_missing_numbers: 4
+    es_trampa: true
+    requisitos:
+    - 'rol_comercial es NULL en 504611 de 735799 filas (~68.6%) — no por falta de evidencia de
+      negocio, sino porque el campo se agregó recién el 2026-08-03 (corte de versión del
+      prompt insights, confirmado empíricamente: TODAS las filas NULL tienen
+      uploaded_at_local < 2026-08-03 10:15, TODAS las filas con valor tienen
+      uploaded_at_local >= 2026-08-03 10:06). Un agente que calcule el porcentaje sobre el
+      total de filas (incluyendo el histórico sin cobertura) o que llame a esas filas "no
+      determinable de negocio" está cometiendo el error documentado en
+      semantic_dependencies.rol_comercial_coverage. La base correcta para un porcentaje es
+      sólo las 231188 filas con cobertura (posteriores al 2026-08-03).'
+    sql: |
+      SELECT rol_comercial, COUNT(*) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto
+      WHERE seller_id = 'Farma 24'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: >-
+      NULL=504611 (68.6%, histórico sin cobertura previo al 2026-08-03 por corte de versión del
+      prompt), pedido_inicial=150567, adicional_ofrecido_por_vendedor=57185,
+      solicitado_adicionalmente_por_cliente=13255, sustituto=9326, no_determinable=855.
+      Sobre la base con cobertura (231188 filas), adicional_ofrecido_por_vendedor = 24.7%.
+
+  - id: q13_top5_producto_falta_stock
+    pregunta: ¿Cuáles son los 5 productos con más faltas de stock reportadas?
+    fuentes_requeridas: [categorical_product_insights]
+    es_trampa: true
+    max_missing_numbers: 6  # recalibrado 2026-09-09 (gate V7 vs V9): el top 5 pedido siempre
+    # coincide exacto; lo que varía es si el modelo agrega o no la lista de "puestos 6-8" como
+    # contexto extra -no forma parte de lo que pide la pregunta-. Ver .runtime/data_map_updates/
+    # farma24_alto/*_promocion_manual.json para el detalle verificado.
+    requisitos:
+    - Filtrar hubo_falta_stock IS TRUE.
+    - Grano es por conversation_id + producto_index (no por conversación); usar COUNT(*) está
+      bien acá porque se pide "veces reportadas", no "conversaciones distintas".
+    - No confundir con marca (ver q14) — producto es el nombre libre mencionado, puede incluir
+      "producto_no_identificado" cuando no hay evidencia clara de cuál era.
+    - 'CORRECCIÓN post-evaluación (2026-08-31): el primer SQL de este banco agrupaba por
+      producto tal cual (sin normalizar casing) y daba ibuprofeno=1157/462/448 para las
+      variantes de dosis. Al correr run_evaluation.py, el agente respondió con números más
+      altos (ibuprofeno=1385, ibuprofeno 600=700, ibuprofeno 400=673) porque normalizó
+      LOWER(TRIM(producto)) por su cuenta, detectando el mismo problema de casing duplicado
+      que ya se había documentado para marca (ver q14) pero que este golden no había aplicado
+      a producto. Verificado contra Postgres: los números del agente eran los correctos: el
+      golden original estaba mal, no el agente — mismo patrón de error que las correcciones
+      post-evaluación de Mens Fashion (ver preguntas_evaluacion.yaml de mens_fashion, q04/q05).'
+    sql: |
+      SELECT LOWER(TRIM(producto)) AS producto_normalizado, COUNT(*) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto
+      WHERE seller_id = 'Farma 24' AND hubo_falta_stock IS TRUE
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'ibuprofeno=1385, producto_no_identificado=1091, ibuprofeno 600=700, ibuprofeno 400=673, omeprazol=586'
+
+  - id: q14_top5_marca_falta_stock
+    pregunta: ¿Cuáles son las 5 marcas con más faltas de stock reportadas?
+    fuentes_requeridas: [categorical_product_insights]
+    es_trampa: true
+    max_missing_numbers: 5
+    requisitos:
+    - Filtrar hubo_falta_stock IS TRUE y marca IS NOT NULL (marca es NULL cuando no hay
+      evidencia clara o está fusionada con el producto).
+    - 'Hallazgo de calidad de datos que ya está en el Data Map V1 (routing.categorical_product_insights
+      no lo detalla, pero el patrón es el mismo que en q13/producto): "Buscapina" (2804 filas),
+      "buscapina" (1101) y "BUSCAPINA" (1) son la misma marca con distinto casing. Hay que
+      normalizar (LOWER/TRIM o INITCAP) antes de rankear, si no el conteo por marca queda
+      fragmentado y subestimado.'
+    - 'CORRECCIÓN post-evaluación (2026-08-31): el primer SQL de este banco NO normalizaba y
+      sólo revisó el caso de Buscapina, asumiendo que las demás marcas (Actron, Tafirol,
+      Ibupirac) no tenían el mismo problema — supuesto que resultó falso. El agente, al
+      correr run_evaluation.py, normalizó con TRIM(INITCAP(marca)) por su cuenta y devolvió
+      Actron=554 (no 481) y Casasco entrando al top 5 en lugar de "buscapina" en minúscula.
+      Verificado contra Postgres: los números normalizados del agente son los correctos. Se
+      corrige el golden para no repetir el error ya identificado en Mens Fashion de asumir que
+      una discrepancia numérica es un fallo del agente sin verificar primero contra la base.'
+    sql: |
+      SELECT TRIM(INITCAP(marca)) AS marca_normalizada, COUNT(*) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto
+      WHERE seller_id = 'Farma 24' AND hubo_falta_stock IS TRUE AND marca IS NOT NULL AND TRIM(marca) <> ''
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'Actron=554, Tafirol=457, Buscapina=360, Ibupirac=281, Casasco=143'
+
+  - id: q15_categoria_no_compra_dual_source
+    pregunta: ¿Cuál es la categoría de no-compra más común según los insights de la conversación?
+    fuentes_requeridas: [categorical_insights, demography]
+    es_trampa: true
+    requisitos:
+    - 'categorical_insights.categoricos_generales_categoria_no_compra (versión insights) está
+      94% NULL (241321 de 257517 filas) — NO es la fuente primaria para esta pregunta. El Data
+      Map (semantic_dependencies.categoria_no_compra_dual_source) indica preferir
+      demography.categorianocompra (checklist, casi 100% poblado). Un agente que responda
+      usando sólo la versión de insights sin señalar la baja cobertura, o que la presente como
+      "la" categoría de no-compra sin aclarar que hay una versión más completa, está
+      incumpliendo la regla del Data Map.'
+    - 'Enums distintos: PascalCase en demography (GestionAdministrativa/Stock/...) vs
+      snake_case en insights (gestion_administrativa/stock/...) — no son la misma columna con
+      dos formatos, son dos campos separados.'
+    sql: |
+      SELECT categoricos_generales_categoria_no_compra, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_generales
+      WHERE seller_id = 'Farma 24'
+      GROUP BY 1
+      ORDER BY total DESC
+    respuesta_esperada: >-
+      Versión insights (NO usar como fuente primaria, 94% NULL): NULL=241321, no_aplica=14479,
+      consulta=699, stock=456, gestion_administrativa=446, otro=90, precio=26.
+      Fuente primaria correcta es demography.categorianocompra (ver q05): GestionAdministrativa=3961,
+      Stock=3533, Consulta=1840, Otro=762, Precio=361.
+
+  - id: q16_gestion_no_compra_columna_muerta
+    pregunta: Según los insights, ¿qué gestión hizo el vendedor cuando no hubo compra?
+    fuentes_requeridas: [categorical_insights, demography]
+    max_missing_numbers: 12
+    es_trampa: true
+    requisitos:
+    - 'categorical_insights.categoricos_generales_gestion_no_compra es una columna MUERTA:
+      100% NULL verificado (257517 de 257517 filas). Un agente que intente responder con este
+      campo (aunque el nombre sugiera exactamente lo que se pregunta) no puede obtener ningún
+      resultado útil y debería, o bien detectar que está vacío y usar el equivalente real
+      (demography.gestionnocompra, ver q06), o bien reportar explícitamente que esa fuente no
+      tiene datos en vez de inventar una respuesta.'
+    sql: |
+      SELECT categoricos_generales_gestion_no_compra, COUNT(*) AS total
+      FROM dashboard_v2.vw_farma24_insights_categoricos_generales
+      WHERE seller_id = 'Farma 24'
+      GROUP BY 1
+    respuesta_esperada: >-
+      100% NULL (257517 de 257517 filas) — columna muerta, no usar. La gestión real ante
+      no-compra por stock está en demography.gestionnocompra (ver q06).
+
+  - id: q17_poblacion_producto
+    pregunta: ¿Cuántos productos distintos se mencionaron en total (contando cada mención por conversación)?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - 'Población de producto: COUNT(DISTINCT (conversation_id, producto_index)), según
+      sql_rules.product_population. En esta vista no hay filas duplicadas por esa clave (el
+      COUNT(*) da el mismo resultado que el COUNT DISTINCT compuesto), pero el agente debe
+      aplicar la regla igual, no asumir que nunca hay duplicados.'
+    sql: |
+      SELECT COUNT(*) AS filas, COUNT(DISTINCT (conversation_id, producto_index)) AS productos_distintos
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: '735799 menciones de producto (sin duplicados por conversación+índice)'
+
+  - id: q18_se_termino_comprando_dist
+    pregunta: ¿En qué porcentaje de las menciones de producto el producto terminó vendiéndose?
+    fuentes_requeridas: [categorical_product_insights]
+    max_missing_numbers: 3  # calibrado 2026-09-09 (gate V7 vs V9): la tasa central y la base
+    # evaluada siempre coinciden; lo que varía es si el modelo agrega o no la lectura alternativa
+    # "sobre el total absoluto" como dato extra de contexto.
+    requisitos:
+    - se_termino_comprando es boolean nullable; calcular la tasa sobre filas con valor (true+false),
+      excluyendo NULL (filas donde el insights no corrió sobre esa conversación).
+    - Un producto faltante reemplazado por un sustituto exitoso queda false para el original y
+      true para el sustituto (son filas separadas) — no inferir que false implica pérdida neta
+      de venta sin revisar si hubo sustitución en otra fila de la misma conversación.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE se_termino_comprando IS TRUE) AS comprado,
+        COUNT(*) FILTER (WHERE se_termino_comprando IS FALSE) AS no_comprado,
+        COUNT(*) FILTER (WHERE se_termino_comprando IS NULL) AS sin_dato,
+        ROUND(
+          COUNT(*) FILTER (WHERE se_termino_comprando IS TRUE)::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE se_termino_comprando IS NOT NULL), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: 'comprado=453210, no_comprado=237106, sin_dato=45483, tasa sobre base con dato=65.65%'
+
+  - id: q19_evidencia_falta_stock_selection
+    pregunta: Dame algunos ejemplos textuales de conversaciones donde faltó stock, con el producto involucrado.
+    fuentes_requeridas: [categorical_product_insights, descriptive_product_insights]
+    omit_from_numeric_gate: true
+    es_trampa: true
+    requisitos:
+    - 'Pregunta cualitativa: seleccionar evidencia puntual (join product_evidence por
+      conversation_id + producto_index), NO agrupar, contar ni rankear el texto libre de
+      evidencia_falta_stock (sql_rules.free_text). Un agente que responda con un GROUP BY o un
+      conteo de frases está tratando texto narrativo como si fuera una categoría.'
+    - Filtrar hubo_falta_stock IS TRUE en la vista categórica para asegurar que la evidencia
+      corresponde a un caso real de falta de stock (evidencia_falta_stock es NULL cuando
+      hubo_falta_stock=false).
+    sql: |
+      SELECT p.conversation_id, p.producto_index, p.producto, d.evidencia_falta_stock
+      FROM dashboard_v2.vw_farma24_insights_categoricos_por_producto p
+      JOIN dashboard_v2.vw_farma24_insights_descriptivos_por_producto d
+        ON p.conversation_id = d.conversation_id AND p.producto_index = d.producto_index
+        AND d.seller_id = 'Farma 24'
+      WHERE p.seller_id = 'Farma 24' AND p.hubo_falta_stock IS TRUE AND d.evidencia_falta_stock IS NOT NULL
+      LIMIT 3
+    respuesta_esperada: >-
+      Ejemplos textuales puntuales, ej. producto "Tukolbuk de miel y limón" con evidencia
+      "Miel no me quedó. No tengo de miel y limón. Esa sí que no me queda." — no un conteo ni
+      un ranking de frases.
+
+  - id: q20_tasa_despedida_cierre
+    pregunta: ¿En qué porcentaje de las conversaciones evaluables el vendedor se despidió y acompañó a caja?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - despideyacompanaacaja (paso 9) marca el cierre de venta (semantic_dependencies.sale_closed_cutoff);
+      calcular la tasa sobre la base evaluada (Sí+No), excluyendo N/A.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE despideyacompanaacaja = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE despideyacompanaacaja = 'No') AS no,
+        COUNT(*) FILTER (WHERE despideyacompanaacaja = 'N/A') AS na,
+        ROUND(
+          COUNT(*) FILTER (WHERE despideyacompanaacaja = 'Sí')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE despideyacompanaacaja IN ('Sí','No')), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_farma24_rendimiento_vendedor
+      WHERE seller_id = 'Farma 24'
+    respuesta_esperada: 'Sí=235396, No=11980, N/A=10238, base evaluada=247376, tasa=95.16%'

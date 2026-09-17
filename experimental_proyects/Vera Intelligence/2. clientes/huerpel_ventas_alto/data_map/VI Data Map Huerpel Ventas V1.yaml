@@ -1,0 +1,358 @@
+metadata:
+  name: VI Data Map Huerpel Ventas V1
+  version: 1.0.0
+  client: Huerpel Ventas
+  model_target: Gemini 3.7
+  generated_at: '2026-09-08'
+  scope: Dos vistas dashboard_v2 de la sub-marca Ventas de Huerpel (demografia +
+    rendimiento_vendedor). El tenant ('Huerpel') es fijo. "Esquema delgado" para la
+    parte de insights -existe clientes/Huerpel/Ventas/insights en Langfuse pero NO hay
+    vista de insights materializada en Postgres, mismo patrón que Dalton/Salomon/GAC/
+    Agrosuper/Hyundai-. Cubre exclusivamente la asesoría comercial de piso (APV), no la
+    recepción (huerpel_hostess/huerpel_hostess_seminuevos, clientes separados).
+  source_of_truth:
+    checklist_prompt: clientes/Huerpel/Ventas/checklist (Langfuse, label production, v4
+      al construir este mapa, promptId 4bomiv5RyqWUtRg3dfPX)
+    note: 'Ver clientes/huerpel_hostess_alto/data_map/VI Data Map Huerpel Hostess
+      V1.yaml para el contexto completo del grupo Huerpel (3 sub-marcas, 8 vistas reales
+      en Postgres, por qué se onboardearon como 3 clientes separados). Verificado
+      cruzando dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor.prompt_id contra el
+      promptId del prompt de Langfuse: 1.885 de 1.942 filas (97,1%) coinciden con el
+      promptId vigente (4bomiv5RyqWUtRg3dfPX). El resto (57 filas, 2,9%) tiene un
+      prompt_id distinto NO identificado en Langfuse (O7fesqEq1wN5oQXSOEcT) -ver
+      known_findings_v1, hallazgo real QUEDA ABIERTO-.
+      clientes/Huerpel/Ventas/insights SÍ existe en Langfuse (v4 al momento de este
+      onboarding) pero no tiene vista materializada en Postgres -por eso este Data Map
+      y su config.yaml NO declaran conversation_insights, mismo criterio que Dalton-.'
+  known_findings_v1:
+  - 'ROL DEL APV (ASESOR), NO DE LA HOSTESS: el checklist evalúa al Asesor Profesional
+      de Ventas que continúa la atención después de la recepción. No confundir con
+      huerpel_hostess/huerpel_hostess_seminuevos (clientes separados que evalúan al
+      personal de recepción).'
+  - 'HALLAZGO REAL — FILAS HUÉRFANAS (ver V2 para la causa raíz exacta verificada
+      después de la primera corrida del banco dorado): rendimiento_vendedor tiene
+      1.942 filas pero demografia sólo tiene 1.707 -235 filas (12,1%) existen en
+      performance pero NO tienen fila correspondiente en demografia por
+      conversation_id (verificado con LEFT JOIN). Mismo patrón que el hallazgo de
+      filas huérfanas de Farma24 (descriptive_insights, 22,5% -ver README, sección
+      "Investigación de las filas huérfanas de descriptive_insights"-). Efecto
+      práctico: cualquier pregunta que requiera cruzar checklist con género/resultado
+      de la interacción pierde esas 235 filas; una pregunta que sólo use performance
+      (sin cruzar con demography) sí las incluye. QUEDA ABIERTO -no investigado el
+      pipeline que genera la discrepancia, igual que en Farma24-.'
+  - 'HALLAZGO REAL — PROMPT_ID NO IDENTIFICADO: 57 de 1.942 filas de performance
+      (2,9%) tienen prompt_id=O7fesqEq1wN5oQXSOEcT, que NO coincide con ninguna versión
+      conocida del prompt clientes/Huerpel/Ventas/checklist en Langfuse (se revisaron
+      las versiones 1 y 2, ambas usan otro promptId o ninguno). De esas 57 filas, 41
+      están marcadas estado_analisis=''Analizada'' y usefulforanalysis=true pero
+      TODOS los 18 campos del checklist son NULL (no ''N/A'', NULL real) -verificado
+      con SELECT-; las 16 restantes están fuera del cruce con demografia (parte de las
+      235 filas huérfanas de arriba). Efecto práctico: estas 57 filas no distorsionan
+      las tasas de cumplimiento (los NULL se excluyen naturalmente de Sí/No), pero SÍ
+      infuenclarían un COUNT(*) crudo sin filtrar checklist poblado. QUEDA ABIERTO -no
+      identificado a qué prompt/versión corresponde este promptId; no está en el
+      historial de versiones revisado de Langfuse-.'
+  - 'demography.tipointeraccion SÍ está poblado (a diferencia de las dos sub-marcas de
+      Hostess, donde es 100% NULL): compra=1.169 (68,5% de 1.707), conversacion_no_
+      finalizada=314 (18,4%), cambio=88 (5,2%), no_compra=82 (4,8%), no_identificado
+      -vía NULL-=53 (3,1%), queja=1 (0,06%). Enum en minúsculas snake_case (a
+      diferencia de Hostess/Hostess Seminuevos, que usan PascalCase con tilde) -
+      particularidad propia del prompt de Ventas/insights, documentada para no asumir
+      casing homogéneo entre las 3 sub-marcas-.'
+  - 'demography.generocliente: no_identificado=711 (41,7%), masculino=697 (40,8%),
+      femenino=246 (14,4%), 53 NULL (3,1%, coincide con las filas sin tipointeraccion
+      -mismo patrón de conversaciones sin useful/analizar-). Igual que tipointeraccion,
+      en minúsculas (distinto casing que Hostess/Hostess Seminuevos).'
+  - 'Volumen real y alto, MULTI-TIENDA (a diferencia de Hostess/Hostess Seminuevos que
+      son tienda única): 1.707 conversaciones en demografia / 1.942 en performance,
+      1.555 analizables, 10 tiendas (BDC=869 la mayor -probablemente Business
+      Development Center/call center, no piso físico-, Tula=183, Angelópolis=166,
+      Apizaco=106, San Manuel=92, Tulancingo=79, Cholula=75, Pachuca=71, Zumpango=65,
+      Huachinango=1), 42 asesores distintos, 2026-06-08 a 2026-09-07.'
+  - 'Enum estándar Sí/No/N/A con mayúscula inicial en los 18 campos del checklist de
+      performance (mismo casing que Hostess) -verificado con SELECT DISTINCT-.'
+decision_flow:
+- Identificar si la pregunta es sobre la asesoría de VENTA/piso (este Data Map) o
+  sobre la RECEPCIÓN inicial (huerpel_hostess/huerpel_hostess_seminuevos, clientes
+  distintos).
+- Si la pregunta requiere cruzar checklist con género/resultado de la interacción,
+  advertir que 235 de 1.942 filas de performance (12,1%) no tienen contraparte en
+  demography (filas huérfanas, ver known_findings_v1) y quedan fuera del cruce.
+- No existe categorización de motivo/necesidad/objeción estructurada más allá de los
+  campos booleanos del checklist (financiamiento, valuación, prueba de manejo, etc) -
+  no hay vista de insights materializada para Ventas.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE,
+  GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado general de la interacción (compra/cambio/queja/no compra/no
+      finalizada), género del cliente.
+    avoid: no cruzar con performance sin advertir las 235 filas huérfanas.
+  performance:
+    questions: criterios del proceso de venta consultiva (inicio de consulta,
+      diagnóstico de necesidades, presentación del producto y prueba de manejo, manejo
+      de objeciones/propuesta económica, cierre de la venta).
+    avoid: no tratar N/A como incumplimiento -la grabación puede empezar a mitad del
+      proceso, en cuyo caso las etapas previas son N/A por diseño, no incumplimiento-;
+      no usar prompt_id para negocio; excluir naturalmente las filas con checklist
+      NULL (57 filas de prompt_id no identificado, ver known_findings_v1).
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a
+      conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200
+    para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Huerpel') sobre el tenant_field
+    de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con
+    valor Sí o No; excluir N/A y null (esto excluye automáticamente las 57 filas del
+    prompt_id no identificado, cuyo checklist es NULL).
+  categorical_rate_general_rule: Para cualquier campo categórico con semántica
+    Sí/No/N/A o equivalente, la base evaluada excluye explícitamente "no identificado/
+    no aplica" salvo que la pregunta pida esa categoría específicamente.
+sources:
+  demography:
+    source: dashboard_v2.vw_huerpel_ventas_demografia
+    use_when: Resultado general de la interacción, género del cliente.
+    grain: Una fila por conversación (1.707 filas -ver known_findings_v1 sobre por qué
+      performance tiene más filas que esta vista).
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [compra, cambio, queja, no_compra, conversacion_no_finalizada]
+        observed_values: [compra, conversacion_no_finalizada, cambio, no_compra, queja]
+        type: text
+        nullable: true
+        description: 'compra=1.169 (68,5%), conversacion_no_finalizada=314 (18,4%),
+          cambio=88 (5,2%), no_compra=82 (4,8%), queja=1 (0,06%), 53 NULL (3,1%).
+          Enum en minúsculas snake_case -distinto del casing de Hostess/Hostess
+          Seminuevos, ver known_findings_v1-.'
+        operations: [filter, group]
+      generocliente:
+        configured_values: [masculino, femenino, no_identificado]
+        observed_values: [masculino, femenino, no_identificado]
+        type: text
+        nullable: true
+        description: 'no_identificado=711 (41,7%), masculino=697 (40,8%),
+          femenino=246 (14,4%), 53 NULL (3,1%).'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+    use_when: Criterios del proceso de venta consultiva del APV.
+    grain: Una fila por conversación con múltiples columnas de criterios, más prompt_id
+      (1.942 filas -235 sin contraparte en demography, ver known_findings_v1).
+    profile: standard_conversation
+    decision_semantics: 'Los 18 criterios admiten Sí/No/N/A. La grabación puede
+      empezar a mitad del proceso -en ese caso no se reconstruyen etapas previas
+      (N/A, no incumplimiento). Ver reglas completas en
+      get_business_rules(sales_evaluation).'
+    fields:
+      sepresentoformalmenteconnombreycargo:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Requiere nombre + cargo/rol (los dos componentes). Sí=512
+          (29,3%), No=919 (52,6%), N/A=223 (12,8%), 288 NULL (16,5%, ver
+          known_findings_v1 sobre filas sin checklist poblado).'
+        operations: [filter, group, compare]
+      preguntarsiyafueatendidoporotroasesor:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Incluye verificar atención previa por el mismo APV u otro.
+          Sí=148 (8,5%), No=1.124 (64,4%), N/A=382 (21,9%), 288 NULL -tasa de
+          cumplimiento más baja del checklist-.'
+        operations: [filter, group, compare]
+      estableciorapportinicialantesdehablardeproducto:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Conexión humana ANTES de hablar de producto/precio. Sí=244
+          (14,0%), No=1.154 (66,1%), N/A=256 (14,7%), 288 NULL.'
+        operations: [filter, group, compare]
+      confirmolainformacionbasicadelcliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Confirma info básica YA DISPONIBLE de recepción (nombre/
+          vehículo previamente informado). Sí=837 (47,9%), No=475 (27,2%),
+          N/A=342 (19,6%), 288 NULL.'
+        operations: [filter, group, compare]
+      indagosobreelvehiculoactualyexperienciaprevia:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Explora vehículo actual/experiencia previa del cliente.
+          Sí=314 (18,0%), No=889 (50,9%), N/A=451 (25,8%), 288 NULL.'
+        operations: [filter, group, compare]
+      indagosobrecolormodelodelvehiculo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Requiere modelo Y color (dos colores sólo si el cliente está
+          indeciso). Sí=448 (25,7%), No=778 (44,6%), N/A=428 (24,5%), 288 NULL.'
+        operations: [filter, group, compare]
+      preguntosobreelusoprincipaldelvehiculo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta/confirma uso principal (ciudad/carretera/familia/
+          trabajo). Sí=416 (23,8%), No=796 (45,6%), N/A=442 (25,3%), 288 NULL.'
+        operations: [filter, group, compare]
+      explorolasprioridadesdelcliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Qué VALORA el cliente (seguridad/espacio/tecnología/etc,
+          distinto de "uso"). Sí=284 (16,3%), No=926 (53,1%), N/A=444 (25,4%),
+          288 NULL.'
+        operations: [filter, group, compare]
+      identificoelpresupuestoyelesquemadecompra:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Explora estructura económica (presupuesto/enganche/
+          mensualidad/toma), distinto de sólo mencionar el precio. Sí=860 (49,3%),
+          No=384 (22,0%), N/A=410 (23,5%), 288 NULL.'
+        operations: [filter, group, compare]
+      preguntatipooperacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Pregunta/confirma contado vs. crédito/financiamiento (distinto
+          de identificoelpresupuestoyelesquemadecompra). Sí=815 (46,7%), No=423
+          (24,2%), N/A=416 (23,8%), 288 NULL.'
+        operations: [filter, group, compare]
+      seleccionounvehiculoacordealdiagnostico:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Recomienda unidad CONECTÁNDOLA con una necesidad/prioridad
+          identificada (no basta mostrar un vehículo). Sí=681 (39,0%), No=154
+          (8,8%), N/A=819 (46,9%, mayoría), 288 NULL.'
+        operations: [filter, group, compare]
+      realizounademostracionestaticaenfatizandobeneficios:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Exige relación característica→beneficio (enumerar
+          equipamiento sin explicar valor no alcanza). Sí=534 (30,6%), No=446
+          (25,6%), N/A=674 (38,6%), 288 NULL.'
+        operations: [filter, group, compare]
+      utilizoherramientasdigitalesdeapoyo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'REGLA DE OBSERVABILIDAD: sin evidencia verbal normalmente
+          corresponde N/A, no "No" -el uso de tablet/pantalla puede ocurrir sin
+          quedar audible-. Sí=352 (20,2%), No=650 (37,2%), N/A=652 (37,4%),
+          288 NULL.'
+        operations: [filter, group, compare]
+      ofrecioproactivamentelapruebademanejo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Ofrecimiento PROACTIVO del APV -si el cliente la pide
+          espontáneamente, no demuestra ofrecimiento del asesor-. Sí=383 (21,9%),
+          No=695 (39,8%), N/A=576 (33,0%), 288 NULL.'
+        operations: [filter, group, compare]
+      explicoclaramentelasopcionesdefinanciamiento:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Exige al menos UNA condición concreta (enganche/mensualidad/
+          plazo/tasa) -"tenemos crédito" sin condiciones no basta-. N/A si la
+          operación es claramente de contado. Sí=890 (51,0%), No=283 (16,2%),
+          N/A=481 (27,6%), 288 NULL.'
+        operations: [filter, group, compare]
+      ofreciolavaluaciondelvehiculoactual:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Exige OPORTUNIDAD REAL de toma (no basta que el cliente
+          tenga auto: debe existir intención de cambiar/vender/dejar a cuenta).
+          Sí=225 (12,9%), No=744 (42,6%), N/A=685 (39,2%), 288 NULL -tasa de
+          cumplimiento absoluta más baja del checklist junto con
+          preguntarsiyafueatendidoporotroasesor-.'
+        operations: [filter, group, compare]
+      explicolossiguientespasospostcompra:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Exige avance CONCRETO hacia la operación (no exige venta
+          cerrada, pero sí un paso futuro explicado). Sí=564 (32,3%), No=535
+          (30,6%), N/A=555 (31,8%), 288 NULL.'
+        operations: [filter, group, compare]
+      agradecioeltiempodelclienteprofesionalmente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Aplica haya compra o no, si el final real de la
+          intervención está capturado. Sí=1.125 (64,5%), No=264 (15,1%),
+          N/A=265 (15,2%), 288 NULL -tasa de cumplimiento más alta del checklist-.'
+        operations: [filter, group, compare]
+      prompt_id:
+        type: text
+        nullable: false
+        description: 'Identificador técnico interno. No usar en respuestas de
+          negocio. 1.885 de 1.942 filas (97,1%) corresponden al promptId vigente
+          (4bomiv5RyqWUtRg3dfPX); 57 filas (2,9%) tienen un promptId no
+          identificado (O7fesqEq1wN5oQXSOEcT) -ver known_findings_v1, QUEDA
+          ABIERTO-.'
+        operations: []
+joins:
+  rule: 'demography y performance comparten conversation_id pero NO tienen la misma
+    población: performance tiene 235 filas más que demography (huérfanas, ver
+    known_findings_v1). Un INNER JOIN entre ambas pierde esas 235 filas
+    silenciosamente -advertir esto explícitamente en cualquier respuesta que cruce
+    resultado (demography) con checklist (performance)-.'
+limitations:
+- Resultado y desempeño son inferencias conversacionales del modelo, no ventas
+  certificadas.
+- 'LIMITACIÓN PRINCIPAL: no existe vista de insights materializada para Ventas
+  (clientes/Huerpel/Ventas/insights existe en Langfuse pero no en Postgres). Cualquier
+  pregunta sobre motivo de venta perdida, escalamiento entre segmentos, resultado
+  comercial estructurado (venta_cerrada/cotización/seguimiento_pendiente/venta_
+  perdida) u objeciones categorizadas no puede responderse -sólo demography.
+  tipointeraccion da una lectura general aproximada (compra/cambio/queja/no_compra/
+  conversación no finalizada), no el detalle fino que trae el prompt de insights.'
+- 'FILAS HUÉRFANAS: 235 de 1.942 filas de performance (12,1%) no tienen contraparte
+  en demography. QUEDA ABIERTO, no investigado el pipeline que genera la
+  discrepancia.'
+- 'PROMPT_ID NO IDENTIFICADO: 57 de 1.942 filas de performance (2,9%) fueron
+  generadas por un prompt_id que no corresponde a ninguna versión conocida del
+  checklist vigente en Langfuse; su checklist queda 100% NULL. QUEDA ABIERTO.'
+- Este Data Map cubre exclusivamente la asesoría de venta de Huerpel Ventas. No cubre
+  Hostess ni Hostess Seminuevos (clientes separados, ver README).
+- No responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

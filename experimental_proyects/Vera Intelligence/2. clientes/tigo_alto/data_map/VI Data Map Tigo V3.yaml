@@ -1,0 +1,598 @@
+metadata:
+  name: VI Data Map Tigo V3
+  version: 3.0.0
+  client: Tigo
+  model_target: Gemini 3.7
+  generated_at: '2026-09-14'
+  scope: Sólo seis vistas dashboard_v2 de Tigo. El tenant ('Tigo') es fijo para este cliente; no se resuelve
+    dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Tigo/Asesor/checklist (Langfuse, label production, v22 al construir este mapa)
+    insights_prompt: clientes/Tigo/Asesor/insights (Langfuse, label production, v13 al construir este mapa)
+    note: 'Tigo es un operador de telecomunicaciones (Colombia, según el propio prompt de insights), no un
+      retail de indumentaria como el resto de los clientes de este batch. Es también, con enorme diferencia,
+      el más grande y complejo: ~67-83 mil filas por vista (vs cientos/miles en el resto) y un checklist de
+      59 criterios binarios (a01-a59, sin a55) más 15 triggers críticos de cumplimiento/ética (t01-t15),
+      contra 12-27 campos en los demás clientes. El dominio tampoco es mayormente "venta": el trámite
+      principal más frecuente es factura (15.701 casos), seguido de cancelación/retiro (9.210) y PQR/reclamo
+      (7.456) — Tigo es ante todo una operación de servicio/atención y retención, con venta como uno más de
+      varios flujos (venta_movil=3.086, venta_hogar=869).'
+  changes_from_v2:
+    - 'V3 (actualización de prompt sales_evaluation v20 -> v22, 2026-09-14): se actualiza la
+      versión del prompt de checklist a v22. Los cambios del prompt refinan y flexibilizan las directrices
+      operativas de usefulForAnalysis (priorizando tramos recuperables de atención incluso con ruido o voces
+      de puestos vecinos) y realizan ajustes menores de redacción en t04 ("uno equivalente"), sin alterar
+      nombres de columnas, enums ni la estructura de las vistas en Postgres QA.'
+    - 'PROMOCIÓN MANUAL (2026-09-14, revisión directa contra Postgres QA, sin Gemini, motivada por el rechazo
+      del gate automático a esta misma candidata): el gate rechazó 4 de 15 preguntas doradas por
+      numbers_ok=false (q08_venta_es_minoria_trap, q09_causa_retiro_vs_no_retencion_trap,
+      q11_tasa_indaga_causa_retiro, q13_top_dolor_cliente). Se re-corrieron los cinco SELECT/GROUP BY de esas
+      cuatro preguntas contra dashboard_v2 hoy y TODOS los números citados por new_answer (candidata) resultaron
+      exactos contra Postgres: q08 (venta=4.920, total_con_trámite=69.177, total=82.651, venta_movil=3.831,
+      venta_hogar=1.089), q09 (8.124/3.310/2.905/2.402/2.140/1.918/231/145/17/13, suma 21.205 con causa
+      identificada), q11 (si=8.951, no=6.013, base=14.964 sobre el campo a25 completo, sin acotar a trámite de
+      cancelación), q13 (27.648/4.537/4.246/3.913/3.491/2.494/2.361, sin_dolor=27.020 sobre 82.651). El rechazo
+      fue estructural, no una regresión: la candidata simplemente reagrupa/re-basa la misma información
+      (porcentajes sobre el total en vez de sobre el subconjunto con fricción en q13, categorías individuales en
+      vez de un bucket "otras causas menores" en q09, un framing más acotado -sólo cancelación/retiro- en vez de
+      las dos framing que daba la respuesta vieja en q11, sin repetir el desglose ítem por ítem de trámites en
+      q08) y en un caso (q11) también dejó de repetir una de las dos estadísticas que la respuesta vieja dio
+      -ambas siguen siendo correctas hoy, sólo que la candidata reporta una nada más-. Promovido manualmente
+      (config.yaml actualizado a esta versión) sin reintentar el gate automático, que reproduciría el mismo
+      desacuerdo de fraseo. Banco dorado (preguntas/preguntas_evaluacion.yaml) calibrado en la misma fecha con
+      max_missing_numbers en estas 4 preguntas para que la próxima migración de prompt no repita este trabajo
+      manual.'
+  changes_from_v1: 'V2 (auditoría de ronda 2, 2026-09-08): no cambia ninguna regla de
+    sql_rules/decision_flow ni ningún comportamiento del agente -es una ronda de auditoría
+    de calidad de datos, no un fix de comportamiento-. Confirma con SQL directo la causa
+    raíz de los 16.078 conversation_id NULL en performance (antes sin confirmar en
+    known_findings_v1: grabaciones que nunca completaron el análisis, mismo patrón
+    encontrado independientemente en Huerpel Ventas esta misma ronda) y documenta un
+    hallazgo nuevo de enum overflow en categoria_producto_servicio (21 valores reales no
+    configurados en el prompt, ~700 filas). Se re-corrió el banco dorado completo (15/15,
+    sin fallback, incluidas las 4 preguntas trampa) contra el agente vigente: ningún
+    hallazgo de esta ronda afecta ninguna pregunta existente (q01 ya excluye las filas sin
+    análisis vía usefulforanalysis IS TRUE; q14 usa un TOP 6 que no llega a los valores
+    fuera de enum). Ver known_findings_v2.'
+  hallazgos_criticos_verificados_2026-09-14:
+  - 'Sin hallazgos nuevos verificados: las columnas, tipos y enums de dashboard_v2.vw_tigo_rendimiento_vendedor
+    y vistas asociadas permanecen consistentes con las definiciones del Data Map previo tras la actualización
+    del prompt a v22.'
+  scale_disclaimer: 'DADO EL VOLUMEN DE CAMPOS (59+15 en performance, 18+7 en categorical_insights, más los de
+    producto), las descripciones de la mayoría de los 59 campos "a" de performance se derivan de sus NOMBRES
+    -muy descriptivos por diseño- y de las reglas generales del prompt, no de prosa verificada campo por
+    campo como en los clientes más chicos. ACTUALIZADO 2026-09-07: los 6 campos que habían quedado sin
+    verificar (tipo_mencion, motivo_principal, resultado_comercial, sentimiento, region, pos_code) y los 18
+    campos de escala 1-5 de calidad_del_asesor ya se verificaron contra Postgres y tienen enums/promedios
+    reales -ver sources.categorical_product_insights, sources.demography y
+    sources.categorical_insights.calidad_del_asesor_escala-. Lo que sigue sin verificar campo por campo son
+    los 59 criterios binarios de performance (fuera de los que ya se muestrearon: a01, a25, a30, a42).'
+  known_findings_v2:
+  - 'CAUSA RAÍZ CONFIRMADA DE LOS 16.078 conversation_id NULL EN PERFORMANCE (auditoría de
+      ronda 2, 2026-09-08): known_findings_v1 ya documentaba NULL residuales en los campos t
+      (ej. 15.763 simultáneos) y especulaba, sin confirmar, que podían corresponder a
+      "conversaciones no analizables". Verificado ahora con SQL directo: performance tiene
+      85.572 filas pero sólo 69.494 tienen conversation_id poblado (69.494 = exactamente el
+      total de filas de demografia/categorical_insights/descriptive_insights, que sólo
+      incluyen conversaciones que completaron el análisis). Las 16.078 filas restantes de
+      performance tienen conversation_id IS NULL de forma directa (no es un problema de join
+      ni de integridad referencial: 0 filas de performance con conversation_id poblado
+      carecen de contraparte en demografia), y el 100% de ellas tiene
+      estado_analisis=''No analizable'' con usefulforanalysis NULL (no false) -son grabaciones
+      que llegaron al pipeline pero nunca completaron el análisis que asigna
+      conversation_id-. Esto explica también por qué los campos t (que nunca admiten N/A por
+      diseño del prompt) aparecen en NULL para exactamente estas mismas filas
+      (t01_null_count=16.110, de las cuales 16.078 coinciden con conversation_id NULL): no es
+      un residuo de versiones anteriores del prompt como especulaba known_findings_v1, es que
+      el checklist directamente nunca corrió sobre esas grabaciones. MISMO PATRÓN encontrado
+      independientemente esta misma ronda en Huerpel Ventas (235 filas de performance con
+      conversation_id NULL, idéntica correlación con estado_analisis=''No analizable'' +
+      usefulforanalysis NULL) -sugiere comportamiento del pipeline compartido entre clientes,
+      no una particularidad de Tigo-. No corregido en código compartido (fuera de alcance).
+      Reclasificado de "no confirmado/punto abierto" a "DOCUMENTADO, causa raíz confirmada, no
+      requiere fix de Data Map ni cambio de sql_rules" -las reglas ya vigentes (excluir NULL
+      de la base evaluada en performance_rate) ya manejan esto correctamente, no hay ningún
+      hallazgo del banco dorado afectado (q01 filtra usefulforanalysis IS TRUE, que excluye
+      naturalmente estas filas).'
+  - 'ENUM OVERFLOW REAL EN categoria_producto_servicio (categorical_product_insights) — QUEDA
+      ABIERTO, no corregible desde el Data Map: el campo tiene 10 valores configurados
+      ([planes, hogar_fijo, movil, devices, add_ons, devices_en_cuotas, otro, servicios_hogar,
+      servicios_moviles, n/a]) pero Postgres tiene 30 valores distintos en producción.
+      Verificado 2026-09-08: además de los 10 configurados, aparecen 21 valores no
+      documentados por el prompt -algunos parecen variantes singular/plural del mismo
+      concepto (device=198 vs devices=5.462; add_on=9 vs add_ons=2.140), otros son nombres de
+      producto/servicio específicos que deberían vivir en producto_servicio, no en la
+      categoría (full_tigo=134, hbo=53, full_equipo=45, otra_app=43, win=39, disney=15,
+      max=3, amazon=2, paramount=1, honor_400=27, motorola_g47=15, motorola_g56=3,
+      full_equipo_plus=1), y varios son combinaciones de servicios de hogar fuera del enum
+      (fijo_tv_ba_telefonia=35, fijo_ba=30, fijo_tv_ba=30, fijo_telefonia=15,
+      fijo_ba_telefonia=9, fijo_tv_telefonia=4). Volumen combinado ~700 filas (1,7% de las
+      41.200 filas de la vista) -no distorsiona un TOP 6 (q14_categoria_producto_distribucion
+      del banco dorado usa LIMIT 6 y ninguno de estos valores entra en el top), pero SÍ
+      distorsiona cualquier pregunta que pida "todas las categorías" o "cuántas categorías
+      distintas existen". Mismo patrón de overflow de enum ya documentado para
+      respuestaantefaltadeproducto en Steren (ver README) -no es un error del Data Map, es
+      que la extracción real no respeta estrictamente el enum configurado del prompt.'
+  - 'FALSA ALARMA DESCARTADA (documentada para que nadie la repita): en una primera pasada de
+      esta auditoría, varios valores de texto con tilde (ej. "Sí", nombres con Á/Ñ/Í en
+      employee_full_name) se veían en la terminal como "S"/caracteres corruptos. Verificado
+      con WHERE campo = ''Sí'' (match exacto, 19.698 filas) y con octet_length/length sobre
+      employee_full_name (28 bytes / 27 caracteres para un nombre con una sola tilde, +1 byte
+      consistente con UTF-8 normal): el dato en Postgres está correctamente codificado en
+      UTF-8, la corrupción visual era enteramente un artefacto de la consola/terminal usada
+      para inspeccionar, no un problema real de datos. No hay ningún hallazgo de encoding que
+      corregir.'
+  known_findings_v1:
+  - 'VALIDACIÓN DE CONFIABILIDAD (2026-09-07, mismo día del onboarding): Tigo había quedado en grado
+      "medio" (ver README.md > convención de nombres de carpeta) no por un hallazgo puntual sino por ser,
+      con diferencia, el cliente más grande y complejo del batch (137 campos, ~67-83 mil filas por vista)
+      sin trayectoria de uso real todavía. Se corrió el banco completo de 15 preguntas una vez (15/15 sin
+      ningún UNSAFE_ANSWER_FALLBACK) y después se repitieron las 4 preguntas trampa
+      (`q02_a_series_split_trap`, `q06_nps_induction_trap`, `q08_venta_es_minoria_trap`,
+      `q09_causa_retiro_vs_no_retencion_trap`) dos veces más cada una (3 corridas en total por pregunta,
+      12 ejecuciones) — mismo patrón de iteración barata usado históricamente con Farma24/Mens Fashion.
+      Resultado: 12/12 limpias, sin fallback, con números estables entre corridas (ej. q02 dio 3,31/5,0
+      exacto las 3 veces; q08 dio 5,91% / 4.021 de 68.078 exacto en 2 de las 3). No se encontró ninguna
+      falla de ejecución. Con esta evidencia, carpeta renombrada de `tigo_medio` a `tigo_alto`
+      (2026-09-07) — el volumen/complejidad del cliente sigue siendo real (ver scale_disclaimer, quedan
+      59 criterios binarios sin muestrear campo por campo), pero eso ya estaba documentado como
+      limitación conocida, no como una falla de confiabilidad, y no amerita por sí solo un grado más
+      bajo si la ejecución es consistentemente correcta.'
+  - 'ESTRUCTURA CLAVE — LA SERIE "a" ESTÁ PARTIDA ENTRE DOS VISTAS FÍSICAS: el checklist define una única
+      numeración a01...a59 (sin a55, excluido explícitamente por el propio prompt: "No debes calcular ni
+      devolver el campo a55"), pero Postgres la reparte en dos tablas según el TIPO de campo — los campos
+      binarios (Sí/No/N/A, pasos de comportamiento concretos como saludo, indagación, cierre) quedan en
+      performance (vw_tigo_rendimiento_vendedor); los campos de ESCALA 1-5 (calidad cualitativa: tono, empatía,
+      dominio de proceso) quedan en categorical_insights (vw_tigo_insights_categoricos), bajo la sección del
+      propio prompt "Insights_categoricos.calidad_del_asesor". No hay superposición de números entre ambos
+      grupos -a01,a02,a06,a07,a10,a12-14,a16-18,a20-25,a27,a28,a30-32,a34,a35,a37,a38,a41,a42,a44,a46-50,a53,
+      a54,a56-59 son binarios (performance); a03,a04,a05,a08,a09,a11,a15,a19,a26,a29,a33,a36,a39,a40,a43,a45,
+      a51,a52 son escala (categorical_insights)-. No tratar ambos grupos como intercambiables ni buscar un
+      campo "a03" en performance, no existe ahí.'
+  - 'TRIGGERS DE CUMPLIMIENTO/ÉTICA (t01-t15) SE DISPARAN CON VOLUMEN REAL, NO SON TEÓRICOS: verificado
+      2026-09-07 contra Postgres — t01 (solicita dinero/pago no oficial) = 48 casos "Sí"; t02 (condiciona
+      atención a compra) = 1.458; t11 (sugiere suplantación de identidad) = 77; t13 (trato grosero/agresivo/
+      discriminatorio) = 221; t14 (oculta/tergiversa condiciones críticas) = 1.023. El usuario confirmó
+      explícitamente (2026-09-07) que Vera Intelligence SÍ debe poder responder preguntas de negocio sobre
+      estos campos -no están restringidos-, tratarlos con el mismo criterio que el resto del checklist. El
+      propio prompt exige "privilegiar precisión por encima de recall" en estos triggers (regla 12 del
+      checklist): un "Sí" exige evidencia clara y específica, nunca por mera sospecha.'
+  - 'REGLA DE POLARIDAD DE LOS TRIGGERS t: a diferencia de los campos "a" (donde "Sí" = cumplió correctamente,
+      polaridad positiva), en los campos "t" **"Sí" significa que SÍ ocurrió el incumplimiento/riesgo**
+      (polaridad de detección, no de cumplimiento). No leer "Sí" en un trigger t como algo positivo.'
+  - 'LOS TRIGGERS t NUNCA ADMITEN N/A por diseño del prompt (regla 6, "Nunca uses N/A en campos que empiezan
+      con t") — sólo "Sí"/"No". Sin embargo, se observaron valores N/A y NULL en Postgres para varios campos t
+      (t01: 51 N/A + 15.763 NULL sobre 83.197 filas; patrón similar en t02/t11/t13/t14) — probablemente
+      residuo de versiones anteriores del prompt (v20 es la vigente, hubo 19 revisiones previas) o filas donde
+      el análisis no corrió. No se investigó la causa exacta; tratar cualquier N/A o NULL en un campo t como
+      "no evaluado", nunca como "no ocurrió el incumplimiento".'
+  - 'Los 15.763 NULL simultáneos en varios campos t sugieren un bloque de filas donde el checklist directamente
+      no corrió (¿conversaciones no analizables, ¿usefulForAnalysis=false?). No confirmado; consistente con la
+      regla 15 del prompt ("si usefulForAnalysis=false, usa N/A amplio en campos a, pero No en campos t" — lo
+      observado no calza exactamente con eso, ya que hay NULL, no "No", en esas filas — punto abierto).'
+  - 'Dominio de negocio distinto al resto del batch: el trámite más común es factura (15.701), seguido de
+      cancelación/retiro (9.210) y PQR/reclamo (7.456). Venta (móvil+hogar) es sólo 3.955 de 62.836 trámites
+      identificados (~6,3%). Cualquier pregunta sobre "ventas" debe aclarar que representa una fracción menor
+      del volumen total de atenciones; la mayoría son gestiones de servicio/soporte/retención.'
+  - 'a30_retencion_exitosa sólo tiene sentido junto con i09_causa_principal_de_retiro/i07_causa_principal_de_no_retencion
+      (categorical_insights) — un intento de retención fallido tiene causa documentada en i07, mientras que
+      i09 documenta por qué el cliente quiso irse en primer lugar (pueden coincidir o no, son dos preguntas
+      distintas según el propio prompt de insights).'
+  - 'RAG no aplica: el checklist no declara geminiFileSearchStoreName.'
+decision_flow:
+- 'Identificar primero si la pregunta requiere un campo binario de comportamiento (performance, a01-a59
+  excepto los de escala) o una calificación cualitativa 1-5 (categorical_insights, ver known_findings_v1 —
+  no buscar campos de escala en performance).'
+- 'Si la pregunta toca cumplimiento/ética/fraude, usar los campos t01-t15 de performance con su polaridad de
+  detección (Sí=ocurrió el incumplimiento), citando el volumen exacto y aclarando que N/A/NULL significa "no
+  evaluado", nunca "no ocurrió".'
+- Identificar si la pregunta es general de conversación o específica de producto/servicio.
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (compra/no compra), canal previo, uso principal de datos móviles u
+      hogar mencionado por el cliente, región, punto de venta
+    avoid: no es la fuente de trámite principal, causas de retiro ni calidad cualitativa — eso vive en
+      categorical_insights
+  performance:
+    questions: los 59 criterios binarios del checklist (apertura, validación de identidad, indagación,
+      retención, venta cruzada por segmento, cierre, política documental) y los 15 triggers de cumplimiento/
+      ética t01-t15
+    avoid: no tratar N/A como incumplimiento en campos "a"; no usar N/A en campos "t" (no existe, ver
+      known_findings_v1); no buscar campos de calificación 1-5 acá, están en categorical_insights
+  categorical_insights:
+    questions: trámite principal, causa de retiro/no retención, dolor del cliente, causa de demora, motivo de
+      consulta de factura, si induce NPS 5, canal sugerido indebidamente, y las 18 calificaciones cualitativas
+      1-5 (tono, empatía, dominio de proceso, etc.)
+    avoid: no usar para ejemplos textuales; no confundir i09 (causa de retiro) con i07 (causa de no retención
+      tras intento fallido) — son preguntas distintas
+  descriptive_insights:
+    questions: detalle textual de causa de no retención, de retiro, de dolor del cliente, de demora
+    avoid: no agrupar ni calcular frecuencia de texto
+  categorical_product_insights:
+    questions: producto/servicio mencionado, categoría, tipo de mención, motivo principal, resultado
+      comercial, sentimiento del cliente sobre ese producto
+    avoid: no afirmar ventas transaccionales sin evidencia
+  descriptive_product_insights:
+    questions: detalle textual del producto/servicio y de la mención
+    avoid: no usar sin la vista categórica para confirmar resultado_comercial
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions: [store_id, store_name, sector_id, sector_name, employee_id, employee_full_name, region, pos_code]
+    quality_filter: 'usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables. No
+      agregar por costumbre si no se pide explícitamente.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Tigo') sobre seller_id en cada fuente.
+  time: Filtrar profiles.standard_conversation.date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: 'cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir
+    N/A y null. Para campos t, la "base evaluada" es Sí+No (nunca hay N/A por diseño, pero sí NULL residual —
+    ver known_findings_v1, excluir también esos NULL).'
+  scale_field_rule: 'Para los 18 campos de calidad_del_asesor (escala 1-5 en categorical_insights), reportar
+    promedio y/o distribución completa, no una "tasa de cumplimiento" — no son campos binarios.'
+  categorical_filters: Usar valores de configured_values respetando snake_case exacto (enums en minúsculas).
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  a_series_split: 'Ver known_findings_v1: la numeración a01-a59 está partida físicamente entre performance
+    (binarios) y categorical_insights (escala 1-5) según el tipo de campo. No buscar un número de campo "a"
+    en la fuente equivocada.'
+  t_series_polarity: 'Ver known_findings_v1: en los campos t01-t15, "Sí" significa que el incumplimiento SÍ
+    ocurrió (polaridad de detección), al revés que los campos "a" donde "Sí" es cumplimiento positivo.'
+  retencion_causas: 'i09_causa_principal_de_retiro (por qué el cliente quiere irse) e
+    i07_causa_principal_de_no_retencion (por qué el intento de retención no funcionó) comparten el mismo
+    enum pero responden preguntas distintas y pueden no coincidir -ej. el cliente puede querer irse por
+    factura_alta (i09) pero rechazar la retención específicamente por precio (i07) si la oferta no bajó lo
+    suficiente-.'
+  nps_induction: 'i05_induce_calificacion_nps_5 detecta si el asesor presiona/induce al cliente a calificar 5
+    -es un hallazgo de integridad de la métrica NPS, no un logro comercial positivo-.'
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys: [conversation_id]
+    cardinality: conversation_to_conversation
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys: [conversation_id, producto_index]
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_tigo_demografia
+    use_when: Resultado de la interacción, canal previo, uso principal de datos móviles/internet hogar
+      mencionado por el cliente.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: ['compra', 'no compra']
+        observed_values: ['compra', 'no compra']
+        type: text
+        nullable: true
+        description: 'compra si al menos un producto/servicio se vincula con evidencia de compra; no compra
+          en cualquier otro caso (no admite N/A, ver regla del insights). OJO: valores con espacio ("no
+          compra"), no snake_case, distinto del patrón de otros clientes del proyecto. Verificado: no
+          compra=58025, compra=8811 (2 NULL).'
+        operations: [filter, group, compare]
+      i08_canal_previo_principal:
+        configured_values: [cc, chat, app, otro, n/a]
+        observed_values: [cc, chat, app, otro, n/a]
+        type: text
+        nullable: true
+        description: Canal previo mencionado por el cliente antes de esta atención (call center, chat/WhatsApp,
+          app Mi Tigo, u otro). n/a si no se menciona ninguno.
+        operations: [filter, group, compare]
+      i11_uso_principal_de_datos_moviles_mencionado_por_cliente:
+        configured_values: [redes_sociales, mensajeria, streaming_video, streaming_musica, videojuegos, trabajo_estudio, videollamadas, navegacion_general, otro, n/a]
+        observed_values: [redes_sociales, mensajeria, streaming_video, streaming_musica, videojuegos, trabajo_estudio, videollamadas, navegacion_general, otro, n/a]
+        type: text
+        nullable: true
+        description: Uso principal de datos móviles que el CLIENTE menciona (no inferido). Si menciona varios,
+          se elige el más relevante para la decisión comercial.
+        operations: [filter, group, compare]
+      i12_uso_principal_de_internet_hogar_mencionado_por_cliente:
+        configured_values: [streaming_video, videojuegos, trabajo_estudio, videollamadas, redes_sociales, hogar_conectado, navegacion_general, otro, n/a]
+        observed_values: [streaming_video, videojuegos, trabajo_estudio, videollamadas, redes_sociales, hogar_conectado, navegacion_general, otro, n/a]
+        type: text
+        nullable: true
+        description: Uso principal de internet hogar que el CLIENTE menciona (no inferido).
+        operations: [filter, group, compare]
+      region:
+        configured_values: [COSTA, BOGOTA, ANDINA, SUR, ORIENTE]
+        observed_values: [COSTA, BOGOTA, ANDINA, SUR, ORIENTE]
+        type: text
+        nullable: true
+        description: 'Región geográfica de la atención (5 valores, mayúsculas). Verificado 2026-09-07:
+          COSTA=20.052, BOGOTA=15.734, ANDINA=14.760, SUR=13.121, ORIENTE=3.799.'
+        operations: [filter, group]
+      pos_code:
+        type: text
+        nullable: true
+        description: 'Código numérico de punto de venta (texto, no enum cerrado — decenas de valores distintos,
+          ej. "3000032", "2000625"). Verificado que existe y tiene valores reales; no se listó el catálogo
+          completo de puntos de venta en esta ronda.'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_tigo_rendimiento_vendedor
+    use_when: Los 59 criterios binarios del checklist (a01-a59, sin a55, sin los de escala — ver
+      known_findings_v1) y los 15 triggers de cumplimiento/ética (t01-t15).
+    grain: Una fila por conversación con 74 columnas de criterios (59 "a" binarios + 15 "t" críticos).
+    profile: standard_conversation
+    decision_semantics: 'Campos "a": "Sí" = ocurrió con evidencia suficiente; "No" = la etapa aplicaba y el
+      asesor no lo hizo o hizo lo contrario; "N/A" = la etapa no aplicaba a este flujo/producto/momento, o no
+      quedó capturada. Campos "t" (triggers críticos): SÓLO "Sí" o "No", nunca N/A por diseño; "Sí" significa
+      que el incumplimiento/riesgo SÍ ocurrió (polaridad de detección, ver semantic_dependencies.t_series_polarity)
+      — el prompt exige privilegiar precisión sobre recall en estos triggers.'
+    fields_a_apertura_y_validacion:
+      description: 'Etapa de apertura, identificación y validación (verificado un ejemplo: a01, tasa Sí sobre
+        base evaluada = 19.162/43.847 = 43,7%).'
+      a01_saluda_y_muestra_disposicion_de_ayuda: {configured_values: &si_no_na [Sí, 'No', N/A], observed_values: *si_no_na, type: text, nullable: true, description: Saluda y muestra disposición de ayuda al inicio., operations: [filter, group, compare]}
+      a02_se_presenta_y_orienta_el_inicio: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Se presenta (nombre) y orienta el inicio de la atención., operations: [filter, group, compare]}
+      a06_usa_frase_de_relacionamiento: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Usa una frase de relacionamiento/cercanía con el cliente., operations: [filter, group, compare]}
+      a07_valida_identidad_titularidad_antes_de_gestionar: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Valida identidad/titularidad del cliente antes de gestionar el trámite., operations: [filter, group, compare]}
+      a10_identifica_motivo_y_encamina_correctamente: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Identifica el motivo de la visita y lo encamina al flujo correcto., operations: [filter, group, compare]}
+    fields_a_indagacion:
+      description: Etapa de indagación de necesidades y reconocimiento del cliente.
+      a12_indaga_necesidades_de_hogar_fijo: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Indaga necesidades de servicios de hogar/fijo cuando aplica., operations: [filter, group, compare]}
+      a13_indaga_necesidades_de_movil: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Indaga necesidades de servicios móviles cuando aplica., operations: [filter, group, compare]}
+      a14_reconoce_impacto_o_molestia_del_cliente: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Reconoce verbalmente el impacto o molestia expresado por el cliente., operations: [filter, group, compare]}
+    fields_a_comunicacion_y_seguimiento:
+      description: Comunicación durante la gestión y cierre de la etapa.
+      a16_valida_que_el_cliente_entiende: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Valida que el cliente entendió la explicación o gestión realizada., operations: [filter, group, compare]}
+      a17_evita_silencios_prolongados_tensos: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Evita silencios prolongados o tensos durante la atención., operations: [filter, group, compare]}
+      a18_si_se_ausenta_o_habla_con_otro_pide_disculpas: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Si se ausenta o habla con otro empleado, pide disculpas al volver., operations: [filter, group, compare]}
+      a20_explica_proximos_pasos_tiempos_o_agenda: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Explica próximos pasos, tiempos o agenda de seguimiento., operations: [filter, group, compare]}
+      a21_pregunta_si_hay_otro_requerimiento: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Pregunta si el cliente tiene otro requerimiento antes de cerrar., operations: [filter, group, compare]}
+      a22_pregunta_si_tiene_referidos: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Pregunta si el cliente tiene referidos potenciales., operations: [filter, group, compare]}
+      a23_agradece_e_invita_a_encuesta_nps: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: 'Agradece e invita a responder la encuesta NPS (sin inducir la nota — eso es i05_induce_calificacion_nps_5 en categorical_insights, un hallazgo distinto).', operations: [filter, group, compare]}
+      a24_brinda_opciones_de_agenda_para_instalacion: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Brinda opciones de agenda para instalación cuando corresponde., operations: [filter, group, compare]}
+    fields_a_retencion:
+      description: Etapa de retención ante intención de cancelación/retiro.
+      a25_indaga_causa_de_retiro_antes_de_ofrecer_salida: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Indaga la causa de retiro antes de ofrecer la cancelación directamente., operations: [filter, group, compare]}
+      a27_ofrece_alternativa_no_monetaria_antes_de_descuento: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Ofrece una alternativa no monetaria (addon, ajuste de plan) antes de ir directo al descuento., operations: [filter, group, compare]}
+      a28_negocia_descuento_de_menor_a_mayor: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Negocia el descuento de menor a mayor, sin ofrecer el máximo de entrada., operations: [filter, group, compare]}
+      a30_retencion_exitosa: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: El intento de retención logró que el cliente se quedara. Ver semantic_dependencies.retencion_causas para las causas asociadas (i07/i09)., operations: [filter, group, compare]}
+      a31_entrega_consecutivo_de_cancelacion: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Entrega el número consecutivo/radicado de la cancelación cuando procede., operations: [filter, group, compare]}
+    fields_a_venta_cruzada_por_segmento:
+      description: 'Venta cruzada/upsell, cada campo aplica sólo al segmento indicado en su nombre
+        (hogar/pospago/prepago).'
+      a32_hogar_ofrece_plan_movil_complementario: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: (Cliente hogar) Ofrece un plan móvil complementario., operations: [filter, group, compare]}
+      a34_hogar_promueve_full_tigo_o_full_equipo: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: (Cliente hogar) Promueve Full Tigo o Full Equipo., operations: [filter, group, compare]}
+      a35_pospago_ofrece_servicios_fijos: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: (Cliente pospago móvil) Ofrece servicios fijos/hogar., operations: [filter, group, compare]}
+      a37_pospago_promueve_full_tigo_plus_o_full_equipo: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: (Cliente pospago) Promueve Full Tigo Plus o Full Equipo., operations: [filter, group, compare]}
+      a38_prepago_ofrece_hogar_sin_obligar: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: (Cliente prepago) Ofrece hogar sin obligar al cliente a contratarlo., operations: [filter, group, compare]}
+    fields_a_cierre_y_equipo:
+      description: Cierre comercial, financiación y validación final.
+      a41_valida_disponibilidad_de_equipo_en_otra_tienda: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Valida disponibilidad de equipo en otra tienda ante falta de stock., operations: [filter, group, compare]}
+      a42_intenta_cierre_comercial_o_confirma_decision: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: 'Intenta el cierre comercial o confirma la decisión del cliente. Verificado: tasa Sí sobre base evaluada = 21.165/39.250 = 53,9%.', operations: [filter, group, compare]}
+      a44_promueve_financiacion_o_mesa_de_experiencia: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Promueve financiación o deriva a mesa de experiencia cuando aplica., operations: [filter, group, compare]}
+      a46_valida_estado_final_antes_de_cerrar: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Valida el estado final del trámite antes de cerrar la atención., operations: [filter, group, compare]}
+      a47_entrega_radicado_ss_o_soporte_cuando_aplica: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Entrega radicado de solicitud de servicio/soporte cuando corresponde., operations: [filter, group, compare]}
+    fields_a_proceso_y_politica:
+      description: Cumplimiento de proceso operativo y política documental (polaridad positiva, distinto de
+        los triggers t que detectan incumplimientos).
+      a48_resuelve_sin_derivar_indebidamente: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Resuelve el caso en tienda sin derivar indebidamente a otro canal cuando podía resolverlo., operations: [filter, group, compare]}
+      a49_realiza_modificacion_o_cancelacion_sin_exigir_fecha_de_cort: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Realiza la modificación/cancelación solicitada sin exigir una fecha de corte injustificada., operations: [filter, group, compare]}
+      a50_promueve_autogestion_digital_cuando_agrega_valor: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Promueve la autogestión digital (app Mi Tigo) cuando realmente agrega valor al cliente., operations: [filter, group, compare]}
+      a53_no_gestiona_en_tienda_soporte_tecnico_fijo_que_debe_escalar: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: No intenta gestionar en tienda un soporte técnico de hogar/fijo que debía escalarse correctamente., operations: [filter, group, compare]}
+      a54_sigue_guion_de_escalamiento_en_queja_de_factura: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Sigue el guion de escalamiento definido ante una queja de factura., operations: [filter, group, compare]}
+      a56_cumple_politica_documental_sin_atajos: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Cumple la política documental (identidad, soportes) sin atajos., operations: [filter, group, compare]}
+      a57_pide_permiso_para_tomar_fotografia: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: Pide permiso explícito antes de tomar una fotografía (documento/equipo)., operations: [filter, group, compare]}
+      a58_no_oculta_informacion_material: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: No oculta información material relevante para la decisión del cliente., operations: [filter, group, compare]}
+      a59_no_financia_mas_de_un_equipo_bajo_mismo_titular_sin_excepci: {configured_values: *si_no_na, observed_values: *si_no_na, type: text, nullable: true, description: No financia más de un equipo bajo el mismo titular sin una excepción autorizada., operations: [filter, group, compare]}
+    fields_t_compliance_triggers:
+      description: 'Triggers críticos de cumplimiento/ética. Polaridad de DETECCIÓN: "Sí" = el incumplimiento
+        SÍ ocurrió (ver semantic_dependencies.t_series_polarity). Nunca admiten N/A por diseño del prompt,
+        aunque hay N/A/NULL residual en Postgres (ver known_findings_v1). Volúmenes verificados 2026-09-07
+        entre paréntesis.'
+      t01_solicita_dinero_o_pago_no_oficial: {configured_values: &si_no [Sí, 'No'], observed_values: *si_no, type: text, nullable: true, description: 'Solicita dinero o pago no oficial (soborno). Verificado: 48 casos "Sí" sobre 67.335 "No" (67.383 evaluables, más 51 N/A + 15.763 NULL residuales).', operations: [filter, group, compare]}
+      t02_condiciona_atencion_a_compra_de_plan_o_producto: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: 'Condiciona la atención/resolución del trámite a que el cliente compre un plan o producto. Verificado: 1.458 casos "Sí".', operations: [filter, group, compare]}
+      t03_niega_servicio_prepago_si_no_compra_pospago: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Niega o dificulta el servicio prepago si el cliente no compra pospago., operations: [filter, group, compare]}
+      t04_sugiere_cancelar_y_recontratar_para_generar_beneficio_indeb: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Sugiere cancelar y recontratar el servicio para generar un beneficio indebido (ej. promoción de cliente nuevo)., operations: [filter, group, compare]}
+      t05_gestiona_retiro_y_nueva_instalacion_en_misma_direccion_para: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Gestiona un retiro y una nueva instalación en la misma dirección de forma indebida (patrón de fraude de reinstalación)., operations: [filter, group, compare]}
+      t06_no_radica_o_retrasa_cancelacion_para_evitar_afectacion: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: No radica o retrasa deliberadamente una cancelación para evitar que afecte sus métricas de retención., operations: [filter, group, compare]}
+      t07_ofrece_mejoras_de_equipo_hogar_para_generar_comision: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Ofrece mejoras de equipo hogar no solicitadas para generar una comisión indebida., operations: [filter, group, compare]}
+      t08_sugiere_tomar_plan_corto_y_luego_cancelar: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Sugiere tomar un plan corto con la intención de cancelarlo después., operations: [filter, group, compare]}
+      t09_afirma_falsamente_que_necesita_linea_nueva: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Afirma falsamente que el cliente necesita una línea nueva cuando no es así., operations: [filter, group, compare]}
+      t10_registra_pqr_sin_especificar_tipo_de_pqr: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Registra un PQR (petición/queja/reclamo) sin especificar el tipo correspondiente., operations: [filter, group, compare]}
+      t11_sugiere_usar_documento_de_tercero_o_suplantar: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: 'Sugiere usar el documento de un tercero o suplantar identidad. Verificado: 77 casos "Sí".', operations: [filter, group, compare]}
+      t12_interrumpe_para_llamada_telefonica_sin_permiso: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Interrumpe la atención para tomar una llamada telefónica personal sin pedir permiso al cliente., operations: [filter, group, compare]}
+      t13_trato_grosero_agresivo_o_discriminatorio: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: 'Trato grosero, agresivo o discriminatorio hacia el cliente. Verificado: 221 casos "Sí".', operations: [filter, group, compare]}
+      t14_oculta_o_tergiversa_condiciones_criticas: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: 'Oculta o tergiversa condiciones críticas del servicio/producto. Verificado: 1.023 casos "Sí".', operations: [filter, group, compare]}
+      t15_obliga_a_contratar_plan_para_chip_esim_imei_u_otro_tramite: {configured_values: *si_no, observed_values: *si_no, type: text, nullable: true, description: Obliga a contratar un plan para un trámite (chip/eSIM/IMEI u otro) que no lo requiere., operations: [filter, group, compare]}
+  categorical_insights:
+    source: dashboard_v2.vw_tigo_insights_categoricos
+    use_when: Trámite principal, causas de retiro/no retención, dolor del cliente, causa de demora, motivo de
+      consulta de factura, inducción de NPS, canal sugerido indebidamente, y las 18 calificaciones cualitativas
+      1-5 del asesor (ver known_findings_v1, comparten numeración "a" con performance pero son campos distintos).
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      i03_solicitud_o_tramite_principal:
+        configured_values: [factura, cancelacion_retiro, soporte_tecnico_hogar, soporte_tecnico_movil, venta_hogar, venta_movil, cambio_plan, portabilidad, reposicion_chip_esim, imei_bloqueo_desbloqueo, pqr_reclamo, app_autogestion, otro, n/a]
+        observed_values: [factura, cancelacion_retiro, soporte_tecnico_hogar, soporte_tecnico_movil, venta_hogar, venta_movil, cambio_plan, portabilidad, reposicion_chip_esim, imei_bloqueo_desbloqueo, pqr_reclamo, app_autogestion, otro, n/a]
+        type: text
+        nullable: true
+        description: 'Trámite/gestión principal de la conversación. Verificado (top 5): factura=15.701,
+          n/a=11.102, cancelacion_retiro=9.210, pqr_reclamo=7.456, reposicion_chip_esim=4.680.'
+        operations: [filter, group, compare]
+      i05_induce_calificacion_nps_5:
+        configured_values: [si, 'no', n/a]
+        observed_values: [si, 'no', n/a]
+        type: text
+        nullable: true
+        description: 'si si el asesor induce/presiona/guía al cliente a calificar 5 en NPS/encuesta. Es un
+          hallazgo de integridad de métrica, no un logro comercial (ver semantic_dependencies.nps_induction).
+          n/a si no se menciona encuesta/NPS.'
+        operations: [filter, group, compare]
+      i07_causa_principal_de_no_retencion:
+        configured_values: &causa_retiro_enum [precio, factura_alta, mala_senal_cobertura, mal_servicio_experiencia, mejor_oferta_externa, no_necesita_servicio, no_le_interesa_oferta, beneficios_insuficientes, proceso_lento, otro, n/a]
+        observed_values: *causa_retiro_enum
+        type: text
+        nullable: true
+        description: 'Causa por la que un intento de retención NO logró convencer al cliente (sólo interpretable
+          si hubo intento de retención con oferta/descuento/beneficio y el cliente no aceptó). Ver
+          semantic_dependencies.retencion_causas — no confundir con i09.'
+        operations: [filter, group, compare]
+      i09_causa_principal_de_retiro:
+        configured_values: *causa_retiro_enum
+        observed_values: *causa_retiro_enum
+        type: text
+        nullable: true
+        description: 'Causa por la que el cliente quiere cancelar/retirarse (independiente de si hubo o no
+          intento de retención). Verificado (excluyendo n/a): factura_alta=6.538, mal_servicio_experiencia=2.603,
+          precio=2.367, otro=1.947, no_necesita_servicio=1.699, mala_senal_cobertura=1.544.'
+        operations: [filter, group, compare]
+      i22_dolor_o_molestia_principal_del_cliente:
+        configured_values: [factura_alta_incorrecta, mala_senal_cobertura, lentitud_demora, falla_tecnica_hogar, falla_tecnica_movil, cobro_no_reconocido, mal_servicio_atencion, problema_con_plan_beneficios, problema_con_equipo, otro, n/a]
+        observed_values: [factura_alta_incorrecta, mala_senal_cobertura, lentitud_demora, falla_tecnica_hogar, falla_tecnica_movil, cobro_no_reconocido, mal_servicio_atencion, problema_con_plan_beneficios, problema_con_equipo, otro, n/a]
+        type: text
+        nullable: true
+        description: Dolor/fricción principal expresado por el cliente en la conversación.
+        operations: [filter, group, compare]
+      i32_causa_principal_de_demora:
+        configured_values: [sistema_lento, validacion_documental, espera_de_turno, falta_de_respuesta_de_otro_canal, busqueda_de_informacion, proceso_operativo, cliente_indeciso, otro, n/a]
+        observed_values: [sistema_lento, validacion_documental, espera_de_turno, falta_de_respuesta_de_otro_canal, busqueda_de_informacion, proceso_operativo, cliente_indeciso, otro, n/a]
+        type: text
+        nullable: true
+        description: Causa principal de una demora observable/mencionada en la atención. n/a si no hay demora
+          evaluable.
+        operations: [filter, group, compare]
+      i34_motivo_principal_consulta_factura:
+        configured_values: [queja_factura, inconformidad_facturacion, variacion_de_factura, distribucion_de_factura, cobranzas, suspension_reconexion, otro, n/a]
+        observed_values: [queja_factura, inconformidad_facturacion, variacion_de_factura, distribucion_de_factura, cobranzas, suspension_reconexion, otro, n/a]
+        type: text
+        nullable: true
+        description: Motivo específico de una consulta de factura. n/a si la conversación no trata de factura.
+        operations: [filter, group, compare]
+      i35_incita_contactar_otros_canales_para_tema_de_tienda:
+        configured_values: [si, 'no', n/a]
+        observed_values: [si, 'no', n/a]
+        type: text
+        nullable: true
+        description: si si el asesor empuja indebidamente al cliente a otro canal para un tema resoluble en
+          tienda.
+        operations: [filter, group, compare]
+      i35_canal_sugerido_indebidamente:
+        configured_values: [cc, chat, app, otro, n/a]
+        observed_values: [cc, chat, app, otro, n/a]
+        type: text
+        nullable: true
+        description: Canal sugerido indebidamente cuando i35_incita_contactar_otros_canales_para_tema_de_tienda=si;
+          n/a en cualquier otro caso.
+        operations: [filter, group, compare]
+      calidad_del_asesor_escala:
+        description: 'Los siguientes 18 campos usan escala 1-5 (1=muy deficiente, 5=excelente, n/a=sin base
+          suficiente). Reportar promedio/distribución, no tasa de cumplimiento (ver sql_rules.scale_field_rule).
+          Promedios verificados contra Postgres el 2026-09-07 (formato: descripción — promedio sobre base
+          evaluada / filas n/a). Ningún campo baja de 3,0 ni supera 3,75 — desempeño cualitativo consistentemente
+          "aceptable a bueno" en todo el checklist, sin outliers extremos.'
+        campos:
+          a03_tono_amable_respetuoso_profesional: 'Tono amable, respetuoso y profesional — promedio 3,60 (base=54.738, n/a=12.726).'
+          a04_manejo_emocional_del_cliente_molesto: 'Manejo emocional de un cliente molesto — promedio 3,31 (base=26.048, n/a=41.416, la de mayor n/a: sólo se activa si el cliente está molesto).'
+          a05_genera_confianza_y_seguridad_desde_el_inicio: 'Genera confianza y seguridad desde el inicio — promedio 3,15 (base=52.091, n/a=15.373).'
+          a08_escucha_activa_y_confirma_entendimiento: 'Escucha activa y confirma entendimiento — promedio 3,27 (base=53.568, n/a=13.896).'
+          a09_profundiza_hasta_entender_causa_real: 'Profundiza hasta entender la causa real del caso — promedio 3,40 (base=52.739, n/a=14.725).'
+          a11_personaliza_la_atencion_al_contexto_del_cliente: 'Personaliza la atención al contexto del cliente — promedio 3,26 (base=53.134, n/a=14.330).'
+          a15_muestra_empatia_genuina: 'Muestra empatía genuina — promedio 3,13 (base=50.331, n/a=17.133, el promedio más bajo de los 18).'
+          a19_explica_con_claridad_la_solucion_o_gestion: 'Explica con claridad la solución o gestión — promedio 3,47 (base=53.733, n/a=13.731).'
+          a26_construye_valor_antes_de_hablar_de_descuento: 'Construye valor antes de hablar de descuento — promedio 3,17 (base=9.967, n/a=57.497, alto n/a: sólo aplica en gestiones de retención/venta con descuento).'
+          a29_personaliza_oferta_de_retencion: 'Personaliza la oferta de retención — promedio 3,20 (base=6.007, n/a=61.457, sólo aplica en retención).'
+          a33_hogar_ofrece_addons_relevantes: '(Hogar) Ofrece addons relevantes — promedio 3,40 (base=3.640, n/a=63.824, sólo aplica a segmento hogar).'
+          a36_pospago_ofrece_addons_o_upgrade_pertinente: '(Pospago) Ofrece addons o upgrade pertinente — promedio 3,23 (base=7.836, n/a=59.628, sólo aplica a segmento pospago).'
+          a39_prepago_ofrece_migracion_a_pospago_con_valor: '(Prepago) Ofrece migración a pospago con valor real — promedio 3,18 (base=9.317, n/a=58.147, sólo aplica a segmento prepago).'
+          a40_explica_condiciones_economicas_y_restricciones: 'Explica condiciones económicas y restricciones — promedio 3,50 (base=39.111, n/a=28.353).'
+          a43_maneja_objeciones_con_beneficios_y_facilidades: 'Maneja objeciones con beneficios y facilidades — promedio 3,24 (base=23.281, n/a=44.183, sólo aplica con objeción real).'
+          a45_resuelve_o_deja_ruta_clara_sin_ambiguedad: 'Resuelve o deja una ruta clara sin ambigüedad — promedio 3,75 (base=53.554, n/a=13.910, el promedio más alto de los 18).'
+          a51_tiempo_de_atencion_adecuado_a_complejidad: 'Tiempo de atención adecuado a la complejidad del caso — promedio 3,45 (base=53.348, n/a=14.116).'
+          a52_demuestra_dominio_de_proceso_y_politicas: 'Demuestra dominio de proceso y políticas — promedio 3,61 (base=54.054, n/a=13.410).'
+  descriptive_insights:
+    source: dashboard_v2.vw_tigo_insights_descriptivos
+    use_when: Detalle textual de causa de no retención, de retiro, de dolor del cliente, de demora.
+    grain: Una fila por conversación; texto libre no agregable.
+    profile: standard_conversation
+    fields:
+      i07_detalle_causa_de_no_retencion: {type: text, nullable: true, description: Detalle textual de por qué falló la retención., operations: [select_evidence]}
+      i09_detalle_causa_principal_de_retiro: {type: text, nullable: true, description: Detalle textual de por qué el cliente quiere retirarse., operations: [select_evidence]}
+      i22_detalle_dolor_o_molestia_principal: {type: text, nullable: true, description: Detalle textual del dolor/molestia principal del cliente., operations: [select_evidence]}
+      i32_detalle_causa_de_demora: {type: text, nullable: true, description: Detalle textual de la causa de demora., operations: [select_evidence]}
+  categorical_product_insights:
+    source: dashboard_v2.vw_tigo_insights_categoricos_por_producto
+    use_when: Producto/servicio mencionado, categoría, tipo de mención, motivo principal, resultado comercial,
+      sentimiento del cliente sobre ese producto.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto/servicio dentro de la conversación. Clave de join con descriptive_product_insights., operations: [join_key, filter]}
+      producto_servicio: {type: text, nullable: true, description: Nombre del producto/servicio mencionado (texto libre, no enum cerrado — no verificado el detalle en esta ronda)., operations: [select_evidence, filter]}
+      categoria_producto_servicio:
+        configured_values: [planes, hogar_fijo, movil, devices, add_ons, devices_en_cuotas, otro, servicios_hogar, servicios_moviles, n/a]
+        observed_values: [planes, hogar_fijo, movil, devices, add_ons, devices_en_cuotas, otro, servicios_hogar, servicios_moviles, n/a]
+        type: text
+        nullable: true
+        description: 'Categoría del producto/servicio. Verificado: planes=10.238, hogar_fijo=9.583, movil=8.130,
+          devices=5.261, add_ons=2.021, devices_en_cuotas=1.579.'
+        operations: [filter, group, compare]
+      tipo_mencion:
+        configured_values: [queja_cliente, oferta_asesor, aceptacion_cliente, solicitud_cliente, comentario_neutral, interes_cliente, rechazo_cliente, objecion_cliente]
+        observed_values: [queja_cliente, oferta_asesor, aceptacion_cliente, solicitud_cliente, comentario_neutral, interes_cliente, rechazo_cliente, objecion_cliente]
+        type: text
+        nullable: false
+        description: 'Cómo aparece el producto/servicio en la conversación. Verificado 2026-09-07: queja_cliente=10.442
+          es el más frecuente (siguen oferta_asesor=9.348, aceptacion_cliente=7.447, solicitud_cliente=6.321,
+          comentario_neutral=5.035, interes_cliente=582, rechazo_cliente=550, objecion_cliente=257).'
+        operations: [filter, group, compare]
+      motivo_principal:
+        configured_values: [precio_valor, necesidad_uso, problema_tecnico_funcionamiento, beneficio_valor, experiencia_previa, cobertura_calidad, confianza_recomendacion, condiciones_compromiso, disponibilidad_instalacion, comparacion_alternativas, otro, 'n/a']
+        observed_values: [precio_valor, necesidad_uso, problema_tecnico_funcionamiento, beneficio_valor, experiencia_previa, cobertura_calidad, confianza_recomendacion, condiciones_compromiso, disponibilidad_instalacion, comparacion_alternativas, otro, 'n/a']
+        type: text
+        nullable: true
+        description: 'Motivo principal asociado a esa mención de producto. Verificado: precio_valor=14.448 es el
+          más frecuente (siguen necesidad_uso=7.437, problema_tecnico_funcionamiento=4.907, n/a=4.604,
+          beneficio_valor=3.934).'
+        operations: [filter, group, compare]
+      resultado_comercial:
+        configured_values: [solo_mencion, compro_acepto, no_compro_rechazo, pendiente, 'n/a']
+        observed_values: [solo_mencion, compro_acepto, no_compro_rechazo, pendiente, 'n/a']
+        type: text
+        nullable: true
+        description: 'Resultado comercial de esa mención de producto. Verificado: solo_mencion=11.925,
+          compro_acepto=9.872, no_compro_rechazo=8.962, pendiente=8.205, n/a=1.018.'
+        operations: [filter, group, compare]
+      sentimiento:
+        configured_values: [negativo, positivo, neutral, mixto, desinteres, 'n/a']
+        observed_values: [negativo, positivo, neutral, mixto, desinteres, 'n/a']
+        type: text
+        nullable: true
+        description: 'Sentimiento del cliente respecto a ese producto/servicio. Verificado: negativo=13.752 es
+          el más frecuente (siguen positivo=10.416, neutral=9.814, mixto=4.352, desinteres=1.620) — consistente
+          con que Tigo es mayormente una operación de servicio/reclamo, no de venta (ver metadata.known_findings_v1).'
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_tigo_insights_descriptivos_por_producto
+    use_when: Detalle textual del producto/servicio y de la mención.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index., operations: [join_key, filter]}
+      detalle_producto_servicio: {type: text, nullable: true, description: Detalle textual del producto/servicio mencionado., operations: [select_evidence]}
+      detalle_mencion: {type: text, nullable: true, description: Detalle textual de la mención (contexto, motivo, resultado)., operations: [select_evidence]}
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'ESCALA DEL CLIENTE: dado el volumen (137 campos entre performance e insights, ~67-83 mil filas por vista),
+  este Data Map V1 se construyó apoyándose principalmente en los nombres de campo y las reglas generales del
+  prompt para los 59 criterios binarios de performance, sin verificar cada uno campo por campo como en los
+  clientes más chicos (sí se verificaron: tipo_mencion, motivo_principal, resultado_comercial, sentimiento,
+  region, pos_code y los 18 campos de escala — ver metadata.scale_disclaimer, actualizado 2026-09-07).'
+- 'Los triggers de cumplimiento t01-t15 tienen NULL/N/A residuales pese a que el prompt vigente no permite N/A
+  en esos campos -no se investigó la causa (posible residuo de versiones anteriores del prompt, hubo 19
+  revisiones previas a la v20 vigente)-.'
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

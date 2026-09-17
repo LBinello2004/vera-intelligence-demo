@@ -1,0 +1,49 @@
+client_id: tigo
+display_name: "Tigo"
+tenant: "Tigo"
+model: gemini-3.7-flash
+data_map: "2. clientes/tigo_alto/data_map/VI Data Map Tigo V3.yaml"
+
+sources:
+  dashboard_v2.vw_tigo_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_tigo_rendimiento_vendedor:
+    tenant_field: seller_id
+  dashboard_v2.vw_tigo_insights_categoricos:
+    tenant_field: seller_id
+  dashboard_v2.vw_tigo_insights_descriptivos:
+    tenant_field: seller_id
+  dashboard_v2.vw_tigo_insights_categoricos_por_producto:
+    tenant_field: seller_id
+  dashboard_v2.vw_tigo_insights_descriptivos_por_producto:
+    tenant_field: seller_id
+
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Tigo/Asesor/checklist"
+    label: production
+    business_scope: "Criterios de atención, venta, retención y cumplimiento/ética de asesores de telecomunicaciones"
+  conversation_insights:
+    name: "clientes/Tigo/Asesor/insights"
+    label: production
+    business_scope: "Trámite principal, causas de retiro/no retención, dolor del cliente, calidad cualitativa del asesor y comportamiento comercial"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Tigo no tiene RAG: su prompt de checklist no declara geminiFileSearchStoreName.
+
+# Búsqueda semántica sobre conversaciones vectorizadas (generalización 2026-09-11, ver
+# "6. busqueda_vectorial/README.md" > Iteración 20). Cobertura de backfill verificada: 67,4%
+# (65.671/97.442 recordings con embedding, mismo EMBEDDING_CONFIG_ID que mens_fashion_alto).
+# Limitación propia de Tigo (esquema no estándar, no es bug): su fuente se llama
+# "vw_tigo_insights_descriptivos" (sin sufijo "_generales"), así que no matchea la convención de
+# nombre de _find_descriptivos_source -mismo caso que Steren- y resumen_verificado sale None,
+# sólo el fragmento reconstruido está disponible.
+vector_search:
+  top_k: 5

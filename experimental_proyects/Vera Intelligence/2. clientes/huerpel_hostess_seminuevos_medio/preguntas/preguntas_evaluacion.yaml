@@ -1,0 +1,152 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE. Debe advertir que el volumen es menor que el de las
+      otras sub-marcas de Huerpel.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_demografia
+      WHERE seller_id = 'Huerpel' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '609 conversaciones analizables (de 673 totales)'
+
+  - id: q02_saludo_institucional
+    pregunta: ¿En qué porcentaje de las recepciones se realiza el saludo institucional multimarca?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL. Es la tasa de cumplimiento más baja del
+      checklist -debe presentarse como tal-.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE realizosaludooficialmultimarca = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE realizosaludooficialmultimarca IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '206 de 498 (41,4%) -la tasa de cumplimiento más baja del checklist'
+
+  - id: q03_resultado_no_existe_trap
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: demography.tipointeraccion está 100% NULL para esta sub-marca (mismo hallazgo
+      que Huerpel Hostess). El agente debe indicar que no cuenta con ese dato para esta
+      sub-marca, no inventar un porcentaje.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información de resultado de
+      la interacción para esta sub-marca -el campo existe en el esquema pero nunca se puebla-.'
+
+  - id: q04_solicito_nombre
+    pregunta: ¿Con qué frecuencia se solicita el nombre completo del visitante?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE solicitonombrecompleto = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE solicitonombrecompleto IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '394 de 503 (78,3%) -la tasa de cumplimiento más alta del checklist'
+
+  - id: q05_tipo_llegada
+    pregunta: '¿Cómo llegan los visitantes: con cita, por llamada o de forma espontánea (walk-in)?'
+    fuentes_requeridas: [conversation_insights]
+    requisitos:
+    - Reportar los 4 valores del enum. La mayoría es walk-in.
+    sql: |
+      SELECT tipo_llegada, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY tipo_llegada
+    respuesta_esperada: 'walk-in=511 (75,9%, mayoría), no identificado=116 (17,2%), cita=44
+      (6,5%), llamada=2 (0,3%)'
+
+  - id: q06_registro_completo_bajo
+    pregunta: ¿En qué porcentaje de las recepciones donde correspondía se completó el registro
+      completo de datos del cliente (nombre, contacto, correo, unidad buscada, origen,
+      toma, forma de pago y presupuesto)?
+    fuentes_requeridas: [conversation_insights]
+    requisitos:
+    - Debe filtrar por aplica_registro_completo=true antes de calcular la tasa (no usar el
+      total de conversaciones como base, sino sólo donde correspondía exigir el registro).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE registro_completo = true) AS completos,
+        COUNT(*) FILTER (WHERE aplica_registro_completo = true) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '81 de 470 (17,2%) -tasa baja, es un hallazgo real documentado, no un
+      error de la medición'
+
+  - id: q07_cita_vs_promocion_trap
+    pregunta: ¿Qué porcentaje de las visitas viene específicamente por una promoción (no por cita)?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: el checklist sólo tiene un campo combinado (validoSiVienePorCitaOPromocion) que
+      cubre AMBAS dimensiones -no se puede aislar "promoción" de "cita" con los datos
+      disponibles. El agente debe aclarar esta limitación en vez de inventar un desglose que
+      no existe.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE validosivieneporcitaopromocion = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE validosivieneporcitaopromocion IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: 'El checklist sólo mide "cita O promoción" en conjunto (140 de 455,
+      30,8%), no puede desagregarse sólo promoción de sólo cita con los datos disponibles.'
+
+  - id: q08_presupuesto_baja_tasa
+    pregunta: ¿Con qué frecuencia se indaga el rango de presupuesto del visitante?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE indagorangodepresupuesto = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE indagorangodepresupuesto IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '147 de 409 (35,9%)'
+
+  - id: q09_genero_cliente
+    pregunta: ¿Cómo se distribuye el género de los visitantes?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Reportar los 3 valores del enum.
+    sql: |
+      SELECT generocliente, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_demografia
+      WHERE seller_id = 'Huerpel'
+      GROUP BY generocliente
+    respuesta_esperada: 'Masculino=295 (43,8%), No Identificado=279 (41,5%), Femenino=99
+      (14,7%)'
+
+  - id: q10_una_tienda_trap
+    pregunta: ¿Qué tienda de Huerpel Hostess Seminuevos tiene la mejor tasa de registro completo?
+    fuentes_requeridas: [conversation_insights, demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: Huerpel Hostess Seminuevos opera en una única tienda -no hay comparación entre
+      tiendas posible para esta sub-marca.'
+    sql: |
+      SELECT COUNT(DISTINCT store_name) AS tiendas
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_demografia
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: 'Una sola tienda -no hay comparación posible entre tiendas para esta
+      sub-marca-'
+
+  - id: q11_forma_pago_estimada
+    pregunta: ¿Qué forma de pago mencionan con más frecuencia los visitantes?
+    fuentes_requeridas: [conversation_insights]
+    requisitos:
+    - La mayoría no menciona el tema todavía en esta etapa de recepción (no mencionado).
+    sql: |
+      SELECT forma_pago_estimada, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_hostess_seminuevos_insights_categoricos
+      WHERE seller_id = 'Huerpel'
+      GROUP BY forma_pago_estimada
+    respuesta_esperada: 'no mencionado=384 (57,1%, mayoría), credito=149 (22,1%), sin
+      definir=83 (12,3%), contado=57 (8,5%)'

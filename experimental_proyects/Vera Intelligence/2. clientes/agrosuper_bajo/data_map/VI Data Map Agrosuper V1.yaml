@@ -1,0 +1,188 @@
+metadata:
+  name: VI Data Map Agrosuper V1
+  version: 1.0.0
+  client: Agrosuper
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo dos vistas dashboard_v2 de Agrosuper (demografia + rendimiento_vendedor). El tenant
+    ('Agrosuper') es fijo para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Agrosuper/checklist (Langfuse, label production, v5 al construir este mapa)
+    note: 'Agrosuper es "schema delgado" (existe clientes/Agrosuper/insights en Langfuse pero no hay
+      vista de insights materializada, mismo patrón que Salomon/GAC/Hyundai/Dalton). Dominio: venta
+      consultiva B2B de campo -vendedores que visitan comercios (carnicerías, hoteles, restaurantes,
+      almacenes) que compran proteína animal (pollo, carne, cecinas, congelados)-, NO es retail de
+      piso de venta como el resto de los clientes del proyecto.'
+  known_findings_v1:
+  - 'VOLUMEN EXTREMADAMENTE CHICO: 11 conversaciones totales, 9 analizables -es el cliente de menor
+      volumen de todo el proyecto Vera Intelligence, incluso menor que Shoe Box (7 pero con checklist
+      recién publicado)-. Rango 2026-07-08 a 2026-07-23 (16 días), sin actividad después de esa fecha
+      -no investigado si el pipeline sigue activo o se discontinuó, ver limitations-. NINGÚN
+      porcentaje de este Data Map es estadísticamente significativo: con 9 filas, un solo caso mueve
+      el resultado ~11 puntos porcentuales. El agente debe presentar cifras absolutas (ej. "6 de 9"),
+      nunca sólo el porcentaje, y aclarar el tamaño de la muestra en cada respuesta.'
+  - 'Enum estándar Sí/No/N/A con mayúscula inicial (a diferencia de GAC, que usa minúsculas) -
+      verificado con SELECT DISTINCT en los 10 campos-.'
+  - 'Dominio distinto al resto del proyecto: no hay "venta en tienda" ni "cliente que entra a
+      comprar" -es un vendedor de ruta que visita comercios ya existentes, con foco en reposición de
+      pedido base, venta de productos foco/innovación/ofertas, merchandising en el punto de venta del
+      comercio, y promoción de un canal digital para pedidos entre visitas. No usar terminología de
+      retail de piso de venta (ej. "cliente que entra a la tienda") al describir este cliente.'
+  - 'demography sólo tiene tipointeraccion como campo propio (además de las columnas genéricas) -no
+      hay motivo/necesidad/segmentación de cliente en esta vista, igual que en el resto de los
+      clientes de schema delgado-.'
+decision_flow:
+- Identificar si la pregunta es respondible con checklist/demografía -si pide motivo, necesidad,
+  objeción o competencia, advertir que esa fuente no existe para este cliente.
+- SIEMPRE aclarar el volumen extremadamente chico (9 conversaciones analizables) y presentar cifras
+  absolutas junto con cualquier porcentaje -ver known_findings_v1-.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado general de la visita (tipointeraccion)
+    avoid: no es la fuente de motivo/necesidad -esa fuente no existe para este cliente-
+  performance:
+    questions: criterios de la visita B2B (diagnóstico del cliente, respeto del pedido base antes de
+      ofrecer novedades, merchandising, venta de foco/innovación/ofertas, cierre con confirmación de
+      pedido, promoción del canal digital)
+    avoid: no tratar N/A como incumplimiento -varios campos sólo aplican si hay historial previo del
+      cliente o contexto de exhibición verbalizado-
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Agrosuper') sobre el tenant_field de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null. Presentar SIEMPRE junto con las cifras absolutas dado el volumen mínimo.
+sources:
+  demography:
+    source: dashboard_v2.vw_agrosuper_demografia
+    use_when: Resultado general de la visita.
+    grain: Una fila por conversación (visita).
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        type: text
+        nullable: true
+        description: 'Resultado de la visita. No se auditó a fondo el enum configurado dado el
+          volumen mínimo -ver known_findings_v1-.'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_agrosuper_rendimiento_vendedor
+    use_when: Criterios de la visita de venta consultiva B2B.
+    grain: Una fila por conversación (visita) con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 10 criterios admiten Sí/No/N/A con la lógica estándar del prompt.
+      Agrupados por el propio prompt en Diagnóstico (4), Desarrollo (4) y Cierre (2).'
+    fields:
+      demuestra_conocimiento_previo_del_cliente:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Si el vendedor referencia historial, hábito de compra o
+          desempeño previo del cliente -reemplaza la acción no auditable de "revisar el sistema antes
+          de entrar". N/A si el cliente es claramente nuevo. Sí=8, N/A=2, No=1 (sobre 9-11 filas).'
+        operations: [filter, group, compare]
+      saluda_por_nombre_y_pregunta_como_esta:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Exige DOS componentes: saludo personalizado + pregunta de
+          cercanía. Sí=5, No=4, N/A=2.'
+        operations: [filter, group, compare]
+      pregunta_rotacion_pedido_anterior:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Si pregunta cómo rotó/vendió el pedido o producto anterior. Sí=5,
+          No=4, N/A=2.'
+        operations: [filter, group, compare]
+      comenta_oportunidades_observadas_en_vitrina_maquina_stock:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Sólo cuenta lo verbalizado -nunca inferir observación visual no
+          dicha en voz alta-. Sí=5, No=4, N/A=2.'
+        operations: [filter, group, compare]
+      respeta_pedido_base_antes_de_ofrecer_focos_innovacion_ofertas:
+        configured_values: *si_no_na
+        observed_values: [Sí, N/A]
+        type: text
+        nullable: true
+        description: 'Desarrollo. Evalúa el ORDEN: primero pedido base, después ampliación con
+          foco/innovación/ofertas -no exige que la ampliación aparezca sólo al final, evalúa la
+          interacción completa-. Sí=8, N/A=3 (no se observó ningún "No" en la muestra).'
+        operations: [filter, group, compare]
+      sugiere_mejora_merchandising_con_beneficio:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Desarrollo. Exige DOS componentes: mejora concreta de exhibición + beneficio
+          asociado. No=5, Sí=3, N/A=3 -tasa de cumplimiento más baja del checklist-.'
+        operations: [filter, group, compare]
+      ofrece_sku_foco_infaltable_innovacion_con_argumento:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Desarrollo. Exige DOS componentes: ofrecimiento activo de un producto
+          foco/infaltable/innovación + argumento comercial -nunca inferir "foco" sólo por el nombre
+          del producto, debe estar presentado así en la conversación-. Sí=4, No=4, N/A=3.'
+        operations: [filter, group, compare]
+      ofrece_sku_catalogo_ofertas_descuentos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Desarrollo. Ofrecimiento activo de un producto con oferta/descuento/promoción
+          explícita -precio normal sin condición especial no cuenta-. Sí=5, No=3, N/A=3.'
+        operations: [filter, group, compare]
+      repite_pedido_completo_y_pide_confirmacion:
+        configured_values: *si_no_na
+        observed_values: [Sí, N/A]
+        type: text
+        nullable: true
+        description: 'Cierre. Campo estricto: exige repaso suficientemente completo del pedido +
+          pedido explícito de confirmación -ambos componentes, si falta uno es "No"-. Sí=8, N/A=3 (no
+          se observó ningún "No" en la muestra).'
+        operations: [filter, group, compare]
+      invita_canal_digital_remoto_agrosuper_entre_visitas:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Cierre. Si promueve un canal digital/remoto de Agrosuper para pedidos entre
+          visitas -mencionar "me avisas" o "me escribes" sin nombrar un canal formal NO cuenta-.
+          No=6, N/A=3, Sí=2 -tasa de cumplimiento baja-.'
+        operations: [filter, group, compare]
+joins:
+  rule: Sin segunda fuente disponible en este cliente, no hay joins posibles.
+limitations:
+- Resultado y desempeño son inferencias conversacionales del modelo, no reportes de ruta certificados.
+- 'LIMITACIÓN PRINCIPAL: no existe ninguna vista de insights para este cliente. Cualquier pregunta
+  sobre motivo, necesidad, objeción o competencia no puede responderse.'
+- 'VOLUMEN EXTREMO: 11 conversaciones totales, 9 analizables, todas dentro de una ventana de 16 días
+  (2026-07-08 a 2026-07-23), sin actividad después. NINGUNA cifra de este Data Map es
+  estadísticamente representativa -presentar siempre en términos absolutos ("X de 9"), nunca sólo
+  como porcentaje, y aclarar el volumen. Reauditar completo si el volumen crece.'
+- No se investigó si el silencio de datos después del 23/07 significa que el pipeline de Agrosuper se
+  discontinuó o sólo hubo una pausa operativa.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

@@ -1,0 +1,1191 @@
+metadata:
+  name: VI Data Map Mens Fashion V2
+  version: 2.0.0-draft
+  client: Mens Fashion
+  model_target: Gemini 3.7
+  generated_at: '2026-08-28'
+  scope: Sólo seis vistas dashboard_v2 de Mens Fashion; enviar el YAML completo tras resolver el cliente por Langfuse/MCP.
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe join
+  declarado.
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: quién es el cliente, cómo llega, para quién compra, necesidad, decisión, precio o urgencia
+    avoid: no usar para motivos comerciales detallados ni evaluación del vendedor
+  performance:
+    questions: criterios, cumplimiento, incumplimiento, fortalezas, debilidades, ranking o evolución del vendedor
+    avoid: no usar textos narrativos como si fueran criterios
+  categorical_insights:
+    questions: resultado general, venta perdida, motivador, cashback, competencia, a medida, cierre o cantidades
+    avoid: no usar para ejemplos o explicaciones textuales
+  descriptive_insights:
+    questions: por qué, cómo fue la ejecución, ejemplos, errores, mejores prácticas o acciones sugeridas
+    avoid: no agrupar ni calcular frecuencia de textos
+  categorical_product_insights:
+    questions: producto, compra, ocasión, fit, talla, color, objeción, inventario, complementarios o a medida por producto
+    avoid: no afirmar ventas transaccionales
+  descriptive_product_insights:
+    questions: ejemplos y explicaciones narrativas de un producto
+    avoid: no usar sin la vista categórica cuando la condición del producto debe comprobarse físicamente
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+  descriptive_conversation:
+    row_key: conversation_id
+    tenant_field: seller
+    date_field: date
+    optional_dimensions: []
+    quality_filter: 'No asumir usefulforanalysis: esta vista no lo expone.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; parámetros psycopg; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión sobre profiles[profile].tenant_field; no inferirlo del texto de la
+    pregunta.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período. No inventar ventanas temporales.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir N/A y null.
+  categorical_filters: Usar valores de observed_values respetando tipo, mayúsculas y acentos; excluir null/no_aplica de rankings
+    salvo pedido explícito.
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  lost_sale_general: hubo_venta_perdida IS TRUE habilita motivo_principal_venta_perdida; excluir no_aplica.
+  lost_sale_product: resultado_producto = 'no_comprado' habilita motivo_venta_perdida_producto.
+  bought_product: Para compra por producto preferir se_compro IS TRUE y mostrar resultado_producto para auditar consistencia.
+  objection_handling: objecion_principal identifica la objeción; hubo_manejo_objecion habilita resultado_manejo_objecion.
+  made_to_measure: hubo_ofrecimiento_a_medida habilita resultado_a_medida; excluir no_aplica al medir efectividad.
+  cashback: Una conjunción sobre llegada y primera mención exige cliente_llega_con_cashback_para_usar IS TRUE y primer_mencion_cashback
+    con el valor físico pedido.
+  inventory: solucion_ante_falta describe la respuesta; una brecha textual requiere descriptive_product_insights unido por
+    conversation_id + producto_index.
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys:
+    - conversation_id
+    - producto_index
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_mens_fashion_demografia
+    use_when: 'Características de las conversaciones y clientes: interacción, género, destinatario, tipo, necesidad, decisión,
+      precio y urgencia.'
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        observed_values:
+        - cambio
+        - compra
+        - no_compra
+        - queja
+        type: text
+        description: 'Resultado operativo de la interacción: compra, no compra o cambio.'
+        operations:
+        - filter
+        - group
+        - compare
+      genero_cliente:
+        observed_values:
+        - femenino
+        - masculino
+        - no_claro
+        type: text
+        description: Género inferido o declarado del cliente; puede ser no_identificado.
+        operations:
+        - filter
+        - group
+        - compare
+      cliente_compra_para:
+        observed_values:
+        - no_claro
+        - regalo
+        - si_mismo
+        - tercero
+        type: text
+        description: 'Persona destinataria de la compra: el propio cliente u otra persona.'
+        operations:
+        - filter
+        - group
+        - compare
+      tipo_cliente:
+        observed_values:
+        - no_claro
+        - nuevo
+        - recurrente
+        type: text
+        description: Clasificación del cliente según su relación o comportamiento observado.
+        operations:
+        - filter
+        - group
+        - compare
+      perfil_necesidad:
+        observed_values:
+        - casual
+        - evento
+        - exploracion
+        - no_claro
+        - reposicion
+        - trabajo
+        type: text
+        description: Necesidad principal que organiza la visita, como evento, reposición, exploración o uso casual.
+        operations:
+        - filter
+        - group
+        - compare
+      nivel_decision_cliente:
+        observed_values:
+        - comparando
+        - decidido
+        - indeciso
+        - no_claro
+        type: text
+        description: Madurez de la decisión de compra observada durante la conversación.
+        operations:
+        - filter
+        - group
+        - compare
+      sensibilidad_precio_general:
+        observed_values: &id002
+        - alta
+        - baja
+        - media
+        - no_claro
+        type: text
+        description: Nivel de sensibilidad del cliente frente al precio en la conversación completa.
+        operations:
+        - filter
+        - group
+        - compare
+      urgencia_general:
+        observed_values: &id004
+        - inmediata
+        - no_claro
+        - planeada
+        type: text
+        description: Urgencia temporal general de la necesidad del cliente.
+        operations:
+        - filter
+        - group
+        - compare
+  performance:
+    source: dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+    use_when: Criterios estructurados de desempeño del vendedor.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    fields:
+      vendedoramable:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: &id001
+        - N/A
+        - 'No'
+        - Sí
+        type: text
+        description: ¿ El vendedor fue amable?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorsepresenta:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor se presentó , mencionó su nombre y el de la marca?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorrealizocierrecompra:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: '¿El vendedor realizó preguntas o comentarios para cerrar la compra? (Ej: “Licenciado no se lo merece?”
+          “Con que te vas a consentir”?)'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecioasistencia:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor ofreció asistencia? Dijo algo similar a “si necesitas asistencia o alguna recomendación
+          hazmelo saber”?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofreciotomarmedidas:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿Se ofreció tomar medidas para saber talla?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormuestraprendas:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿ El vendedor mostró prendas y ofreció probarlas?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionadescuentos:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor menciona descuentos o promociones vigentes?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedoragradecioeinvitovolver:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor agradeció la visita e invitó a volver?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorexplicoprogramadelealtad:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor explicó correctamente en qué consiste el programa de lealtad?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorconfirmoenvioticketemail:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor confirmó que el ticket de compra se enviaría por correo electrónico?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofreciomesessinintereses:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿Se ofreció meses sin intereses?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionoprogramadelealtad:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: '¿El vendedor mencionó el programa de lealtad de la marca (Ej: Puntos Robert’s)?'
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorsugiriocomplementos:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor sugirió prendas complementarias para el outfit?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorpreguntaocasionuso:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿Se preguntó la ocasión de uso, tipo de evento, suceso?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionobeneficiosprendas:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedro mencionó los beneficios de las prendas?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionoconfeccionamedida:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿Se mencionó que se pueden elaborar prendas a la medida?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorinvitoaencuestasatisfaccion:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor invitó al cliente a responder la encuesta de satisfacción?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionanuevoslanzamientos:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor menciona nuevos lanzamientos?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedormencionotrescomplementos:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor mencionó al menos 3 complementos para el outfit?
+        operations:
+        - filter
+        - group
+        - compare
+      conocimientosuficiente:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor tenía suficiente conocimiento sobre los productos?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorrecomiendasegunocasionuso:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿Se brindaron recomendaciones de acuerdo a la ocasión de uso?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedordestacaventajasconfeccionmedida:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿Se destacaron las ventajas de confeccionar un producto a medida?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorpreguntapreferenciascliente:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        observed_values: *id001
+        type: text
+        description: ¿Se preguntó color, talla o estilo de preferencia del cliente?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecesolucionantefaltadeproducto:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿El vendedor ofreció “Busca, Consigue, Entrega”?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecebeneficiosanteobjeccionprecio:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿Se ofrecieron beneficios, descuentos, promociones o meses sin interés ante objeciones de precio?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorofrecesolucionanteobjeccioncomosevesiente:
+        configured_values:
+        - Sí
+        - 'No'
+        observed_values: *id001
+        type: text
+        description: ¿Se ofrecieron soluciones ante objeciones de cómo se ve/siente la prenda?
+        operations:
+        - filter
+        - group
+        - compare
+      vendedorinformocashback20porciento:
+        configured_values:
+        - Sí
+        - 'No'
+        - N/A
+        type: text
+        description: ¿El vendedor informo el cashback del 20%?
+        operations:
+        - filter
+        - group
+        - compare
+  categorical_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+    use_when: Resultados y hallazgos categóricos generales de la conversación.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipo_interaccion:
+        observed_values:
+        - cambio
+        - compra
+        - no_compra
+        type: text
+        description: 'Resultado normalizado de la interacción: compra, no_compra o cambio.'
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_general:
+        observed_values:
+        - cambio
+        - compra_parcial
+        - compra_total
+        - no_compra
+        type: text
+        description: Desenlace comercial general, distinguiendo compra total, parcial, cambio o no compra.
+        operations:
+        - filter
+        - group
+        - compare
+      motivador_visita:
+        observed_values:
+        - aparador
+        - ecommerce
+        - necesidad_especifica
+        - no_claro
+        - promocion
+        - recomendacion
+        - redes_sociales
+        - referencia_externa
+        type: text
+        description: Motivo que llevó al cliente a la tienda.
+        operations:
+        - filter
+        - group
+        - compare
+      origen_inspiracion_cliente:
+        observed_values:
+        - ecommerce_propio
+        - no_claro
+        - redes_sociales
+        - referencia_externa
+        type: text
+        description: Canal o referencia donde el cliente encontró inspiración antes de la visita.
+        operations:
+        - filter
+        - group
+        - compare
+      intencion_compra_inicial:
+        observed_values: *id002
+        type: text
+        description: Intención de compra observada al comienzo de la conversación.
+        operations:
+        - filter
+        - group
+        - compare
+      primer_mencion_cashback:
+        observed_values:
+        - no_mencionado
+        type: text
+        description: Quién mencionó primero el cashback o si no fue mencionado.
+        operations:
+        - filter
+        - group
+        - compare
+      cliente_llega_con_cashback_para_usar:
+        type: boolean
+        observed_values:
+        - false
+        description: Indica si el cliente ya llegó con intención de usar cashback.
+        operations:
+        - filter
+        - group
+        - compare
+      conducta_vendedor_cashback:
+        observed_values:
+        - no_menciona
+        type: text
+        description: Comportamiento del vendedor respecto del cashback.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_mencion_competencia:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si se mencionó una marca o alternativa competidora.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_mencion_a_medida:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si apareció la confección a medida en la conversación.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_a_medida:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si el vendedor ofreció activamente confección a medida.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_complementarios:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si el vendedor ofreció productos complementarios.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_paquete:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si se ofreció un paquete o conjunto de productos.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_pregunta_ocasion_de_uso:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si el vendedor preguntó para qué ocasión se usaría el producto.
+        operations:
+        - filter
+        - group
+        - compare
+      atencion_pasiva_vendedor:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Señala una atención pasiva detectada en la ejecución del vendedor.
+        operations:
+        - filter
+        - group
+        - compare
+      falta_cierre_vendedor:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Señala que faltó un intento de cierre comercial.
+        operations:
+        - filter
+        - group
+        - compare
+      no_ofrece_solucion_completa:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Señala que el vendedor no propuso una solución integral a la necesidad.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_venta_perdida:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Bandera que habilita el análisis de motivos de venta perdida.
+        operations:
+        - filter
+        - group
+        - compare
+      motivo_principal_venta_perdida:
+        observed_values:
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - fit
+        - inventario
+        - no_aplica
+        - precio
+        - tiempo_entrega
+        type: text
+        description: Motivo principal de la pérdida; sólo es interpretable cuando hubo_venta_perdida=true.
+        operations:
+        - filter
+        - group
+        - compare
+      cantidad_productos_mencionados:
+        type: integer
+        observed_values:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        description: Cantidad de productos diferentes mencionados en la conversación.
+        operations:
+        - filter
+        - group
+        - aggregate
+      cantidad_productos_comprados:
+        type: integer
+        observed_values:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        description: Cantidad de productos identificados como comprados en la conversación.
+        operations:
+        - filter
+        - group
+        - aggregate
+  descriptive_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_descriptivos_generales
+    use_when: Explicaciones y evidencia textual general de la conversación.
+    grain: Una fila por conversación; texto libre no agregable como categoría.
+    profile: descriptive_conversation
+    fields:
+      resumen_ejecutivo_conversacion:
+        type: text
+        description: Síntesis narrativa de la conversación y su resultado.
+        operations:
+        - select_evidence
+      que_quiere_el_cliente_y_que_tenemos:
+        type: text
+        description: Necesidad del cliente y grado de correspondencia con la oferta disponible.
+        operations:
+        - select_evidence
+      que_no_estamos_resolviendo:
+        type: text
+        description: Necesidades, objeciones o brechas que quedaron sin resolver.
+        operations:
+        - select_evidence
+      por_que_llega_y_por_que_compra:
+        type: text
+        description: Explicación narrativa conjunta del motivador de visita y del disparador de compra.
+        operations:
+        - select_evidence
+      rol_de_a_medida_en_la_conversacion:
+        type: text
+        description: Papel que tuvo la confección a medida en el interés, la objeción o el cierre.
+        operations:
+        - select_evidence
+      evaluacion_ejecucion_vendedor:
+        type: text
+        description: Evaluación narrativa de cómo actuó el vendedor; no es una tasa de cumplimiento.
+        operations:
+        - select_evidence
+      mejores_practicas_detectadas:
+        type: text
+        description: Prácticas positivas observadas en la conversación.
+        operations:
+        - select_evidence
+      errores_principales_detectados:
+        type: text
+        description: Errores de ejecución relevantes observados.
+        operations:
+        - select_evidence
+      insight_cruzado_principal:
+        type: text
+        description: Hallazgo narrativo que conecta necesidad, producto, ejecución y resultado.
+        operations:
+        - select_evidence
+      accion_sugerida:
+        type: text
+        description: Acción concreta sugerida a partir de la conversación.
+        operations:
+        - select_evidence
+  categorical_product_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+    use_when: Atributos y resultados categóricos por producto mencionado.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        observed_values:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        description: Índice estable del producto dentro de la conversación; integra la clave conversación-producto.
+        operations:
+        - join_key
+        - filter
+      producto_index_relacionado:
+        type: integer
+        observed_values:
+        - 1
+        - 2
+        - 3
+        - 4
+        description: Índice de otro producto de la misma conversación relacionado con éste.
+        operations:
+        - join_key
+        - filter
+      producto:
+        observed_values:
+        - abrigo
+        - accesorios
+        - blazer_y_saco
+        - calzado
+        - camisa
+        - chamarra_y_chaleco
+        - jeans
+        - otro
+        - pantalon
+        - polos_y_playeras
+        - separ_pantalon
+        - separ_saco
+        - sweater
+        - traje
+        type: text
+        description: Categoría normalizada del producto mencionado.
+        operations:
+        - filter
+        - group
+        - compare
+      rol_producto_en_conversacion:
+        observed_values:
+        - alternativo
+        - complementario
+        - no_claro
+        - principal
+        type: text
+        description: 'Rol del producto: principal, alternativo, complementario o no claro.'
+        operations:
+        - filter
+        - group
+        - compare
+      ocasion_de_uso:
+        observed_values:
+        - boda
+        - casual
+        - evento
+        - no_claro
+        - regalo
+        - trabajo
+        type: text
+        description: Ocasión para la que el cliente considera usar el producto.
+        operations:
+        - filter
+        - group
+        - compare
+      fit_buscado:
+        observed_values:
+        - no_claro
+        - regular
+        - relaxed
+        - slim
+        type: text
+        description: Tipo de calce o fit buscado por el cliente.
+        operations:
+        - filter
+        - group
+        - compare
+      color_solicitado_producto:
+        observed_values:
+        - amarillo_naranja
+        - azul
+        - blanco_hueso
+        - cafe_beige
+        - gris
+        - multicolor_otros
+        - negro
+        - rojo_vino
+        - rosa_morado
+        - verde
+        type: text
+        description: Color solicitado para este producto.
+        operations:
+        - filter
+        - group
+        - compare
+      color_comprado_producto:
+        observed_values:
+        - azul
+        - blanco_hueso
+        - cafe_beige
+        - gris
+        - multicolor_otros
+        - negro
+        - rojo_vino
+        - rosa_morado
+        - verde
+        type: text
+        description: Color del producto identificado como comprado.
+        operations:
+        - filter
+        - group
+        - compare
+      color_o_diseno_relevante:
+        observed_values:
+        - 'no'
+        - si
+        type: text
+        description: Indica si color o diseño fue relevante en la decisión.
+        operations:
+        - filter
+        - group
+        - compare
+      talla_solicitada_producto:
+        observed_values: &id003
+        - a_medida
+        - chica_34-36
+        - dos_extra_grande_50+
+        - extra_grande_44-46-48
+        - grande_42
+        - mediana_38-40
+        type: text
+        description: Rango de talla solicitado.
+        operations:
+        - filter
+        - group
+        - compare
+      talla_comprada_producto:
+        observed_values: *id003
+        type: text
+        description: Rango de talla identificado como comprado.
+        operations:
+        - filter
+        - group
+        - compare
+      percepcion_calidad:
+        observed_values:
+        - confeccion
+        - marca
+        - multiples
+        - no_claro
+        - relacion_valor_precio
+        - tela
+        type: text
+        description: Aspecto que sostiene la percepción de calidad o valor del producto.
+        operations:
+        - filter
+        - group
+        - compare
+      se_compro:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Bandera booleana de compra inferida para este producto; no equivale a una transacción certificada.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_producto:
+        observed_values:
+        - comprado
+        - no_comprado
+        - pendiente
+        - reemplazado
+        type: text
+        description: 'Estado final del producto: comprado, no comprado, pendiente o reemplazado.'
+        operations:
+        - filter
+        - group
+        - compare
+      motivo_venta_perdida_producto:
+        observed_values:
+        - calidad_valor
+        - diseno_estilo
+        - ejecucion_vendedor
+        - falta_color
+        - falta_modelo
+        - falta_talla
+        - fit
+        - no_claro
+        - precio
+        - tiempo_entrega
+        type: text
+        description: Motivo de pérdida de este producto; usar con resultado_producto=no_comprado.
+        operations:
+        - filter
+        - group
+        - compare
+      urgencia_cliente:
+        observed_values: *id004
+        type: text
+        description: Urgencia de la necesidad asociada específicamente a este producto.
+        operations:
+        - filter
+        - group
+        - compare
+      sensibilidad_precio:
+        observed_values: *id002
+        type: text
+        description: Sensibilidad al precio asociada específicamente a este producto.
+        operations:
+        - filter
+        - group
+        - compare
+      objecion_principal:
+        observed_values:
+        - calidad
+        - estilo_diseno
+        - fit
+        - precio
+        - tiempo_entrega
+        - urgencia
+        type: text
+        description: Objeción principal expresada respecto de este producto.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_manejo_objecion:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si el vendedor intentó manejar la objeción del producto.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_manejo_objecion:
+        observed_values:
+        - exitoso
+        - fallido
+        - no_aplica
+        - parcial
+        type: text
+        description: Resultado del manejo; interpretar sólo cuando hubo_manejo_objecion=true.
+        operations:
+        - filter
+        - group
+        - compare
+      solucion_ante_falta:
+        observed_values:
+        - ajuste_sastreria
+        - a_medida
+        - busqueda_otra_tienda
+        - no_aplica
+        - sin_solucion
+        - sustitucion_funciona
+        - sustitucion_no_funciona
+        type: text
+        description: Solución ofrecida ante falta de talla, color, modelo o disponibilidad.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_complementario:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si se ofreció un producto complementario relacionado.
+        operations:
+        - filter
+        - group
+        - compare
+      hubo_ofrecimiento_a_medida:
+        type: boolean
+        observed_values:
+        - false
+        - true
+        description: Indica si se ofreció confección a medida para este producto.
+        operations:
+        - filter
+        - group
+        - compare
+      resultado_a_medida:
+        observed_values:
+        - cierra_venta
+        - no_aplica
+        - no_cierra_venta
+        type: text
+        description: Resultado comercial del ofrecimiento a medida; excluir no_aplica en rankings.
+        operations:
+        - filter
+        - group
+        - compare
+      disparador_de_cierre:
+        observed_values:
+        - a_medida
+        - asesoria_vendedor
+        - fit_correcto
+        - paquete_completo
+        - promocion
+        type: text
+        description: Factor identificado como decisivo para cerrar la compra del producto.
+        operations:
+        - filter
+        - group
+        - compare
+  descriptive_product_insights:
+    source: dashboard_v2.vw_mens_fashion_insights_descriptivos_por_producto
+    use_when: Evidencia y explicación textual por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index.
+        operations:
+        - join_key
+        - filter
+      resumen_producto:
+        type: text
+        description: Síntesis narrativa de necesidad, interacción y resultado del producto.
+        operations:
+        - select_evidence
+      preferencias_cliente_producto:
+        type: text
+        description: Preferencias textuales de talla, color, estilo, fit u ocasión.
+        operations:
+        - select_evidence
+      brechas_de_inventario_producto:
+        type: text
+        description: Detalle de faltantes o desajustes de inventario relevantes.
+        operations:
+        - select_evidence
+      sensibilidad_precio_y_umbral_producto:
+        type: text
+        description: Evidencia textual sobre sensibilidad y umbral de precio.
+        operations:
+        - select_evidence
+      objeciones_y_respuesta_vendedor_producto:
+        type: text
+        description: Objeciones del producto y respuesta concreta del vendedor.
+        operations:
+        - select_evidence
+      complementarios_y_paquete_producto:
+        type: text
+        description: Detalle de complementarios, outfit o paquete ofrecido.
+        operations:
+        - select_evidence
+      rol_de_a_medida_producto:
+        type: text
+        description: Explicación del papel de la confección a medida para este producto.
+        operations:
+        - select_evidence
+      resultado_final_producto:
+        type: text
+        description: Explicación narrativa del desenlace del producto.
+        operations:
+        - select_evidence
+      accion_sugerida_producto:
+        type: text
+        description: Acción sugerida para mejorar la gestión de este producto o caso similar.
+        operations:
+        - select_evidence
+limitations:
+- Compra y resultado son inferencias conversacionales, no tickets ni ventas certificadas.
+- Los valores observados reflejan PostgreSQL QA al construir el mapa y pueden ampliarse.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

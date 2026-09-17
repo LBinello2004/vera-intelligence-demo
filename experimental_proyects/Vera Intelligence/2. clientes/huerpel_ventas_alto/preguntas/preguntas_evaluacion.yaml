@@ -1,0 +1,175 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_demografia
+      WHERE seller_id = 'Huerpel' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '1.555 conversaciones analizables (de 1.707 totales en demografía)'
+
+  - id: q02_resultado_interaccion
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Base = todas las filas de demography (o excluyendo NULL si se calcula tasa); debe
+      mencionar que "compra" es la categoría mayoritaria y dar el resto del desglose.
+    sql: |
+      SELECT tipointeraccion, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_demografia
+      WHERE seller_id = 'Huerpel'
+      GROUP BY tipointeraccion
+    respuesta_esperada: 'compra=1.169 (68,5% de 1.707), conversacion_no_finalizada=314
+      (18,4%), cambio=88 (5,2%), no_compra=82 (4,8%), queja=1 (0,06%)'
+
+  - id: q03_orfanas_trap
+    pregunta: ¿Cuántas conversaciones tiene en total la sub-marca Ventas de Huerpel?
+    fuentes_requeridas: [performance, demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: performance (rendimiento_vendedor) tiene 1.942 filas pero demography sólo
+      1.707 -235 filas huérfanas verificadas con LEFT JOIN. El agente debe advertir esta
+      discrepancia si le preguntan un total general, no reportar un único número sin
+      matizar cuál fuente se está usando ni por qué difieren.'
+    sql: |
+      SELECT 'demografia' AS fuente, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_demografia d
+      WHERE d.seller_id = 'Huerpel'
+      UNION ALL
+      SELECT 'performance' AS fuente, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor p
+      WHERE p.seller_id = 'Huerpel'
+    respuesta_esperada: '1.707 en demografía vs. 1.942 en el checklist de desempeño -235
+      conversaciones (12,1%) tienen evaluación de desempeño pero no quedaron registradas en
+      demografía, el agente debe señalar la discrepancia, no elegir un número sin explicar-'
+
+  - id: q04_prueba_manejo
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor ofrece proactivamente una prueba de manejo?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE ofrecioproactivamentelapruebademanejo = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE ofrecioproactivamentelapruebademanejo IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '383 de 1.078 (35,5%)'
+
+  - id: q05_valuacion_baja_trap
+    pregunta: ¿Con qué frecuencia el asesor ofrece la valuación del vehículo actual del cliente?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: este campo sólo aplica cuando existe OPORTUNIDAD REAL de toma (no basta que
+      el cliente tenga vehículo). El agente no debe interpretar el N/A alto (685 de 1.942,
+      35,3%) como incumplimiento -es la tasa de cumplimiento más baja del checklist en
+      términos absolutos, pero eso no invalida el criterio de N/A del prompt-.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE ofreciolavaluaciondelvehiculoactual = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE ofreciolavaluaciondelvehiculoactual IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '225 de 969 (23,2%) -sobre la base de conversaciones donde existía
+      oportunidad real de toma, no sobre el total de conversaciones-'
+
+  - id: q06_financiamiento
+    pregunta: ¿En qué porcentaje de las conversaciones donde el financiamiento era una opción real el asesor explicó claramente las condiciones?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A (contado/no aplica) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE explicoclaramentelasopcionesdefinanciamiento = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE explicoclaramentelasopcionesdefinanciamiento IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '890 de 1.173 (75,9%)'
+
+  - id: q07_agradecimiento
+    pregunta: ¿Con qué frecuencia el asesor agradece profesionalmente el tiempo del cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE agradecioeltiempodelclienteprofesionalmente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE agradecioeltiempodelclienteprofesionalmente IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '1.125 de 1.389 (81,0%) -la tasa de cumplimiento más alta del
+      checklist'
+
+  - id: q08_tiendas_ranking
+    pregunta: ¿Cuál es la tienda con más conversaciones de Huerpel Ventas?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe reconocer que hay 10 ubicaciones (a diferencia de Hostess/Hostess Seminuevos, que
+      operan en una sola tienda cada una).
+    sql: |
+      SELECT store_name, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_demografia
+      WHERE seller_id = 'Huerpel'
+      GROUP BY store_name
+      ORDER BY total DESC
+      LIMIT 3
+    respuesta_esperada: 'BDC=869 (la mayor, probablemente centro de atención telefónica/
+      digital, no piso físico), seguida de Tula=183 y Angelópolis=166'
+
+  - id: q09_categorizacion_objeciones_trap
+    pregunta: ¿Cuáles son las principales objeciones de los clientes que no compraron?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe vista de insights materializada para Ventas -sólo demography.
+      tipointeraccion (resultado general) y los campos booleanos del checklist (financiamiento,
+      valuación, etc), no hay categorización de objeciones ni motivo de venta perdida
+      estructurado. El agente debe aclarar la limitación, no inventar categorías de objeción.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con una categorización
+      estructurada de objeciones o motivo de venta perdida para esta sub-marca -sólo el
+      resultado general de la interacción y el cumplimiento de pasos del proceso de venta-.'
+
+  - id: q10_genero_cliente
+    pregunta: ¿Cómo se distribuye el género de los clientes atendidos por los asesores de venta?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Reportar los 3 valores del enum, en minúsculas (distinto del casing de las otras
+      sub-marcas de Huerpel).
+    sql: |
+      SELECT generocliente, COUNT(*) AS total
+      FROM dashboard_v2.vw_huerpel_ventas_demografia
+      WHERE seller_id = 'Huerpel'
+      GROUP BY generocliente
+    respuesta_esperada: 'no_identificado=711 (41,7%), masculino=697 (40,8%), femenino=246
+      (14,4%)'
+
+  - id: q11_presentacion_formal
+    pregunta: ¿Con qué frecuencia el asesor se presenta formalmente con nombre y cargo al iniciar la consulta?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE sepresentoformalmenteconnombreycargo = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE sepresentoformalmenteconnombreycargo IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '512 de 1.431 (35,8%)'
+
+  - id: q12_seleccion_diagnostico
+    pregunta: ¿Qué porcentaje de las veces que se seleccionó un vehículo, éste estuvo acorde al diagnóstico de necesidades del cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A (mayoría, no se llegó a esa etapa) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE seleccionounvehiculoacordealdiagnostico = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE seleccionounvehiculoacordealdiagnostico IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor
+      WHERE seller_id = 'Huerpel'
+    respuesta_esperada: '681 de 835 (81,6%) -alto cumplimiento cuando la etapa se alcanza,
+      aunque casi la mitad de las conversaciones nunca llegan a esa etapa (N/A=819)'

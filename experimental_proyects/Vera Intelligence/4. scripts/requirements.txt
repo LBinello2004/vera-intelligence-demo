@@ -1,0 +1,24 @@
+# Dependencias mínimas para desplegar SOLO "streamlit_app.py" (Vera Intelligence) en Streamlit
+# Community Cloud, sin arrastrar el requirements.txt gigante de la raíz del repo (que incluye
+# faster-whisper/nemo_toolkit/qdrant-client, todo del pipeline de transcripción, nada de lo cual
+# usa este agente -instalarlo ahí rompería o volvería carísimo el build en la nube).
+#
+# Streamlit Community Cloud busca requirements.txt primero en la carpeta del archivo principal
+# (esta, "4. scripts/") antes que en la raíz del repositorio -por eso alcanza con este archivo
+# acá, sin tocar el de la raíz. Versiones tomadas del entorno local ya verificado funcionando
+# (2026-09-17).
+streamlit>=1.63.0
+pandas>=3.0.5
+plotly>=5.24.0
+psycopg[binary]>=3.2.0,<4.0.0
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+requests>=2.31.0
+sqlglot>=30.17.0,<31.0.0
+google-genai>=2.13.0
+# Opcionales -sin sus credenciales (CREDENTIALS_PATH) el resto de la app sigue funcionando
+# (audio_playback.py/rag_sources.py degradan sin romper nada, ver sus docstrings), pero hacen
+# falta para que "🔊 Escuchar" reproduzca audio real.
+firebase-admin>=6.0.0
+google-cloud-storage>=2.0.0

@@ -1,0 +1,99 @@
+metadata:
+  name: Mini-banco de evaluación de search_conversations - Mens Fashion (ronda 2, valor incremental real)
+  purpose: 'Ronda 2 del mini-banco (ver ronda 1: preguntas_busqueda_vectorial.yaml). La ronda 1
+    mostró que el modelo prioriza SQL estructurado sobre search_conversations cada vez que
+    dashboard_v2 ya tiene un campo categórico que responde la pregunta (2 de 6 preguntas). Esta
+    ronda verifica los 172 campos del Data Map (VI Data Map Mens Fashion V7.yaml) antes de escribir
+    cada pregunta, para asegurar que NINGUNO cubra lo que se pide -así se mide el valor incremental
+    real de la búsqueda semántica, sin el atajo de SQL disponible. También sirve para confirmar si
+    el ajuste al prompt del 2026-09-10 (search_conversations complementa a run_readonly_sql, con
+    señales textuales explícitas) sostiene la consistencia de uso también en preguntas donde SQL no
+    tiene ningún campo que pueda ni siquiera intentar responder.'
+  como_difiere_del_banco_sql: 'Igual que la ronda 1 y que preguntas_rag_catalogo.yaml de Farma24: sin
+    "sql" ni "respuesta_esperada" verificable. "sql: null" es explícito para que run_evaluation.py las
+    corra igual.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client mens_fashion_alto --bank
+    "2. clientes/mens_fashion_alto/preguntas/preguntas_busqueda_vectorial_ronda2.yaml" --output
+    "2. clientes/mens_fashion_alto/preguntas/resultados_busqueda_vectorial_ronda2.json"'
+  riesgos_generales_a_vigilar:
+  - 'Que el modelo, al no encontrar campo estructurado, intente forzar una respuesta desde SQL de
+    todos modos (ej. usando ILIKE sobre resumen_ejecutivo_conversacion) en vez de usar
+    search_conversations -sigue siendo una fuente válida, pero si search_conversations no se llama
+    NUNCA en ninguna de las 5 preguntas de esta ronda, es una señal de que el ajuste al prompt no
+    alcanza y hace falta algo más fuerte que texto (ej. forzar la tool por código cuando SQL no
+    aplica).'
+  - Fuga técnica y alucinación, mismos riesgos que la ronda 1.
+
+preguntas:
+  - id: vec2_01_charla_personal
+    pregunta: Buscá conversaciones donde el vendedor y el cliente hablan de temas personales, ajenos a la venta, mientras están en la tienda -por ejemplo planes de fin de semana, comida o familia.
+    objetivo: Ningún campo del Data Map categoriza "charla personal ajena a la venta" -los campos de
+      comportamiento del vendedor son todos sobre conducta comercial (vendedorsepresenta,
+      vendedorpreguntaocasionuso, etc.). Si existe, sólo puede encontrarse en el texto libre real de
+      la conversación.
+    sql: null
+    criterios_evaluacion:
+    - Llamó a search_conversations (no sólo run_readonly_sql) para esta pregunta -verificar en
+      tool_calls_agente.
+    - Si encontró ejemplos, son charla genuinamente personal/ajena a la venta (no una charla comercial
+      mal clasificada).
+    - Si no encontró nada relevante, lo dice explícitamente en vez de forzar un ejemplo comercial
+      como si fuera personal.
+
+  - id: vec2_02_objeto_literal
+    pregunta: ¿Hay conversaciones donde se menciona el espejo de la tienda o el portatrajes como parte de la atención al cliente?
+    objetivo: Mención literal de objetos físicos de la tienda -no existe ningún campo de inventario o
+      producto que registre "espejo" o "portatraje" (el Data Map de producto es sobre prendas
+      vendidas, no mobiliario/accesorios de atención). Sólo se puede encontrar por coincidencia
+      textual o semántica en la transcripción.
+    sql: null
+    criterios_evaluacion:
+    - Llamó a search_conversations para esta pregunta.
+    - Los ejemplos citados mencionan efectivamente un espejo o portatraje en el contexto de la
+      atención (no un producto de otro tipo).
+    - Si no hay resultados claros, lo reconoce en vez de inventar una mención.
+
+  - id: vec2_03_trato_informal
+    pregunta: Dame ejemplos de conversaciones donde el vendedor se dirige al cliente con un trato informal o cariñoso, como "caballero", "joven", "mi amigo" o alguna expresión similar.
+    objetivo: El tono/estilo de trato (más allá de "amabilidad" evaluada como sí/no en
+      vendedoramable) no está categorizado en ningún campo -vendedoramable es un juicio binario de
+      cortesía, no una captura de qué palabras específicas usa el vendedor. Fuerza a
+      search_conversations a encontrar un patrón de estilo, no un hecho estructurado.
+    sql: null
+    criterios_evaluacion:
+    - Llamó a search_conversations para esta pregunta.
+    - Los ejemplos citados muestran efectivamente ese trato informal/cariñoso en la transcripción, no
+      una paráfrasis inventada.
+    - No confunde "trato informal cariñoso" con "trato descortés" (vendedoramable=No) -son conceptos
+      distintos.
+
+  - id: vec2_04_promesa_textual_gratis
+    pregunta: ¿En qué conversaciones el vendedor le promete explícitamente al cliente que el ajuste de sastrería es gratuito o sin costo, usando esas palabras?
+    objetivo: Existen campos sobre CONFECCIÓN A MEDIDA (rol_de_a_medida_en_la_conversacion,
+      vendedordestacaventajasconfeccionmedida) pero ninguno captura la promesa textual específica de
+      gratuidad -es la diferencia entre "el vendedor mencionó confección a medida" (categórico) y
+      "el vendedor dijo la palabra 'gratis'" (sólo verificable en el texto). Prueba si el agente
+      distingue ambos niveles.
+    sql: null
+    criterios_evaluacion:
+    - Llamó a search_conversations para esta pregunta (no sólo un campo categórico de "a medida").
+    - Los ejemplos citados contienen efectivamente una promesa de gratuidad/sin costo, no cualquier
+      mención genérica de sastrería.
+    - No presenta una mención genérica de "a medida" (sin la promesa de gratuidad) como si cumpliera
+      la pregunta.
+
+  - id: vec2_05_resistencia_alucinacion_referido_competencia
+    pregunta: ¿Hay alguna conversación donde el vendedor le haya recomendado al cliente ir a comprar a otra tienda porque Men's Fashion no tenía lo que buscaba?
+    objetivo: 'Distinto del campo existente hubo_mencion_competencia (que captura si el CLIENTE
+      menciona a la competencia) -acá se pregunta lo opuesto y menos probable: que el VENDEDOR
+      derive activamente al cliente hacia otra tienda. Escenario posible pero raro y comercialmente
+      contraintuitivo -buen test de resistencia a alucinación en un contexto donde no hay atajo
+      estructural (no existe campo "vendedor_recomienda_competencia").'
+    sql: null
+    criterios_evaluacion:
+    - Llamó a search_conversations para esta pregunta.
+    - No afirma con confianza que esto pasó si no hay evidencia textual clara y específica -distingue
+      entre "no encontré evidencia de esto" y "esto definitivamente no pasa nunca" (no tiene forma de
+      probar un negativo absoluto sobre miles de conversaciones con top_k=5).
+    - No confunde esta pregunta con hubo_mencion_competencia (que es sobre el cliente, no el
+      vendedor) si termina usando ese campo como apoyo.

@@ -1,0 +1,246 @@
+metadata:
+  name: VI Data Map Hyundai V1
+  version: 1.0.0
+  client: Hyundai
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo dos vistas dashboard_v2 de Hyundai (demografia + rendimiento_vendedor). El tenant
+    ('Hyundai') es fijo para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Hyundai/checklist (Langfuse, label production, v4 al construir este mapa)
+    note: 'Hyundai es "schema delgado" (existe clientes/Hyundai/insights en Langfuse pero no hay
+      vista de insights materializada). Dominio: concesionaria de vehículos. El checklist es
+      IDÉNTICO carácter por carácter al de GAC (mismo protocolo genérico de venta consultiva de
+      concesionaria, ambos "gemelos de prompt") -verificado leyendo el texto completo de ambos en
+      Langfuse-, pero los NÚMEROS de este Data Map se verificaron de forma independiente contra
+      Postgres, no se copiaron de GAC.'
+  known_findings_v1:
+  - 'HALLAZGO MAYOR — CLIENTE POSIBLEMENTE INACTIVO: sin conversaciones nuevas desde 2026-06-20 (109
+      filas, rango 2026-03-20 a 2026-06-20) — a la fecha de este Data Map (2026-09-07) son casi 3
+      meses sin actividad, mucho más que cualquier otro cliente del proyecto. No se investigó la
+      causa (¿se dio de baja el pipeline de este cliente? ¿pausa operativa?). El agente debe advertir
+      esta antigüedad antes de presentar cualquier cifra como si reflejara la operación actual.'
+  - 'HALLAZGO MAYOR — TAXONOMÍA DE tipointeraccion FRAGMENTADA: a diferencia de todos los demás
+      clientes del proyecto (que usan un enum limpio y consistente), tipointeraccion de Hyundai
+      mezcla al menos 3 convenciones de captura distintas para lo que parecen ser los mismos
+      conceptos: "Compra" (5) / "compra" (9) -mayúscula vs minúscula-; "No compra" (12) / "no_compra"
+      (6) -con espacio vs guion bajo-; "conversacion_no_finalizada" (9, snake_case, no visto en
+      ningún otro valor de este campo); "Trámite" (25, un valor que NO aparece en el enum configurado
+      del prompt de checklist en absoluto -ver limitations-); y el string literal "N/A" (40, escrito
+      como texto, DISTINTO de un NULL real de la base -no se observó ningún NULL genuino en este
+      campo-). No se investigó la causa (posibles múltiples versiones del pipeline de extracción sin
+      normalizar entre sí). NO agrupar variantes como si fueran una sola categoría sin decirlo
+      explícitamente en la respuesta -"Compra"+"compra" ambos sí implican compra, pero "Trámite" no
+      tiene definición clara y "N/A" (string) no debe tratarse igual que NULL real-.'
+  - 'Enum de los 16 campos de rendimiento_vendedor SÍ es limpio (Sí/No/N/A, mayúscula estándar) -sólo
+      tipointeraccion en demography tiene el problema de arriba-.'
+  - 'Perfil de desempeño distinto al de GAC pese a compartir el mismo checklist: presentacionpersonal
+      tiene mayoría de "No" en Hyundai (88 No vs 21 Sí) mientras que en GAC está casi empatado (47
+      Sí vs 43 No) -equipos de venta distintos, resultado esperable, no un error de datos-.'
+  - 'LIMITACIÓN RESIDUAL CONOCIDA (2026-09-07, mismo día): se probó reforzar decision_flow para
+      exigir la advertencia de antigüedad (2026-06-20) en TODA respuesta, incluso la más simple -un
+      conteo total de conversaciones-. Antes del refuerzo, la pregunta más simple del banco
+      (q01_staleness_trap, "¿cuántas conversaciones analizables hay?") no mencionaba la antigüedad en
+      4/4 corridas. Después del refuerzo, sigue sin mencionar la fecha exacta en 3/3 corridas
+      adicionales, aunque 2 de 3 usan lenguaje de cobertura más suave ("registro histórico"). No se
+      insistió más allá de este intento -el patrón es consistente con lo visto en otros clientes
+      (Atlas): preguntas de una sola cifra parecen resistirse más a instrucciones de advertencia que
+      preguntas analíticas, que sí las incorporan de forma consistente (ver q03-q06 de este banco,
+      todas con la advertencia completa). Aceptado como limitación conocida, no bloqueante -el número
+      en sí es correcto, sólo falta el detalle de fecha en el caso más simple-.'
+  - 'RAG no aplica: verificado en Langfuse que clientes/Hyundai/checklist no declara
+      geminiFileSearchStoreName (el store de clientes/Hyundai/feedback es de otro producto/feature).'
+decision_flow:
+- 'ANTES DE RESPONDER CUALQUIER PREGUNTA, incluso la más simple (ej. un conteo total): recordar que
+  este cliente no tiene conversaciones nuevas desde el 2026-06-20 -casi 3 meses antes de hoy- y
+  mencionarlo explícitamente en la respuesta, sin excepción, incluso si la pregunta no lo pide
+  directamente. No es opcional ni sólo para preguntas de tendencia: aplica a cualquier cifra, por
+  simple que sea.'
+- Identificar si la pregunta es respondible con checklist/demografía -si pide motivo, necesidad,
+  objeción o competencia, advertir que esa fuente no existe para este cliente.
+- Si la pregunta involucra tipointeraccion, advertir la fragmentación de la taxonomía (ver
+  known_findings_v1) y no agrupar variantes sin decirlo explícitamente.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción -con la salvedad de la taxonomía fragmentada, ver
+      known_findings_v1-
+    avoid: no es la fuente de motivo/necesidad/objeción -esas fuentes no existen para este cliente-
+  performance:
+    questions: criterios del protocolo de venta de concesionaria (apertura/conexión, diagnóstico,
+      presentación/demostración, negociación/cierre, finalización) -mismos 16 campos que GAC, mismo
+      prompt-
+    avoid: no tratar N/A como incumplimiento; no comparar tasas de Hyundai contra GAC como si un
+      cambio de Data Map afectara a ambos -son equipos de venta independientes con resultados propios-
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Hyundai') sobre el tenant_field de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período. Aclarar
+    siempre que el histórico termina el 2026-06-20.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null.
+sources:
+  demography:
+    source: dashboard_v2.vw_hyundai_demografia
+    use_when: Resultado de la interacción (con la salvedad de la taxonomía fragmentada).
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        type: text
+        nullable: true
+        description: 'FRAGMENTADO, ver known_findings_v1: "Compra"=5, "compra"=9, "No compra"=12,
+          "no_compra"=6, "conversacion_no_finalizada"=9, "Trámite"=25 (fuera del enum del prompt),
+          "N/A" (string literal)=40, "cambio"=2, "queja"=1. No agrupar variantes sin advertirlo.'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_hyundai_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de venta de la concesionaria.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 16 criterios admiten Sí/No/N/A con la lógica estándar del prompt -mismo
+      prompt que GAC, ver metadata.source_of_truth-.'
+    fields:
+      saludo:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: [Sí, 'No']
+        type: text
+        nullable: true
+        description: 'Apertura. Sí=92, No=17 -no se observó ningún N/A en la muestra, a diferencia
+          de GAC-.'
+        operations: [filter, group, compare]
+      preguntasialguienmasatiende:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. Sí=65, No=42, N/A=2.'
+        operations: [filter, group, compare]
+      presentacionpersonal:
+        configured_values: *si_no_na
+        observed_values: [Sí, 'No']
+        type: text
+        nullable: true
+        description: 'Apertura. No=88, Sí=21 -tasa de cumplimiento baja, distinta al perfil de GAC
+          pese a compartir el mismo checklist (ver known_findings_v1)-.'
+        operations: [filter, group, compare]
+      conocemotivovisita:
+        configured_values: *si_no_na
+        observed_values: [Sí, 'No']
+        type: text
+        nullable: true
+        description: 'Apertura. Sí=84, No=25.'
+        operations: [filter, group, compare]
+      descubrenecesidades:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Exige explorar 2+ dimensiones sustantivas o 1 con profundidad. No=66,
+          Sí=40, N/A=3.'
+        operations: [filter, group, compare]
+      clasificacliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. No=94, Sí=11, N/A=4 -tasa de cumplimiento muy baja-.'
+        operations: [filter, group, compare]
+      presentacionvehiculo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Exige conectar la unidad con el diagnóstico Y mencionar un
+          beneficio. No=46, N/A=34, Sí=29.'
+        operations: [filter, group, compare]
+      demostracionestatica:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. N/A=69, No=22, Sí=18.'
+        operations: [filter, group, compare]
+      ofrecepruebamanejo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. N/A=74, No=25, Sí=10.'
+        operations: [filter, group, compare]
+      reafirmabeneficios:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. N/A=71, No=25, Sí=13.'
+        operations: [filter, group, compare]
+      presentapreciosypromociones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. N/A=67, No=23, Sí=19.'
+        operations: [filter, group, compare]
+      manejodeobjeciones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sólo evaluable si hubo objeción real. N/A=67, No=26, Sí=16.'
+        operations: [filter, group, compare]
+      intentodecierreventa:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. N/A=69, No=28, Sí=12.'
+        operations: [filter, group, compare]
+      explicanegociacionydocumentacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. N/A=62, No=35, Sí=12.'
+        operations: [filter, group, compare]
+      mencionaprocesoentrega:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Finalización. N/A=82 (mayoría, por diseño), No=14, Sí=13.'
+        operations: [filter, group, compare]
+      agradecimientoydespedida:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Finalización. No=65, Sí=41, N/A=3 -tasa de cumplimiento baja-.'
+        operations: [filter, group, compare]
+joins:
+  rule: Sin segunda fuente disponible en este cliente, no hay joins posibles.
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL 1: no existe ninguna vista de insights para este cliente. Cualquier pregunta
+  sobre motivo, necesidad, objeción o competencia no puede responderse.'
+- 'LIMITACIÓN PRINCIPAL 2: sin conversaciones nuevas desde 2026-06-20 (casi 3 meses a la fecha de
+  este Data Map) -advertir siempre que estos datos pueden no reflejar la operación actual.'
+- 'LIMITACIÓN PRINCIPAL 3: tipointeraccion tiene una taxonomía fragmentada con al menos 3
+  convenciones de captura mezcladas, incluyendo un valor ("Trámite") fuera del enum configurado del
+  prompt y un string literal "N/A" distinto de NULL real -ver known_findings_v1-. No se investigó la
+  causa raíz ni se normalizó -QUEDA ABIERTO para una futura auditoría-.'
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

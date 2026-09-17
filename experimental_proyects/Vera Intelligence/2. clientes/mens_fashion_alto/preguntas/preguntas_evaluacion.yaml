@@ -1,0 +1,705 @@
+metadata:
+  name: Preguntas de evaluación VI - Mens Fashion
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo.
+  data_map_version: VI Data Map Mens Fashion V3.yaml
+  tenant: Mens Fashion
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-08-28
+  nota_gate_automatico: 'Calibrado 2026-09-02 para data_map_auto_update.py (ver README.md >
+    "Actualización automática del Data Map"). "max_missing_numbers" en 8 preguntas (q03, q04, q05,
+    q07, q12, q13, q18, q19), calibrado con margen sobre variabilidad narrativa VERIFICADA contra
+    Postgres -en las 8, el número central que responde la pregunta coincidía exacto entre dos
+    corridas independientes y con la base real; sólo variaba el detalle porcentual/columna extra
+    que una corrida agregó y la otra no-. q16_tasa_compra_segun_pregunta_ocasion se dejó
+    deliberadamente SIN calibrar (tolerancia estricta, default=1): verificado contra Postgres que
+    una corrida daba el número real exacto (13.710/29,74%) y la otra un número genuinamente
+    incorrecto (11.347/35,34%, la diferencia coincide con el tamaño del grupo NULL de
+    hubo_pregunta_ocasion_de_uso) — es un error real de ejecución del agente en esa pregunta
+    puntual, no ambigüedad de contenido ni ruido narrativo. Calibrarla habría tapado un error real
+    en vez de dejar que el gate lo siga atrapando.
+
+    AGREGADO 2026-09-08 (revisión humana tras gate_fallo_no_promovido tratando el checklist v10 -
+    cashback, ver ".runtime/data_map_updates/mens_fashion_alto/20260908T120718Z.json"): se calibraron
+    4 preguntas más (q06, q09, q11, q20) que reprobaron el gate al promover V6->V7. En las 4 se
+    verificó que el número central que responde la pregunta coincidía EXACTO entre la corrida vieja
+    (V6) y la nueva (V7) -q06 negro=5120/4165/3013/1965/1924 en ambas; q09 promedio=1.58 en ambas;
+    q11 Sí=17888/No=932 en ambas; q20 total=26 en ambas, sin caer en la trampa motivador_visita=9-;
+    lo único que variaba era detalle secundario no pedido por la pregunta (q06: desglose de negro por
+    categoría de prenda; q09: distinto agrupamiento de los buckets 3/4+; q11: los totales base/general
+    18820/21583, derivables por suma; q20: menciones de otros canales de origen, fuera de lo que pide
+    la pregunta). El diff V6->V7 del Data Map (ver metadata.changes_from_v6 en V7) confirma además que
+    el contenido de esas 4 secciones no cambió ni una línea entre versiones -la caída del gate fue
+    ruido de redacción del modelo entre corridas, no una regresión introducida por V7-. q16 se dejó
+    intacta a propósito (ver nota arriba); en esta corrida puntual old y new también coincidían en el
+    número central, así que se promovió V7 igual, pero sin tocar su calibración.'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". "requisitos" explica qué tiene que resolver bien el agente
+    para llegar a esa respuesta (no es parte de lo que se le pregunta). Las preguntas marcadas
+    es_trampa=true están diseñadas específicamente para detectar errores conocidos de interpretación
+    del Data Map (ver VI Data Map Mens Fashion V3.yaml > metadata.changes_from_v2).'
+  nota_encoding: Los valores de performance ("Sí") son UTF-8 correcto en Postgres (verificado byte a
+    byte); si algo se ve mal renderizado es la consola, no el dato.
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id), no filas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_demografia
+      WHERE seller_id = 'Mens Fashion' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '17536'
+
+  - id: q02_tasa_se_presenta
+    pregunta: ¿Qué porcentaje de las veces que era evaluable, el vendedor se presentó al cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - vendedorsepresenta admite Sí/No/N/A; la tasa se calcula sobre Sí+No, excluyendo N/A y NULL
+      (27 filas son NULL).
+    - No confundir "porcentaje sobre el total de conversaciones" con "porcentaje sobre la base
+      evaluada" (son 18457 evaluadas de 18931 conversaciones totales en esta vista).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorsepresenta = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorsepresenta = 'No') AS no,
+        COUNT(*) FILTER (WHERE vendedorsepresenta IN ('Sí','No')) AS base_evaluada,
+        ROUND(
+          COUNT(*) FILTER (WHERE vendedorsepresenta = 'Sí')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE vendedorsepresenta IN ('Sí','No')), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: 'Sí=3808, No=14649, base evaluada=18457, tasa=20.63%'
+
+  - id: q03_distribucion_resultado_general
+    max_missing_numbers: 4
+    pregunta: Dame la distribución de resultado_general de las conversaciones (compra total, parcial, no compra, cambio, queja).
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Incluir 'queja' como categoría válida (no está en el enum viejo de V2 del Data Map).
+    - Hay 42 conversaciones con resultado_general NULL; decidir si se muestran aparte o se excluyen,
+      pero no ignorarlas silenciosamente si la pregunta pide "la distribución completa".
+    sql: |
+      SELECT resultado_general, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion'
+      GROUP BY resultado_general
+      ORDER BY total DESC
+    respuesta_esperada: 'no_compra=10589, compra_total=6856, compra_parcial=2128, NULL=42, queja=41, cambio=24'
+
+  - id: q04_top5_motivo_venta_perdida_producto
+    max_missing_numbers: 3
+    pregunta: ¿Cuáles son los 5 motivos más frecuentes de venta perdida a nivel producto?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Usar motivo_venta_perdida_producto (no motivo_principal_venta_perdida, que es el general de la
+      conversación).
+    - 'CORRECCIÓN post-evaluación: no alcanza con motivo_venta_perdida_producto IS NOT NULL. Hay que
+      sumar resultado_producto = ''no_comprado'' (per semantic_dependencies.lost_sale_product del Data
+      Map: "resultado_producto = ''no_comprado'' habilita motivo_venta_perdida_producto"). Sin ese
+      filtro se cuelan ~1.630 filas con resultado_producto=''pendiente'' y ~85 con ''comprado''/
+      ''reemplazado'' que igual tienen el campo poblado, infla los conteos ~15-20%. La primera versión
+      de este banco (2026-08-28) NO tenía este filtro; se corrigió después de que vi_agent.py lo
+      aplicara correctamente en una corrida de evaluación real y detectáramos la discrepancia.'
+    - Excluir NULL (no aplica o sin evidencia); no incluirlo en el ranking.
+    - Grano es por conversation_id + producto_index, no por conversación.
+    sql: |
+      SELECT motivo_venta_perdida_producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion'
+        AND resultado_producto = 'no_comprado'
+        AND motivo_venta_perdida_producto IS NOT NULL
+      GROUP BY motivo_venta_perdida_producto
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'ejecucion_vendedor=2467, falta_talla=2104, no_claro=1819, diseno_estilo=988, falta_modelo=940'
+
+  - id: q05_mencion_competencia
+    max_missing_numbers: 6
+    pregunta: ¿En cuántas conversaciones se mencionó a la competencia?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - hubo_mencion_competencia es boolean, no nullable; filtrar IS TRUE.
+    - 'CORRECCIÓN post-evaluación: el denominador tiene que ser COUNT(DISTINCT conversation_id), no
+      COUNT(*) (regla sql_rules.conversation_population del Data Map). vw_mens_fashion_insights_categoricos_generales
+      tiene ~2.092 filas con conversation_id NULL (registros huérfanos, aparente problema de ETL aguas
+      arriba) que un COUNT(*) sin filtrar cuenta como si fueran conversaciones válidas, infla el total
+      un ~10% (21771 filas vs 19679 conversaciones distintas reales) y distorsiona cualquier
+      porcentaje. La primera versión de este banco (2026-08-28) tenía este mismo error; se corrigió
+      después de que vi_agent.py usara COUNT(DISTINCT conversation_id) correctamente y detectáramos la
+      discrepancia (999/21772=4.59% vs el valor real 999/19679=5.08%). Vale la pena documentar estas
+      filas huérfanas como hallazgo de calidad de datos en el Data Map.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE hubo_mencion_competencia IS TRUE) AS con_mencion,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: '999 de 19679 conversaciones (5.08%)'
+
+  - id: q06_color_mas_solicitado
+    max_missing_numbers: 18
+    pregunta: ¿Cuál es el color más solicitado por los clientes?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Usar color_solicitado_producto (lo que el cliente pide), no color_comprado_producto (lo que
+      termina comprando, que además sólo se completa si se_compro=true).
+    - Excluir NULL del ranking.
+    sql: |
+      SELECT color_solicitado_producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion' AND color_solicitado_producto IS NOT NULL
+      GROUP BY color_solicitado_producto
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'negro=4624, azul=3714, blanco_hueso=2682, multicolor_otros=2676, gris=1850'
+
+  - id: q07_tasa_exito_manejo_objecion
+    max_missing_numbers: 3
+    pregunta: De las objeciones que el vendedor trabajó, ¿en qué porcentaje tuvo éxito?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Base = hubo_manejo_objecion IS TRUE (no todas las filas con objecion_principal no nulo, porque
+      puede haber objeción sin manejo).
+    - resultado_manejo_objecion = 'exitoso' sobre esa base.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE resultado_manejo_objecion = 'exitoso') AS exitoso,
+        COUNT(*) FILTER (WHERE hubo_manejo_objecion IS TRUE) AS base_manejadas,
+        ROUND(
+          COUNT(*) FILTER (WHERE resultado_manejo_objecion = 'exitoso')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE hubo_manejo_objecion IS TRUE), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: '4736 exitosas de 7776 manejadas = 60.91%'
+
+  - id: q08_tasa_cierre_a_medida
+    pregunta: Cuando se ofrece confección a medida para un producto, ¿qué porcentaje de las veces ayuda a cerrar la venta?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Base = hubo_ofrecimiento_a_medida IS TRUE Y resultado_a_medida <> 'no_aplica' (excluir no_aplica
+      de la base, per sql_rules.categorical_filters del Data Map).
+    - Numerador = resultado_a_medida = 'cierra_venta'.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE resultado_a_medida = 'cierra_venta') AS cierra,
+        COUNT(*) FILTER (WHERE hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica') AS base,
+        ROUND(
+          COUNT(*) FILTER (WHERE resultado_a_medida = 'cierra_venta')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica'), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: '2449 de 5153 = 47.53%'
+
+  - id: q09_promedio_productos_mencionados
+    max_missing_numbers: 3
+    pregunta: ¿Cuál es el promedio de productos mencionados por conversación?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Usar cantidad_productos_mencionados de categorical_insights (ya viene calculado a nivel
+      conversación), no contar filas de categorical_product_insights a mano.
+    sql: |
+      SELECT ROUND(AVG(cantidad_productos_mencionados)::numeric, 2) AS promedio
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: '1.61'
+
+  - id: q10_ocasion_uso_traje
+    pregunta: Cuando el producto es un traje, ¿cuál es la ocasión de uso más común?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Filtrar producto = 'traje' exacto (enum en minúsculas snake_case).
+    - Excluir NULL de ocasion_de_uso del ranking.
+    sql: |
+      SELECT ocasion_de_uso, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion' AND producto = 'traje' AND ocasion_de_uso IS NOT NULL
+      GROUP BY ocasion_de_uso
+      ORDER BY total DESC
+    respuesta_esperada: 'evento=2829, no_claro=2504, boda=824, trabajo=321, casual=102, regalo=18 (evento es la más común)'
+
+  - id: q11_distribucion_amabilidad
+    max_missing_numbers: 3
+    pregunta: ¿En cuántas conversaciones el vendedor fue amable, y en cuántas no?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Mostrar las 3 categorías reales (Sí/No/N/A), no asumir que es binario.
+    - N/A no es "faltante", es un valor legítimo (fragmento muy breve/neutro para evaluar trato).
+    sql: |
+      SELECT vendedoramable, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+      WHERE seller_id = 'Mens Fashion'
+      GROUP BY vendedoramable
+      ORDER BY total DESC
+    respuesta_esperada: 'Sí=16595, N/A=2207, No=964, NULL=27'
+
+  - id: q12_pct_no_menciona_cashback_evaluado
+    max_missing_numbers: 7
+    es_trampa: true
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor no mencionó el cashback?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - 'TRAMPA: conducta_vendedor_cashback es NULL en ~85% de las filas porque el cluster de cashback
+      simplemente no fue evaluado en esas conversaciones (no es lo mismo que "no_menciona"). Calcular
+      el porcentaje sobre el TOTAL de conversaciones da un número casi seguro erróneo o engañoso; hay
+      que acotar la base a IS NOT NULL (conversaciones donde sí se evaluó) y aclarar esa distinción en
+      la respuesta.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE conducta_vendedor_cashback = 'no_menciona') AS no_menciona,
+        COUNT(*) FILTER (WHERE conducta_vendedor_cashback IS NOT NULL) AS evaluadas,
+        ROUND(
+          COUNT(*) FILTER (WHERE conducta_vendedor_cashback = 'no_menciona')::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE conducta_vendedor_cashback IS NOT NULL), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: 'Sobre las 3290 conversaciones donde el cluster de cashback SÍ fue evaluado: 2677 no_menciona = 81.37%. (El resto de las ~21772 conversaciones totales no tiene este criterio evaluado.)'
+
+  - id: q13_legacy_programa_lealtad
+    max_missing_numbers: 3
+    es_trampa: true
+    pregunta: ¿El vendedor explicó el programa de lealtad en cuántas conversaciones?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - 'TRAMPA: vendedorexplicoprogramadelealtad es un campo LEGADO (legacy=true en el Data Map): tiene
+      datos reales pero no forma parte del checklist v9 vigente para Mens Fashion (que no tiene
+      programa de lealtad de puntos, tiene cashback). Un buen agente debería aclarar esto en la
+      respuesta, no reportar el número como si fuera un criterio actual sin más contexto.'
+    sql: |
+      SELECT vendedorexplicoprogramadelealtad, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+      WHERE seller_id = 'Mens Fashion'
+      GROUP BY vendedorexplicoprogramadelealtad
+      ORDER BY total DESC
+    respuesta_esperada: 'Sí=2143 (pero el campo es legado / no vigente en el checklist actual; aclarar antes de reportarlo como criterio activo)'
+
+  - id: q14_ranking_vendedores_compra_total
+    pregunta: ¿Cuáles son los 5 vendedores con más conversaciones de compra total?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - employee_full_name viene como dimensión opcional del profile standard_conversation, disponible
+      directamente en esta vista (no requiere join).
+    - Excluir NULL de employee_full_name del ranking.
+    sql: |
+      SELECT employee_full_name, COUNT(DISTINCT conversation_id) AS total_compra_total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND resultado_general = 'compra_total'
+        AND employee_full_name IS NOT NULL
+      GROUP BY employee_full_name
+      ORDER BY total_compra_total DESC
+      LIMIT 5
+    respuesta_esperada: 'Rosa Patricia Martínez García=156, Rocio Haro Leal=151, Araceli Muñoz Rubio=132, Hugo Castro Bolaños=109, Jose Francisco Mendoza Roldan=105'
+
+  - id: q15_fit_mas_buscado_objecion_precio
+    pregunta: Entre los productos donde hubo objeción de precio, ¿cuál es el fit más buscado?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - objecion_principal y fit_buscado están en la misma fila/grano (categorical_product_insights),
+      no requiere join.
+    - Filtrar objecion_principal = 'precio' exacto; excluir NULL de fit_buscado.
+    sql: |
+      SELECT fit_buscado, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion' AND objecion_principal = 'precio' AND fit_buscado IS NOT NULL
+      GROUP BY fit_buscado
+      ORDER BY total DESC
+    respuesta_esperada: 'no_claro=620, slim=242, regular=174, relaxed=16 (excluyendo no_claro, "slim" es el fit identificable más común)'
+
+  - id: q16_tasa_compra_segun_pregunta_ocasion
+    pregunta: ¿La tasa de compra total es distinta cuando el vendedor pregunta la ocasión de uso versus cuando no lo hace?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'AGREGADO 2026-09-02 (causa raíz investigada tras un fallo real del gate, ver README.md >
+      "Actualización automática del Data Map"): usar SIEMPRE hubo_pregunta_ocasion_de_uso
+      (categorical_insights), NUNCA vendedorpreguntaocasionuso (performance) ni un JOIN entre
+      ambos — son mediciones independientes que sólo coinciden ~72,5% de las veces (ver
+      semantic_dependencies.ocasion_uso_dual_source en el Data Map V5). Verificado que el agente a
+      veces cruza ambos campos como si fueran lo mismo, o agrega sin que se lo pidan un filtro
+      usefulforanalysis IS TRUE (population distinta, no forma parte de esta pregunta) — ambos
+      errores dan un número incorrecto y distinto entre corridas.'
+    - Agrupar por hubo_pregunta_ocasion_de_uso (boolean) y calcular tasa de resultado_general='compra_total'
+      dentro de cada grupo.
+    - Hay un grupo NULL (2134 filas) que no es ni true ni false; no combinarlo con false.
+    sql: |
+      SELECT
+        hubo_pregunta_ocasion_de_uso,
+        COUNT(*) FILTER (WHERE resultado_general = 'compra_total') AS compra_total,
+        COUNT(*) AS total,
+        ROUND(
+          COUNT(*) FILTER (WHERE resultado_general = 'compra_total')::numeric
+          / NULLIF(COUNT(*), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion'
+      GROUP BY hubo_pregunta_ocasion_de_uso
+    respuesta_esperada: 'true: 2860/6189=46.21%; false: 3996/13449=29.71%; NULL: 0/2134=0% (grupo sin dato, no comparable). Sí, la tasa es notablemente más alta cuando pregunta la ocasión de uso.'
+
+  - id: q17_top5_tiendas
+    pregunta: ¿Cuáles son las 5 tiendas con más conversaciones?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - store_name es una dimensión opcional del profile; agrupar y contar conversaciones distintas.
+    - Excluir NULL de store_name.
+    sql: |
+      SELECT store_name, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_demografia
+      WHERE seller_id = 'Mens Fashion' AND store_name IS NOT NULL
+      GROUP BY store_name
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'Mens Fashion Santa Fe=991, Mens Fashion Puebla Reforma=978, Mens Fashion Galerias Pachuca=872, Mens Fashion Plaza Mayor=842, Mens Fashion Jardin Neza=819'
+
+  - id: q18_evolucion_mensual
+    max_missing_numbers: 7
+    pregunta: Mostrame la cantidad de conversaciones analizables por mes.
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Truncar uploaded_at_local (profiles.standard_conversation.date_field) a mes; no usar started_at
+      ni uploaded_at (UTC) para agrupar por mes local.
+    - Filtrar usefulforanalysis IS TRUE, dado que la pregunta dice "analizables".
+    sql: |
+      SELECT date_trunc('month', uploaded_at_local)::date AS mes,
+             COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_demografia
+      WHERE seller_id = 'Mens Fashion' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 1
+    respuesta_esperada: '2026-05=725, 2026-06=3520, 2026-07=6760, 2026-08=6531 (agosto parcial, el mes no cerró al momento de la consulta)'
+
+  - id: q19_pregunta_preferencias_sin_complementos
+    max_missing_numbers: 3
+    pregunta: De las conversaciones donde el vendedor preguntó las preferencias del cliente, ¿en qué porcentaje NO sugirió complementos?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base = vendedorpreguntapreferenciascliente = 'Sí'.
+    - Numerador = vendedorsugiriocomplementos = 'No' dentro de esa base (no incluir N/A como si fuera "no sugirió").
+    sql: |
+      SELECT
+        COUNT(*) FILTER (
+          WHERE vendedorpreguntapreferenciascliente = 'Sí' AND vendedorsugiriocomplementos = 'No'
+        ) AS caso,
+        COUNT(*) FILTER (WHERE vendedorpreguntapreferenciascliente = 'Sí') AS base,
+        ROUND(
+          COUNT(*) FILTER (
+            WHERE vendedorpreguntapreferenciascliente = 'Sí' AND vendedorsugiriocomplementos = 'No'
+          )::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE vendedorpreguntapreferenciascliente = 'Sí'), 0),
+          4
+        ) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: '3077 de 10477 = 29.37%'
+
+  - id: q20_trap_redes_sociales_origen_vs_motivador
+    max_missing_numbers: 3
+    es_trampa: true
+    pregunta: ¿Cuántas conversaciones el cliente llegó inspirado por redes sociales?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - 'TRAMPA de taxonomy_drift: el campo correcto es origen_inspiracion_cliente = ''redes_sociales''
+      (28 filas), que es el enum VIGENTE del insights v7 para "fuente/canal de inspiración". Existe un
+      valor motivador_visita = ''redes_sociales'' (9 filas) que es un remanente de una taxonomía
+      ANTERIOR donde ese campo mezclaba canal y necesidad; usar motivador_visita acá da un número
+      distinto y conceptualmente equivocado (motivador_visita hoy describe la NECESIDAD, no el canal).
+      Ver VI Data Map Mens Fashion V3.yaml > sources.categorical_insights.fields.motivador_visita.taxonomy_drift.'
+    sql: |
+      SELECT COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND origen_inspiracion_cliente = 'redes_sociales'
+    respuesta_esperada: '28 (usando origen_inspiracion_cliente, el campo correcto). Usar motivador_visita en su lugar da 9, que es la respuesta incorrecta/trampa.'
+
+  # --- Ronda 2 (2026-08-31): apunta a zonas que la ronda 1 no cubrió -------
+  # agregación por vendedor a través de TODOS los criterios (no un campo
+  # puntual), ranking de tiendas, cascadas semánticas N/A, joins de evidencia
+  # categórica+descriptiva, y un periodo de fecha explícito.
+
+  - id: q21_peores_vendedores_cumplimiento_general
+    pregunta: ¿Quiénes son mis tres peores vendedores en términos de rendimiento?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - 'Rendimiento "general" implica agregar sobre TODOS los criterios vigentes del checklist (25
+      campos), no sobre uno solo. Requiere "unpivotear" las 25 columnas Sí/No/N/A por vendedor:
+      tasa = Sí / (Sí+No), excluyendo N/A y null en cada criterio individual.'
+    - Excluir los 2 campos legacy (vendedorexplicoprogramadelealtad, vendedormencionoprogramadelealtad)
+      del cálculo general — no son parte del checklist vigente (ver Data Map).
+    - Aplicar un piso de volumen razonable (ej. >=20 conversaciones) para no rankear a alguien con 1-2
+      conversaciones evaluadas como "el peor". No hay un piso "correcto" único, pero debe existir
+      alguno y debe decirlo explícitamente.
+    - Agrupar por vendedor (employee_id, no sólo por nombre — dos personas distintas podrían compartir
+      nombre; el Data Map no expone employee_id como campo de negocio pero SQL puede agrupar por él
+      internamente).
+    - 'CORRECCIÓN post-evaluación (2026-08-31): la primera versión de este SQL usaba un CTE con 25
+      UNION ALL (una por criterio) para "unpivotear" los campos. Es funcionalmente correcta pero
+      sql_security.py la rechaza: al referenciar la misma tabla 25 veces sin alias, exige un filtro de
+      tenant calificado por alias en cada una, que un WHERE sin calificar no satisface. La query real
+      que generó el agente (y que sí pasa la validación) suma los criterios con CASE WHEN dentro de un
+      único FROM/WHERE — ese es el patrón correcto para este tipo de agregación y el que quedó abajo.'
+    sql: |
+      WITH agg AS (
+        SELECT employee_id, employee_full_name,
+               COUNT(DISTINCT conversation_id) AS conversaciones,
+               SUM((CASE WHEN vendedoramable = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorsepresenta = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrealizocierrecompra = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecioasistencia = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofreciotomarmedidas = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormuestraprendas = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionadescuentos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedoragradecioeinvitovolver = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorconfirmoenvioticketemail = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofreciomesessinintereses = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorsugiriocomplementos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorpreguntaocasionuso = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionobeneficiosprendas = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionoconfeccionamedida = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinvitoaencuestasatisfaccion = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionanuevoslanzamientos = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionotrescomplementos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN conocimientosuficiente = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrecomiendasegunocasionuso = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedordestacaventajasconfeccionmedida = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorpreguntapreferenciascliente = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionantefaltadeproducto = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofrecebeneficiosanteobjeccionprecio = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionanteobjeccioncomosevesiente = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinformocashback20porciento = 'Sí' THEN 1 ELSE 0 END)) AS cumplidos,
+               SUM((CASE WHEN vendedoramable IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorsepresenta IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrealizocierrecompra IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecioasistencia IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofreciotomarmedidas IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormuestraprendas IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionadescuentos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedoragradecioeinvitovolver IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorconfirmoenvioticketemail IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofreciomesessinintereses IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorsugiriocomplementos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorpreguntaocasionuso IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionobeneficiosprendas IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionoconfeccionamedida IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinvitoaencuestasatisfaccion IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionanuevoslanzamientos IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionotrescomplementos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN conocimientosuficiente IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrecomiendasegunocasionuso IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedordestacaventajasconfeccionmedida IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorpreguntapreferenciascliente IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionantefaltadeproducto IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofrecebeneficiosanteobjeccionprecio IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionanteobjeccioncomosevesiente IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinformocashback20porciento IN ('Sí','No') THEN 1 ELSE 0 END)) AS base_evaluada
+        FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+        WHERE seller_id = 'Mens Fashion' AND employee_full_name IS NOT NULL
+        GROUP BY employee_id, employee_full_name
+        HAVING COUNT(DISTINCT conversation_id) >= 20
+      )
+      SELECT employee_full_name, conversaciones, cumplidos, base_evaluada,
+             ROUND(cumplidos::numeric / NULLIF(base_evaluada, 0), 4) AS tasa
+      FROM agg
+      ORDER BY tasa ASC
+      LIMIT 3
+    respuesta_esperada: 'Jorge Javier Martinez Blanco (14.95%, 27 conv.), Ubaldo Ramos (21.12%, 162 conv.), Karla Santos (22.60%, 203 conv.) — cifras vivas, esperar drift razonable.'
+
+  - id: q22_mejores_vendedores_cumplimiento_general
+    pregunta: ¿Quiénes son los vendedores que mejor cumplen el protocolo?
+    fuentes_requeridas: [performance]
+    requisitos: Mismos requisitos que q21 (mismo SQL, cambiando ORDER BY tasa ASC por DESC).
+    sql: |
+      WITH agg AS (
+        SELECT employee_id, employee_full_name,
+               COUNT(DISTINCT conversation_id) AS conversaciones,
+               SUM((CASE WHEN vendedoramable = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorsepresenta = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrealizocierrecompra = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecioasistencia = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofreciotomarmedidas = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormuestraprendas = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionadescuentos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedoragradecioeinvitovolver = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorconfirmoenvioticketemail = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofreciomesessinintereses = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorsugiriocomplementos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorpreguntaocasionuso = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionobeneficiosprendas = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionoconfeccionamedida = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinvitoaencuestasatisfaccion = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionanuevoslanzamientos = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionotrescomplementos = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN conocimientosuficiente = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrecomiendasegunocasionuso = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedordestacaventajasconfeccionmedida = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorpreguntapreferenciascliente = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionantefaltadeproducto = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofrecebeneficiosanteobjeccionprecio = 'Sí' THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionanteobjeccioncomosevesiente = 'Sí' THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinformocashback20porciento = 'Sí' THEN 1 ELSE 0 END)) AS cumplidos,
+               SUM((CASE WHEN vendedoramable IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorsepresenta IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrealizocierrecompra IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecioasistencia IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofreciotomarmedidas IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormuestraprendas IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionadescuentos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedoragradecioeinvitovolver IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorconfirmoenvioticketemail IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofreciomesessinintereses IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorsugiriocomplementos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorpreguntaocasionuso IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionobeneficiosprendas IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionoconfeccionamedida IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinvitoaencuestasatisfaccion IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedormencionanuevoslanzamientos IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedormencionotrescomplementos IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN conocimientosuficiente IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorrecomiendasegunocasionuso IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedordestacaventajasconfeccionmedida IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorpreguntapreferenciascliente IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionantefaltadeproducto IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorofrecebeneficiosanteobjeccionprecio IN ('Sí','No') THEN 1 ELSE 0 END) + (CASE WHEN vendedorofrecesolucionanteobjeccioncomosevesiente IN ('Sí','No') THEN 1 ELSE 0 END) +
+                   (CASE WHEN vendedorinformocashback20porciento IN ('Sí','No') THEN 1 ELSE 0 END)) AS base_evaluada
+        FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+        WHERE seller_id = 'Mens Fashion' AND employee_full_name IS NOT NULL
+        GROUP BY employee_id, employee_full_name
+        HAVING COUNT(DISTINCT conversation_id) >= 20
+      )
+      SELECT employee_full_name, conversaciones, cumplidos, base_evaluada,
+             ROUND(cumplidos::numeric / NULLIF(base_evaluada, 0), 4) AS tasa
+      FROM agg
+      ORDER BY tasa DESC
+      LIMIT 3
+    respuesta_esperada: 'Laura Soto (88.26%, 91 conv.), Lau montes (81.52%, 99 conv.), Victor Manuel Sanchez Jimenez (81.07%, 86 conv.) — cifras vivas, esperar drift razonable.'
+
+  - id: q23_top_tiendas_tasa_compra_total
+    pregunta: ¿Cuáles son las tiendas con mejor tasa de compra total (con volumen representativo)?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Igual que en performance, aplicar un piso de volumen (ej. >=50 conversaciones) antes de rankear
+      por tasa — si no, tiendas con 1-2 conversaciones y 100% de compra dominan el ranking sin ser
+      representativas.
+    sql: |
+      SELECT store_name,
+             COUNT(DISTINCT conversation_id) AS conversaciones,
+             COUNT(DISTINCT CASE WHEN resultado_general = 'compra_total' THEN conversation_id END) AS compra_total,
+             ROUND(COUNT(DISTINCT CASE WHEN resultado_general = 'compra_total' THEN conversation_id END)::numeric
+                   / NULLIF(COUNT(DISTINCT conversation_id), 0), 4) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND store_name IS NOT NULL
+      GROUP BY store_name
+      HAVING COUNT(DISTINCT conversation_id) >= 50
+      ORDER BY tasa DESC
+      LIMIT 3
+    respuesta_esperada: 'Mens Fashion Tlaxcala Galerias Tlaxcala (64.19%, 391 conv.), Mens Fashion Patriotismo (47.20%, 161 conv.), Mens Fashion Galerias Chilpancingo (46.79%, 592 conv.)'
+
+  - id: q24_bottom_tiendas_tasa_compra_total
+    pregunta: ¿Cuáles son las tiendas con peor tasa de compra total (con volumen representativo)?
+    fuentes_requeridas: [categorical_insights]
+    requisitos: Mismos requisitos que q23 (mismo SQL, cambiando ORDER BY tasa DESC por ASC).
+    sql: |
+      SELECT store_name,
+             COUNT(DISTINCT conversation_id) AS conversaciones,
+             COUNT(DISTINCT CASE WHEN resultado_general = 'compra_total' THEN conversation_id END) AS compra_total,
+             ROUND(COUNT(DISTINCT CASE WHEN resultado_general = 'compra_total' THEN conversation_id END)::numeric
+                   / NULLIF(COUNT(DISTINCT conversation_id), 0), 4) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND store_name IS NOT NULL
+      GROUP BY store_name
+      HAVING COUNT(DISTINCT conversation_id) >= 50
+      ORDER BY tasa ASC
+      LIMIT 3
+    respuesta_esperada: 'Mens Fashion Misiones Juarez (17.69%, 130 conv.), Mens Fashion Peninsula Tijuana (22.83%, 92 conv.), Mens Fashion Plaza Patria ll (25.25%, 404 conv.)'
+
+  - id: q25_cascada_na_confeccion_medida
+    es_trampa: true
+    pregunta: ¿En cuántas conversaciones el vendedor no destacó las ventajas de la confección a medida, teniendo la oportunidad real de hacerlo?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - 'TRAMPA / HALLAZGO GRAVE DE CALIDAD DE DATOS (2026-08-31): el checklist define que
+      vendedordestacaventajasconfeccionmedida debe ser N/A siempre que vendedormencionoconfeccionamedida
+      sea N/A (cascada semántica: sin mención previa no hay "oportunidad real" de destacar ventajas).
+      Verificado contra Postgres: quien puebla el checklist NO respeta esta cascada de forma confiable
+      — quedan 6.106 filas con vendedormencionoconfeccionamedida=N/A, y de esas, 4.360 (71%) tienen
+      vendedordestacaventajasconfeccionmedida=''No'' en vez de ''N/A'' (sólo 1.746 sí quedaron N/A, y 4
+      quedaron ''Sí''). Esto significa que un conteo ingenuo de "No" en este campo SOBRESTIMA
+      fuertemente los casos de incumplimiento real: la mayoría de esos "No" en realidad no tuvieron
+      ninguna oportunidad real (el vendedor nunca mencionó la confección a medida). Una respuesta
+      correcta no puede reportar el conteo crudo de "No" sin esta advertencia.'
+    - Este NO es un problema de SQL corregible por VI — es una limitación de los datos de origen (la
+      extracción no aplica su propia regla de cascada de forma consistente). Lo correcto es que el
+      agente lo señale como limitación de confiabilidad del indicador en vez de reportar el número sin
+      matices.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (
+          WHERE vendedormencionoconfeccionamedida = 'N/A'
+            AND vendedordestacaventajasconfeccionmedida <> 'N/A'
+        ) AS violaciones_cascada,
+        COUNT(*) FILTER (WHERE vendedormencionoconfeccionamedida = 'N/A') AS base_na
+      FROM dashboard_v2.vw_mens_fashion_rendimiento_vendedor
+      WHERE seller_id = 'Mens Fashion'
+    respuesta_esperada: 'No hay un número "limpio" — el indicador vendedordestacaventajasconfeccionmedida=No está inflado: 4.360 de 6.106 filas (71%) que deberían ser N/A según la propia regla del checklist están marcadas No. Una respuesta correcta señala esta limitación de confiabilidad en vez de dar un conteo crudo con falsa precisión.'
+
+  - id: q26_evidencia_venta_perdida_precio
+    pregunta: Dame el resumen de 2 o 3 conversaciones donde se perdió la venta por precio, para entender qué pasó.
+    fuentes_requeridas: [categorical_insights, descriptive_insights]
+    omit_from_numeric_gate: true
+    requisitos:
+    - Requiere el join general_evidence declarado en el Data Map (categorical_insights +
+      descriptive_insights por conversation_id), filtrando hubo_venta_perdida IS TRUE AND
+      motivo_principal_venta_perdida = 'precio', y trayendo texto libre (resumen_ejecutivo_conversacion,
+      que_no_estamos_resolviendo) como evidencia — no agregado, no rankeado, sólo unas pocas filas.
+    - 'No hay RAG en este MVP: la única forma de traer "resúmenes de conversaciones" es vía SQL sobre
+      las vistas descriptivas, no buscando en las transcripciones originales.'
+    - 'CORRECCIÓN post-evaluación: al unir dos fuentes hay que filtrar el tenant en AMBAS, calificado
+      por alias — sql_security.py lo exige explícitamente cuando hay más de una tabla en la consulta.
+      El profile descriptive_conversation usa seller (no seller_id) como tenant_field para
+      descriptive_insights; la primera versión de este SQL sólo filtraba ci.seller_id y quedaba
+      rechazada por el validador.'
+    sql: |
+      SELECT ci.conversation_id, di.resumen_ejecutivo_conversacion, di.que_no_estamos_resolviendo
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales ci
+      JOIN dashboard_v2.vw_mens_fashion_insights_descriptivos_generales di
+        ON ci.conversation_id = di.conversation_id
+      WHERE ci.seller_id = 'Mens Fashion'
+        AND di.seller = 'Mens Fashion'
+        AND ci.hubo_venta_perdida IS TRUE
+        AND ci.motivo_principal_venta_perdida = 'precio'
+      LIMIT 3
+    respuesta_esperada: 'Cualquiera de las filas reales que unan ambas vistas por conversation_id con esos filtros; ver Preguntas/resultados_evaluacion.json para los 3 ejemplos verificados el 2026-08-31 (todas describen clientes que no cerraron por precio/paquete sin confirmar).'
+
+  - id: q27_conversaciones_julio_2026
+    pregunta: ¿Cuántas conversaciones analizables hubo en julio de 2026?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Mes explícito y cerrado (a diferencia de q16 en la ronda 1, acá no hay ambigüedad de "período
+      relativo"). Filtrar uploaded_at_local >= '2026-07-01' AND < '2026-08-01', usefulforanalysis IS TRUE.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_mens_fashion_demografia
+      WHERE seller_id = 'Mens Fashion' AND usefulforanalysis IS TRUE
+        AND uploaded_at_local >= '2026-07-01' AND uploaded_at_local < '2026-08-01'
+    respuesta_esperada: '6760 (coincide con julio en la serie mensual de q18 de la ronda 1)'
+
+  - id: q28_percepcion_calidad_ranking
+    pregunta: ¿Qué aspecto pesa más en la percepción de calidad de los productos?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Excluir NULL. no_claro es la categoría dominante pero no es un "aspecto" real — la respuesta debe
+      distinguir entre "no se pudo determinar un aspecto claro" (no_claro) y el aspecto identificable
+      más frecuente (tela).
+    sql: |
+      SELECT percepcion_calidad, COUNT(*) AS total
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion' AND percepcion_calidad IS NOT NULL
+      GROUP BY percepcion_calidad
+      ORDER BY total DESC
+    respuesta_esperada: 'no_claro=8389 (mayoría, no es un aspecto real), tela=3596 (aspecto identificable más común), multiples=826, relacion_valor_precio=679, confeccion=509, marca=118'
+
+  - id: q29_top_tienda_cierre_a_medida
+    pregunta: ¿En qué tiendas la confección a medida ayuda más a cerrar la venta?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Base = hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica' (igual regla que
+      q08 de la ronda 1), agrupado por tienda, con piso de volumen (ej. >=20) antes de rankear.
+    sql: |
+      SELECT store_name,
+             COUNT(*) FILTER (WHERE hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica') AS base,
+             COUNT(*) FILTER (WHERE resultado_a_medida = 'cierra_venta') AS cierra,
+             ROUND(COUNT(*) FILTER (WHERE resultado_a_medida = 'cierra_venta')::numeric
+                   / NULLIF(COUNT(*) FILTER (WHERE hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica'), 0), 4) AS tasa
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto
+      WHERE seller_id = 'Mens Fashion' AND store_name IS NOT NULL
+      GROUP BY store_name
+      HAVING COUNT(*) FILTER (WHERE hubo_ofrecimiento_a_medida IS TRUE AND resultado_a_medida <> 'no_aplica') >= 20
+      ORDER BY tasa DESC
+      LIMIT 3
+    respuesta_esperada: 'Mens Fashion Tlaxcala Galerias Tlaxcala (80.00%, base 85), Mens Fashion Patriotismo (69.09%, base 55), Mens Fashion Rio Tijuana (66.86%, base 172)'
+
+  - id: q30_cruce_cashback_checklist_vs_insights
+    es_trampa: true
+    pregunta: De las conversaciones donde el vendedor mencionó el cashback, ¿en cuántas informó correctamente la mecánica completa del 20%?
+    fuentes_requeridas: [categorical_insights, performance]
+    requisitos:
+    - 'TRAMPA sutil: "mencionó el cashback" (insights.primer_mencion_cashback=''vendedor'', un criterio
+      amplio y binario) NO es lo mismo que "informó correctamente la mecánica completa del 20%"
+      (performance.vendedorinformocashback20porciento=''Sí'', que exige los 5 componentes exactos del
+      checklist). Cruzarlos por conversation_id da sólo 80 de 805 (9.9%) — un agente que no distinga
+      ambos criterios podría reportar el mismo número para las dos preguntas, o confundir "mencionar"
+      con "informar completo".'
+    - Requiere JOIN entre categorical_insights y performance por conversation_id (ambas vistas usan
+      seller_id como tenant_field, mismo profile standard_conversation).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE rv.vendedorinformocashback20porciento = 'Sí') AS informo_completo,
+        COUNT(*) AS base_menciono
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales ci
+      JOIN dashboard_v2.vw_mens_fashion_rendimiento_vendedor rv
+        ON ci.conversation_id = rv.conversation_id
+      WHERE ci.seller_id = 'Mens Fashion' AND rv.seller_id = 'Mens Fashion'
+        AND ci.primer_mencion_cashback = 'vendedor'
+    respuesta_esperada: '80 de 805 (9.9%) informaron la mecánica completa de las que mencionaron el cashback. Un agente que confunda "mencionar" con "informar completo" daría un número mucho más alto (564, el total de primer_mencion_cashback=vendedor) o reportaría el mismo dato para ambas preguntas.'

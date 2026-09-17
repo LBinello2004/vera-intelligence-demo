@@ -1,0 +1,95 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE y contar conversaciones distintas. Debe aclarar el volumen
+      chico de este cliente.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_gac_demografia
+      WHERE seller_id = 'GAC' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '97 conversaciones analizables, aclarando que es un volumen chico'
+
+  - id: q02_insights_no_existe_trap
+    pregunta: ¿Cuál es el motivo principal por el que los clientes no compran?
+    fuentes_requeridas: []
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: no existe fuente de insights para este cliente. El agente debe decir explícitamente que
+      no puede responder esto, no inventar una categoría.'
+    sql: null
+    respuesta_esperada: 'El agente debe indicar que no cuenta con información sobre motivos de no
+      compra para este cliente.'
+
+  - id: q03_tasa_saludo
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor saludó?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = sí + no (minúscula), excluir n/a y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE saludo = 'sí') AS si,
+        COUNT(*) FILTER (WHERE saludo IN ('sí','no')) AS base
+      FROM dashboard_v2.vw_gac_rendimiento_vendedor
+      WHERE seller_id = 'GAC'
+    respuesta_esperada: '77 de 88 (87,5%)'
+
+  - id: q04_casing_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el asesor clasificó al cliente por intención o urgencia de compra?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: es el campo con menor tasa de cumplimiento del checklist (minoría de Sí) — el agente no
+      debe redondear ni suavizar la cifra baja hacia una lectura más favorable.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE clasificacliente = 'sí') AS si,
+        COUNT(*) FILTER (WHERE clasificacliente IN ('sí','no')) AS base
+      FROM dashboard_v2.vw_gac_rendimiento_vendedor
+      WHERE seller_id = 'GAC'
+    respuesta_esperada: '36 de 94 (38,3%) — menos de 4 de cada 10'
+
+  - id: q05_tipointeraccion_null_trap
+    pregunta: ¿Qué porcentaje de las conversaciones terminó sin compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: tipointeraccion sólo registra "compra" quando aplica (13 de 98); el resto son NULL, no
+      "no compra" confirmado. El agente NO debe calcular "no compra" = total - compra como si el NULL
+      fuera una confirmación de no-compra.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE tipointeraccion = 'compra') AS compras,
+        COUNT(*) FILTER (WHERE tipointeraccion IS NULL) AS sin_dato,
+        COUNT(*) AS total
+      FROM dashboard_v2.vw_gac_demografia
+      WHERE seller_id = 'GAC'
+    respuesta_esperada: '13 de 98 confirmadas como compra; el resto (85) no tiene el resultado
+      registrado en este campo, el agente no debe presentarlas como "no compra" confirmada'
+
+  - id: q06_tasa_prueba_manejo
+    pregunta: ¿Con qué frecuencia el asesor ofrece una prueba de manejo?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = sí + no, excluir n/a y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE ofrecepruebamanejo = 'sí') AS si,
+        COUNT(*) FILTER (WHERE ofrecepruebamanejo IN ('sí','no')) AS base
+      FROM dashboard_v2.vw_gac_rendimiento_vendedor
+      WHERE seller_id = 'GAC'
+    respuesta_esperada: '70 de 91 (76,9%)'
+
+  - id: q07_tasa_cierre
+    pregunta: ¿En qué porcentaje de las conversaciones con oportunidad real el asesor intentó el cierre de venta?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = sí + no, excluir n/a (sin oportunidad real) y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE intentodecierreventa = 'sí') AS si,
+        COUNT(*) FILTER (WHERE intentodecierreventa IN ('sí','no')) AS base
+      FROM dashboard_v2.vw_gac_rendimiento_vendedor
+      WHERE seller_id = 'GAC'
+    respuesta_esperada: '84 de 96 (87,5%)'

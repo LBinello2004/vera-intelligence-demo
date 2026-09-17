@@ -1,0 +1,239 @@
+metadata:
+  name: VI Data Map GAC V1
+  version: 1.0.0
+  client: GAC
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo dos vistas dashboard_v2 de GAC (demografia + rendimiento_vendedor). El tenant ('GAC') es
+    fijo para este cliente; no se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/GAC/checklist (Langfuse, label production, v4 al construir este mapa)
+    note: 'GAC es "schema delgado" (existe clientes/GAC/insights en Langfuse pero no hay vista de
+      insights materializada en dashboard_v2, mismo patrón que Salomon/Agrosuper/Hyundai/Dalton -ver
+      README-). Dominio: concesionaria de vehículos (venta consultiva de autos). Construido leyendo el
+      prompt completo y verificando con GROUP BY/COUNT contra Postgres QA el 2026-09-07.'
+  known_findings_v1:
+  - 'VOLUMEN CHICO: 98 conversaciones totales, 97 analizables. Activo hasta hoy (rango 2026-06-08 a
+      2026-09-07), pero base pequeña -los porcentajes de este Data Map tienen bases de decenas, no
+      miles, y son sensibles a pocas filas. No presentar cifras de este cliente con la misma
+      confianza que en clientes de volumen alto.'
+  - 'REVISIÓN DE GRADO (2026-09-07): inicialmente graduado "bajo" por volumen, mismo criterio que
+      Shoe Box. Reconsiderado a pedido del usuario: a diferencia de Shoe Box (7) o Agrosuper (9),
+      donde CUALQUIER cifra cambia decenas de puntos porcentuales con un solo caso adicional, GAC
+      tiene 97 conversaciones analizables -ya no es un volumen ridículamente chico, empieza a dar
+      señal real aunque todavía ruidosa-. Ejecución verificada limpia (7/7 del banco dorado, sin
+      fallback, ambas preguntas trampa -inexistencia de insights y NULL≠no-compra- resueltas
+      correctamente). Subido a "medio": reconoce que la ejecución es sólida pero el volumen sigue
+      siendo una razón real de cautela para tratarlo como "alto" -no un tecnicismo, la base todavía
+      es chica en términos absolutos-. Carpeta renombrada de gac_bajo a gac_medio.'
+  - 'CASING NO ESTÁNDAR: a diferencia de todos los demás clientes onboardeados hasta ahora (que usan
+      "Sí"/"No"/"N/A" con mayúscula inicial), los 16 campos de rendimiento_vendedor de GAC usan
+      minúsculas: "sí"/"no"/"n/a" -verificado con SELECT DISTINCT contra las 16 columnas-. Cualquier
+      filtro SQL debe usar el valor exacto en minúsculas para este cliente; no asumir la convención de
+      otros clientes.'
+  - 'tipointeraccion (demography) está casi vacío: 85 de 98 filas NULL, sólo 13 tienen el valor
+      "compra" (también en minúscula). No se observa ningún otro valor (ni "no_compra" ni similar) — no
+      investigado si el campo simplemente no se popula salvo para compras confirmadas, o si es un
+      artefacto del volumen bajo. No usar esta columna para calcular una tasa de compra/no-compra
+      confiable; usar el conteo de "compra" como cifra absoluta, aclarando que el resto son NULL, no
+      "no compra" confirmado.'
+  - 'Los 16 criterios del checklist (agrupados por el propio prompt en Apertura y Conexión (4),
+      Diagnóstico y Calificación (2), Presentación y Demostración (4), Negociación y Cierre (4),
+      Finalización y Transición (2)) tienen distribución razonable dado el volumen -ningún campo en 0,
+      aunque con bases de 80-95 filas las tasas se mueven mucho con pocas conversaciones-.'
+  - 'RAG no aplica: verificado en Langfuse que clientes/GAC/checklist no declara
+      geminiFileSearchStoreName (el store de clientes/GAC/feedback es de otro producto/feature).'
+decision_flow:
+- Identificar si la pregunta es respondible con checklist/demografía -si pide motivo, necesidad,
+  objeción o competencia, advertir que esa fuente no existe para este cliente (ver known_findings_v1).
+- Aclarar siempre el volumen chico de este cliente (98 conversaciones) antes de presentar cualquier
+  cifra como si fuera representativa de un volumen alto.
+- Usar los valores exactos en minúscula ('sí'/'no'/'n/a', 'compra') al filtrar -ver known_findings_v1-.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (sólo "compra" está poblado de forma confiable; el resto
+      son NULL, no "no compra" confirmado)
+    avoid: no es la fuente de motivo/necesidad/objeción -esas fuentes no existen para este cliente-
+  performance:
+    questions: criterios del protocolo de venta de concesionaria (apertura/conexión, diagnóstico,
+      presentación/demostración, negociación/cierre, finalización)
+    avoid: no tratar N/A como incumplimiento -varios campos sólo son evaluables en etapas avanzadas de
+      la conversación (negociación, entrega)-
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('GAC') sobre el tenant_field de cada fuente.
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor 'sí' o
+    'no' (minúscula, ver known_findings_v1); excluir 'n/a' y NULL.
+sources:
+  demography:
+    source: dashboard_v2.vw_gac_demografia
+    use_when: Resultado de la interacción (limitado, ver known_findings_v1).
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [compra]
+        observed_values: [compra]
+        type: text
+        nullable: true
+        description: 'Casi vacío: 85 de 98 NULL, sólo 13 con "compra" (minúscula). No usar para tasa
+          compra/no-compra -el NULL no significa "no compra" confirmado, ver known_findings_v1-.'
+        operations: [filter, group]
+  performance:
+    source: dashboard_v2.vw_gac_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de venta de la concesionaria.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 16 criterios admiten "sí"/"no"/"n/a" (minúscula, ver known_findings_v1)
+      con la lógica estándar del prompt -evidencia verbal atribuible al asesor para "sí", oportunidad
+      real sin cumplimiento para "no", sin oportunidad u evidencia insuficiente para "n/a".'
+    fields:
+      saludo:
+        configured_values: &si_no_na [sí, 'no', n/a]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. sí=77, no=11, n/a=10.'
+        operations: [filter, group, compare]
+      preguntasialguienmasatiende:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. Si el asesor verifica si el cliente ya fue atendido antes. sí=17,
+          no=66, n/a=15 -tasa de cumplimiento baja, la mayoría no lo verifica-.'
+        operations: [filter, group, compare]
+      presentacionpersonal:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. Si dice su nombre explícitamente. sí=47, no=43, n/a=8 -casi
+          empatado-.'
+        operations: [filter, group, compare]
+      conocemotivovisita:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura. sí=73, n/a=15, no=10.'
+        operations: [filter, group, compare]
+      descubrenecesidades:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Exige explorar 2+ dimensiones sustantivas o 1 con profundidad
+          -preguntas puramente logísticas no cuentan-. sí=79, no=16, n/a=3.'
+        operations: [filter, group, compare]
+      clasificacliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Diagnóstico. Si identifica intención, urgencia o plazo de compra. sí=36, no=58,
+          n/a=4 -tasa de cumplimiento más baja del checklist-.'
+        operations: [filter, group, compare]
+      presentacionvehiculo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Exige conectar la unidad con el diagnóstico Y mencionar un
+          beneficio (dos componentes). sí=91, no=4, n/a=3.'
+        operations: [filter, group, compare]
+      demostracionestatica:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. sí=78, n/a=13, no=7.'
+        operations: [filter, group, compare]
+      ofrecepruebamanejo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Ofrecimiento proactivo del asesor -si el cliente lo pide
+          espontáneamente, no cuenta como "sí"-. sí=70, no=21, n/a=7.'
+        operations: [filter, group, compare]
+      reafirmabeneficios:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Presentación. Exige retomar algo dicho/reaccionado por el cliente y reforzar el
+          beneficio correspondiente. sí=87, no=9, n/a=2.'
+        operations: [filter, group, compare]
+      presentapreciosypromociones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. sí=93, no=3, n/a=2 -tasa más alta del checklist-.'
+        operations: [filter, group, compare]
+      manejodeobjeciones:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sólo evaluable si hubo objeción real. sí=88, n/a=8, no=2.'
+        operations: [filter, group, compare]
+      intentodecierreventa:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Propuesta explícita de avanzar (cotización, apartado, crédito,
+          etc). sí=84, no=12, n/a=2.'
+        operations: [filter, group, compare]
+      explicanegociacionydocumentacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Negociación. Sólo aplica en una operación concreta/negociación avanzada. sí=53,
+          no=42, n/a=3.'
+        operations: [filter, group, compare]
+      mencionaprocesoentrega:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Finalización. Sólo aplica con avance concreto hacia la operación. n/a=52 (más
+          de la mitad, por diseño -no todas las conversaciones llegan a esa etapa-), sí=25, no=21.'
+        operations: [filter, group, compare]
+      agradecimientoydespedida:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Finalización. Aplica con o sin compra si el final quedó capturado. sí=87, n/a=6,
+          no=5.'
+        operations: [filter, group, compare]
+joins:
+  rule: Sin segunda fuente disponible en este cliente, no hay joins posibles.
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL: no existe ninguna vista de insights para este cliente. Cualquier pregunta
+  sobre motivo, necesidad, objeción o competencia no puede responderse.'
+- 'VOLUMEN CHICO: 98 conversaciones totales -tratar cualquier cifra con la misma cautela estadística
+  que Shoe Box, ver known_findings_v1.'
+- tipointeraccion casi no está poblado (85 de 98 NULL) -no usar para tasa de compra/no-compra.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.

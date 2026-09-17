@@ -1,0 +1,108 @@
+metadata:
+  name: Preguntas de evaluación VI - Shoe Box
+  purpose: 'Banco CHICO a propósito: Shoe Box tiene sólo 7 conversaciones totales en Postgres (checklist e
+    insights publicados hace 3 días). No tiene sentido un banco de 15-20 preguntas con esta base — estas 6
+    preguntas verifican que el agente maneja bien el volumen mínimo y declara el tamaño de muestra en cada
+    respuesta, no que mide tasas estadísticamente sólidas. Reconstruir este banco cuando el cliente tenga más
+    volumen real.'
+  data_map_version: VI Data Map Shoe Box V1.yaml
+  tenant: Shoe Box
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07 — lectura completa de las 7 filas
+    existentes, no una muestra.
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su respuesta
+    contra "respuesta_esperada".'
+
+preguntas:
+  - id: q01_total_conversaciones
+    pregunta: ¿Cuántas conversaciones hay en total?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: la base es mínima (7 conversaciones, 5 analizables). El agente debe comunicar el número real
+      con naturalidad, sin inflar la percepción de volumen ni ocultar que es una base chica.'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) AS total,
+        COUNT(DISTINCT conversation_id) FILTER (WHERE usefulforanalysis) AS analizables
+      FROM dashboard_v2.vw_shoe_box_demografia
+      WHERE seller_id = 'Shoe Box'
+    respuesta_esperada: '7 conversaciones totales, 5 analizables'
+
+  - id: q02_tasa_saludo
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor saludó y ofreció ayuda?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: con base evaluada de sólo 5, el agente debe expresar la fracción real (5 de 5, o "todas las
+      evaluadas") en vez de sólo un porcentaje que suene más sólido de lo que es.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorsaludoyofrecioayuda = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorsaludoyofrecioayuda IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_shoe_box_rendimiento_vendedor
+      WHERE seller_id = 'Shoe Box'
+    respuesta_esperada: 'Sí=5, base evaluada=5, tasa=100% — pero el agente debe aclarar que la base es de sólo
+      5 conversaciones, no presentar el 100% como un hallazgo estadísticamente robusto.'
+
+  - id: q03_manejo_objeciones_ace_trap
+    pregunta: ¿El equipo maneja bien las objeciones de los clientes?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: de las 7 conversaciones, hubo objeción real en 2 (N/A en las otras 5) y ninguna de esas 2
+      cumplió el método A.C.E. completo (0 "Sí", 2 "No"). El agente no debe generalizar "el equipo no maneja
+      bien las objeciones" a partir de 2 casos — debe presentarlo como una observación puntual sobre una base
+      mínima, sugiriendo cautela antes de sacar conclusiones de negocio.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedormanejoobjecionesconace = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedormanejoobjecionesconace = 'No') AS no,
+        COUNT(*) FILTER (WHERE vendedormanejoobjecionesconace = 'N/A') AS na
+      FROM dashboard_v2.vw_shoe_box_rendimiento_vendedor
+      WHERE seller_id = 'Shoe Box'
+    respuesta_esperada: 'Sí=0, No=2, N/A=5. El agente debe advertir que son sólo 2 casos evaluables, no una
+      base suficiente para una conclusión general sobre el equipo.'
+
+  - id: q04_falta_stock
+    pregunta: ¿Hubo casos de falta de stock?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - hubo_falta_stock es boolean, ante duda el prompt indica usar false.
+    sql: |
+      SELECT hubo_falta_stock, COUNT(*) AS total
+      FROM dashboard_v2.vw_shoe_box_insights_categoricos_generales
+      WHERE seller_id = 'Shoe Box'
+      GROUP BY 1
+    respuesta_esperada: 'No, ninguna de las 7 conversaciones registró falta de stock explícita.'
+
+  - id: q05_resultado_por_producto
+    pregunta: De los productos considerados, ¿cuántos terminaron en compra?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Distinguir rol_producto=principal (el que se compra) de alternativo (el que se descarta).
+    sql: |
+      SELECT rol_producto, resultado_producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_shoe_box_insights_categoricos_por_producto
+      WHERE seller_id = 'Shoe Box'
+      GROUP BY 1, 2
+    respuesta_esperada: '5 productos principales terminaron comprados; 2 productos alternativos no se
+      compraron (7 filas de producto en total)'
+
+  - id: q06_tasa_venta_complementaria_trap
+    pregunta: ¿Qué porcentaje de las ventas incluye un producto complementario?
+    fuentes_requeridas: [performance, categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: tanto vendedorofrecioventacomplementariapertinente (checklist) como
+      hubo_ofrecimiento_complementario (insights) son 0% "Sí"/true en las 7 conversaciones actuales. El
+      agente debe dar el número real (0%) sin ocultarlo, pero con la misma cautela de tamaño de muestra que
+      el resto de las preguntas trampa de este banco.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorofrecioventacomplementariapertinente = 'Sí') AS si_checklist,
+        COUNT(*) FILTER (WHERE vendedorofrecioventacomplementariapertinente IN ('Sí','No')) AS base_checklist
+      FROM dashboard_v2.vw_shoe_box_rendimiento_vendedor
+      WHERE seller_id = 'Shoe Box'
+    respuesta_esperada: '0% (0 de 5 conversaciones evaluables ofreció venta complementaria) — el agente debe
+      dar el número real y aclarar el tamaño mínimo de la muestra, sin suavizar el hallazgo pero sin
+      presentarlo como una tendencia consolidada.'

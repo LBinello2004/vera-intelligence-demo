@@ -1,0 +1,50 @@
+metadata:
+  name: Mini-banco de evaluación de search_conversations - Mens Fashion (ronda 3, control negativo)
+  purpose: 'Ronda 3 -complementa las rondas 1 y 2 (ver esos archivos). Las rondas anteriores sólo
+    midieron SUB-uso (¿llamó a search_conversations cuando debía?). Esta ronda mide el riesgo
+    opuesto, SOBRE-uso: después del ajuste al prompt del 2026-09-10 (ORDEN DE USO -intentar
+    primero run_readonly_sql, no llamar search_conversations de forma especulativa cuando el Data
+    Map ya cubre la pregunta por completo), estas preguntas son puramente cuantitativas/estructuradas
+    y NO deberían disparar search_conversations en absoluto -sirven como control negativo de costo
+    y latencia (cada llamada a search_conversations implica un embedding call + un scan sobre
+    ~720k filas sin índice, ver README).'
+  como_difiere_del_banco_sql: 'A diferencia de las rondas 1 y 2, acá el criterio principal no es la
+    calidad del contenido citado -es si la tool se llamó o no. "sql: null" sigue siendo explícito
+    para que run_evaluation.py las corra igual.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client mens_fashion_alto --bank
+    "2. clientes/mens_fashion_alto/preguntas/preguntas_busqueda_vectorial_ronda3.yaml" --output
+    "2. clientes/mens_fashion_alto/preguntas/resultados_busqueda_vectorial_ronda3.json"'
+
+preguntas:
+  - id: vec3_01_control_negativo_tasa_general
+    pregunta: ¿Cuál es la tasa general de conversión a compra de Men's Fashion?
+    objetivo: Pregunta puramente cuantitativa -resultado_general/tipo_interaccion en
+      dashboard_v2 la responden por completo, sin ningún componente textual ni pedido de
+      ejemplos. search_conversations NO debería llamarse acá.
+    sql: null
+    criterios_evaluacion:
+    - NO llamó a search_conversations -verificar en tool_calls_agente.
+    - Respondió con una cifra concreta basada en run_readonly_sql.
+
+  - id: vec3_02_control_negativo_conteo_sensibilidad_precio
+    pregunta: ¿Cuántas conversaciones tuvieron sensibilidad de precio alta?
+    objetivo: Igual que vec3_01 -conteo puro sobre un campo categórico existente
+      (sensibilidad_precio_general), sin pedir ejemplos, citas ni contenido textual.
+      search_conversations NO debería llamarse acá.
+    sql: null
+    criterios_evaluacion:
+    - NO llamó a search_conversations.
+    - Respondió con un conteo concreto basado en run_readonly_sql.
+
+  - id: vec3_03_mixta_control_positivo
+    pregunta: ¿Cuántas conversaciones tuvieron sensibilidad de precio alta, y podés darme un ejemplo textual de una de ellas?
+    objetivo: Control positivo dentro de la misma ronda -misma base que vec3_02 pero agregando
+      pedido explícito de ejemplo textual. A diferencia de vec3_01/vec3_02, acá SÍ debería
+      llamarse search_conversations para la parte del ejemplo, aunque el conteo salga de SQL.
+      Sirve para confirmar que el ajuste "ORDEN DE USO" no se volvió tan estricto que ignore
+      pedidos de ejemplo genuinos -mismo riesgo que causó el ajuste al prompt del 2026-09-10 en
+      primer lugar (ronda 1, vec02/vec03).
+    sql: null
+    criterios_evaluacion:
+    - SÍ llamó a search_conversations (además de run_readonly_sql para el conteo).
+    - El ejemplo citado es textual y genuino, no inventado ni una paráfrasis del campo categórico.

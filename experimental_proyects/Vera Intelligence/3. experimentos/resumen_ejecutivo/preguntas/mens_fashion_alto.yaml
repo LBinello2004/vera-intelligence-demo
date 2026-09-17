@@ -1,0 +1,18 @@
+metadata:
+  name: Preguntas del resumen ejecutivo periódico - Mens Fashion
+  purpose: 'Set fijo de preguntas de negocio de alto valor para scripts/executive_digest.py.
+    A diferencia de preguntas_evaluacion.yaml, no tienen SQL de referencia ni respuesta esperada
+    -no son para medir precisión del agente, son las preguntas que un gerente querría ver
+    respondidas sin tener que pensarlas cada vez-. Elegidas por ser representativas de negocio
+    y ya haber sido validadas como bien respondidas en el banco dorado (ver preguntas_evaluacion.yaml).'
+preguntas:
+  - id: resultado_general
+    pregunta: Dame la distribución de resultado de las conversaciones (compra total, parcial, no compra).
+  - id: manejo_objeciones
+    pregunta: De las objeciones que el vendedor trabajó, ¿en qué porcentaje tuvo éxito?
+  - id: cashback
+    pregunta: ¿En qué porcentaje de las conversaciones evaluadas el vendedor no mencionó el cashback?
+  - id: ranking_vendedores
+    pregunta: ¿Cuáles son los 5 vendedores con más conversaciones de compra total?
+  - id: ocasion_uso
+    pregunta: ¿La tasa de compra total es distinta cuando el vendedor pregunta la ocasión de uso versus cuando no lo hace?

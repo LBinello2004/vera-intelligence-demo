@@ -1,0 +1,535 @@
+metadata:
+  name: VI Data Map Maga V1
+  version: 1.0.0
+  client: Maga
+  model_target: Gemini 3.7
+  generated_at: '2026-09-07'
+  scope: Sólo seis vistas dashboard_v2 de Maga. El tenant ('Maga') es fijo para este cliente; no se resuelve
+    dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Maga/checklist (Langfuse, label production, v14 al construir este mapa)
+    insights_prompt: clientes/Maga/insights (Langfuse, label production, v11 al construir este mapa)
+    note: 'IMPORTANTE: el texto de ambos prompts de Maga es carácter por carácter IDÉNTICO a los de Farma24
+      (clientes/Farma 24/checklist v17, clientes/Farma 24/insights v10) — mismo protocolo de 9 pasos de
+      farmacia, mismas reglas de interacción administrativa, mismo cluster Banco Provincia/Cuenta DNI. Además,
+      ambos prompts comparten el mismo store físico de RAG (Gemini File Search) que Farma24 -confirmado con el
+      negocio: Maga es la misma cadena/franquicia, comparten catálogo real de productos-. Por eso este Data Map
+      reutiliza la estructura completa de VI Data Map Farma24 V7 -mismos nombres de campo, misma semántica de
+      los 9 pasos del checklist-, pero NINGÚN número (coberturas, tasas, fechas de corte) se copió de Farma24:
+      cada cifra fue re-verificada de forma independiente contra Postgres QA de Maga el 2026-09-07.'
+  known_findings_v1:
+  - 'DIFERENCIA ESTRUCTURAL REAL (no es un hallazgo de calidad de datos, es un problema de esquema): a
+      diferencia de las otras 5 vistas de Maga (idénticas columna por columna a las de Farma24),
+      `dashboard_v2.vw_maga_insights_descriptivos_generales` tiene un esquema DISTINTO — no tiene
+      `conversation_id` ni `seller_id`, sólo `recordingid`, `seller_name`, `store_name`, `full_name`,
+      `filename`, `upload_time_mexico`, `start_time_mexico`, `usefulforanalysis`, `month`, `year`,
+      `last_updatedat` y `descriptivos_generales_tipo_interaccion_detalle`. Consecuencias prácticas: (1)
+      tenant_field para esta fuente es `seller_name` (no `seller_id`, ver config.yaml); (2) NO se puede
+      unir con ninguna otra fuente de Maga por conversation_id -no existe esa columna-, sólo por
+      `recordingid`, que tampoco aparece en las otras vistas; en la práctica esta fuente queda AISLADA, sin
+      joins.general_evidence disponible (a diferencia de Farma24, donde sí se puede cruzar contra
+      categorical_insights/demography); (3) los campos se llaman `month`/`year` en vez de
+      `business_month`/`business_year`. Verificado: los valores de seller_name son 100% "Maga" (73.961 filas),
+      así que no hay fuga de tenant pese a la ausencia de seller_id, sólo un mecanismo de aislamiento distinto.'
+  - 'A diferencia de Farma24 (donde descriptive_insights está CONGELADA desde 2026-08-05), en Maga esta misma
+      fuente SIGUE ACTUALIZÁNDOSE con normalidad: max(upload_time_mexico) = 2026-09-07 (hoy), max(last_updatedat)
+      también hoy. No aplica a Maga el caveat de "no refleja conversaciones recientes" que sí aplica a Farma24.'
+  - 'resultado_dual_source (demography.tipointeraccion vs categorical_insights.categoricos_generales_resultado):
+      verificado contra Postgres QA de Maga (cruce por conversation_id, excluyendo combinaciones con NULL de un
+      lado): coinciden 69.227 de 73.958 casos evaluables (93,6%), discrepan 4.731 (6,4%) — muy similar al ~7%
+      medido en Farma24. Declarar siempre cuál de los dos campos se usó.'
+  - 'categoria_no_compra_dual_source: demography.categorianocompra está poblado en 80.381 de 80.383 filas
+      (~100%), mientras que categorical_insights.categoricos_generales_categoria_no_compra sólo en 6.338 de
+      80.380 (7,9% — es decir ~92,1% NULL). Usar siempre demography.categorianocompra como fuente primaria,
+      mismo criterio que Farma24 (ahí era ~94% NULL, magnitud similar).'
+  - 'gestion_no_compra_dead_column: categorical_insights.categoricos_generales_gestion_no_compra es columna
+      muerta también en Maga — 0 de 80.380 filas pobladas (100% NULL, igual que Farma24). Usar siempre
+      demography.gestionnocompra.'
+  - 'banco_provincia (reliability_warning): verificado con datos propios de Maga — de 2.007 conversaciones con
+      al menos un producto vendido con la promo Banco Provincia (se_vendio_con_promo_banco_provincia=si), 1.962
+      (97,8%) tienen cliente_tiene_banco_provincia_o_cuenta_dn=si como se espera, pero 45 (2,2%) quedan en
+      no_determinable. Muy similar al ~98,3%/1,7% medido en Farma24 -mismo patrón real, no un caso aislado de
+      un solo cliente-. No responder "siempre" sin esta salvedad.'
+  - 'REGLA DE TASA — categoricos_generales_abordo_banco_provincia_o_cuenta_dni: verificado en Maga: si=10.389,
+      no=19.625, no_aplica=2.739, NULL=47.627. Base evaluada (si+no, excluyendo no_aplica y NULL) = 30.014, tasa
+      si = 34,6%. Calcular sobre si+no+no_aplica (32.753) da 31,7% y es incorrecto -misma regla que Farma24,
+      número propio de Maga (ahí daba 47,6%, tasas de negocio distintas entre clientes)-.'
+  - 'REGLA DE TASA — categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn: verificado en Maga:
+      si=2.648, no=508, no_determinable=26.645, NULL=50.579. Base evaluada (si+no) = 3.156, tasa si = 83,9%.
+      Calcular incluyendo no_determinable (29.801) da 8,9% y es incorrecto.'
+  - 'REGLA DE TASA — se_vendio_con_promo_banco_provincia (por producto): verificado en Maga: si=5.810,
+      no=33.434, no_determinable=58.536, NULL=149.902. Base evaluada (si+no) = 39.244, tasa si = 14,8%.'
+  - 'rol_comercial_coverage: el corte de versión del prompt en Maga ocurre el 2026-08-03 (idéntico, casi al
+      minuto, al de Farma24) — poblado en 106.726 de 247.682 filas (43,1%), NULL para el resto por ser anterior
+      a esa fecha. Mismo fenómeno, misma fecha de corte que Farma24 (rollout simultáneo del prompt en ambos
+      clientes, consistente con que comparten infraestructura).'
+  - 'CASING DUPLICADO en producto (categorical_product_insights): mismo fenómeno que Farma24. Ejemplo verificado:
+      "ibuprofeno" tiene 3 variantes de casing en Maga (ibuprofeno=9.374, Ibuprofeno=1.965, IBUPROFENO=1;
+      11.340 filas en total) — normalizar con LOWER(TRIM(...)) antes de agrupar o rankear por producto/marca.'
+  - 'producto.nullable=true (no false): 152 de 247.682 filas tienen producto NULL en Maga (0,06%) — mismo
+      criterio que Farma24 V2 (ahí corrigió un nullable=false mal declarado). Menor proporción que en Farma24
+      pero el patrón es real, no se declaró nullable=false por precaución.'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe
+  join declarado.
+- Antes de escribir SQL, resolver profile, grano y tenant.
+- 'Si la pregunta involucra "resultado de la interacción" (compra/no compra) o "categoría de no compra", decidir
+  explícitamente si usar la versión del checklist (demography) o la del insights (categorical_insights) — no son
+  intercambiables, ver known_findings_v1.'
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si NULL es parte
+  legítima de la respuesta.
+- Si la pregunta agrupa o rankea por producto o marca, normalizar casing (LOWER(TRIM(...)) o equivalente) antes de
+  agrupar.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (versión checklist), categoría y gestión de no-compra, características
+      de la conversación
+    avoid: no usar como única fuente de "resultado" sin aclarar que existe una segunda lectura en categorical_insights
+      que puede discrepar
+  performance:
+    questions: criterios del protocolo de atención (saludo, preguntas de investigación, explicación de uso, venta
+      cruzada, sustitución, adicionales, servicios futuros, despedida)
+    avoid: no tratar N/A como incumplimiento — el checklist marca N/A automáticamente en interacciones administrativas
+      y tras el cierre de venta
+  categorical_insights:
+    questions: resultado (versión insights), abordaje y tenencia de Banco Provincia/Cuenta DNI
+    avoid: no usar categoricos_generales_categoria_no_compra (muy incompleta) ni categoricos_generales_gestion_no_compra
+      (columna muerta, 100% NULL) — usar los equivalentes de demography
+  descriptive_insights:
+    questions: motivo textual de no compra
+    avoid: 'no agrupar ni calcular frecuencia de texto libre. A diferencia de Farma24, esta fuente en Maga NO
+      tiene conversation_id ni seller_id -ver known_findings_v1-, así que no puede cruzarse con ninguna otra
+      fuente; usarla sólo de forma aislada.'
+  categorical_product_insights:
+    questions: producto, marca, presentación, rol comercial, falta de stock, acción del vendedor ante falta de
+      stock, venta con promoción Banco Provincia, si se compró
+    avoid: recordar que rol_comercial es NULL para casi toda la historia anterior al 2026-08-03 por corte de
+      versión, no lo trates como "no determinable" del negocio; normalizar casing antes de agrupar por producto
+      o marca
+  descriptive_product_insights:
+    questions: evidencia textual de falta de stock y de la acción del vendedor, por producto
+    avoid: no usar sin la vista categórica cuando hay que confirmar hubo_falta_stock/que_hizo_vendedor
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+  descriptive_conversation_aislada:
+    row_key: recordingid
+    tenant_field: seller_name
+    date_field: upload_time_mexico
+    optional_dimensions:
+    - store_name
+    - full_name
+    quality_filter: 'usefulforanalysis está disponible en esta vista (a diferencia de Mens Fashion/Roberts), pero
+      no hay conversation_id para cruzarla con otras fuentes -ver known_findings_v1-.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Maga') sobre el tenant_field de cada fuente utilizada
+    (seller_id en 5 de 6 fuentes, seller_name en descriptive_insights).
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir N/A y
+    null. N/A no es incumplimiento.
+  categorical_rate_general_rule: La misma convención de performance_rate (base evaluada = valores afirmativo/negativo,
+    excluyendo cualquier variante de no_aplica/N/A y NULL) aplica a cualquier campo categórico de 2-3 valores con
+    semántica sí/no/no_aplica del Data Map, no sólo a los 9 criterios de performance.
+  categorical_filters: 'Usar valores de configured_values respetando tipo, mayúsculas y acentos — demography.tipointeraccion
+    usa "Compra"/"No compra" con mayúscula inicial, mientras que categorical_insights.categoricos_generales_resultado
+    usa "compra"/"no_compra" en snake_case (dos campos distintos, no un error de tipeo). EXCEPCIÓN: producto y marca
+    (categorical_product_insights) tienen casing inconsistente por variantes de captura — normalizar con
+    LOWER(TRIM(...)) o INITCAP antes de agrupar o rankear.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo
+    (incluye evidencia_ventacruzada_rag y evidencia_sustitucion_rag de performance).
+semantic_dependencies:
+  resultado_dual_source: 'demography.tipointeraccion y categorical_insights.categoricos_generales_resultado son
+    cálculos independientes que discrepan 6,4% de las veces en Maga (ver known_findings_v1). Declarar siempre
+    cuál se usó.'
+  categoria_no_compra_dual_source: 'Preferir demography.categorianocompra (checklist, ~100% poblado) sobre
+    categorical_insights.categoricos_generales_categoria_no_compra (insights, ~92,1% NULL en Maga).'
+  gestion_no_compra_dead_column: 'categorical_insights.categoricos_generales_gestion_no_compra está 100% NULL
+    en Maga (igual que Farma24). Usar siempre demography.gestionnocompra.'
+  stock: demography.gestionnocompra sólo es interpretable cuando demography.categorianocompra = 'Stock'; para el
+    resto de los casos vale 'no_aplica'. A nivel producto, categorical_product_insights.que_hizo_vendedor sólo es
+    interpretable cuando hubo_falta_stock IS TRUE; si no, vale 'no_aplica'.
+  administrative_interactions: 'Regla 1.A del checklist (idéntica a Farma24): retiros web, pedidos ya preparados,
+    IOMA, MEPPES, PAMI oncológico, tratamientos ya autorizados, toma de presión, pesarse y vacunación se
+    consideran "interacciones administrativas" -salvo que después aparezca asesoramiento farmacéutico real-, y
+    en ese caso los pasos 2, 3, 5 y 6 del checklist se marcan automáticamente N/A. No usar la correlación de N/A
+    entre pasos como proxy para inferir si una conversación fue administrativa (mismo hallazgo que Farma24: no se
+    verificó específicamente en Maga pero la regla del prompt es idéntica, se hereda la misma precaución).'
+  sale_closed_cutoff: 'Regla 1.B del checklist: una vez que el vendedor se despide o deriva a caja, todo lo que
+    ocurre después en la transcripción se ignora para evaluar los pasos 1 a 8 (sólo el paso 9 puede validarse en
+    ese momento).'
+  chronic_medication_na: 'PASO 3 (explicaComoTomarlo) se marca N/A automáticamente si el medicamento es crónico
+    o si la venta es con PAMI. No verificable desde el Data Map (depende de la transcripción individual).'
+  banco_provincia: 'Si algún producto tiene se_vendio_con_promo_banco_provincia=si, entonces
+    cliente_tiene_banco_provincia_o_cuenta_dn=si a nivel conversación en el 97,8% de los casos (ver
+    known_findings_v1, reliability_warning: NO es el 100%, hay un 2,2% de excepciones verificadas contra
+    Postgres). No responder "siempre" o "sin excepción" a preguntas sobre esta regla.'
+  rol_comercial_coverage: 'rol_comercial es NULL para conversaciones anteriores al 2026-08-03 en Maga por corte
+    de versión del prompt insights. Para preguntas sobre todo el histórico, aclarar esta limitación de cobertura.'
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: 'NO DISPONIBLE PARA MAGA (a diferencia de Farma24): descriptive_insights en Maga no tiene
+      conversation_id, así que este join no se puede ejecutar. Ver known_findings_v1.'
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys:
+    - conversation_id
+    - producto_index
+    cardinality: product_to_product
+  resultado_cross_check:
+    left: demography
+    right: categorical_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: Sólo para contrastar demography.tipointeraccion contra categorical_insights.categoricos_generales_resultado
+      cuando la pregunta pida explícitamente comparar ambas lecturas.
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_maga_demografia
+    use_when: Resultado de la interacción (versión checklist), categoría y gestión de no-compra.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [Compra, No compra]
+        observed_values: [Compra, No compra]
+        type: text
+        nullable: true
+        description: 'Resultado calculado por el checklist (regla 1.E). "No compra" únicamente cuando el cliente
+          se retira sin llevarse nada Y no queda ninguna gestión activa. En cualquier otro caso es "Compra". OJO:
+          casing con mayúscula inicial, distinto de categorical_insights.categoricos_generales_resultado
+          (minúsculas, snake_case) — dos campos calculados independientemente que discrepan 6,4% de las veces en
+          Maga (ver known_findings_v1). Verificado: 2 filas NULL sobre 80.383.'
+        operations: [filter, group, compare]
+      categorianocompra:
+        configured_values: [N/A, GestionAdministrativa, Stock, Consulta, Otro, Precio]
+        observed_values: [N/A, GestionAdministrativa, Stock, Consulta, Otro, Precio]
+        type: text
+        nullable: true
+        description: 'Categoría del motivo de no compra (sólo poblado con sentido cuando tipointeraccion="No
+          compra"). Fuente PRIMARIA de esta categoría: casi 100% poblado (80.381 de 80.383) — mucho más completo
+          que la versión de categorical_insights (~92,1% NULL en Maga).'
+        operations: [filter, group, compare]
+      gestionnocompra:
+        configured_values: [no_aplica, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada]
+        observed_values: [no_aplica, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada]
+        type: text
+        nullable: true
+        description: 'Qué hizo el vendedor ante una no-compra por falta de stock. Sólo interpretable cuando
+          categorianocompra="Stock". "no_ofrecio_nada" exige evidencia verbal de que hubo falta de stock. Es el
+          campo REAL y poblado; el equivalente de categorical_insights es una columna muerta (0% poblado en
+          Maga), no usar.'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_maga_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de atención en farmacia (checklist Sí/No/N/A).
+    grain: Una fila por conversación con múltiples columnas de criterios, más 2 columnas de evidencia textual.
+    profile: standard_conversation
+    decision_semantics: 'Los 9 criterios Sí/No/N/A siguen la lógica -"Sí" con evidencia clara de cumplimiento,
+      "No" con oportunidad real sin cumplimiento, "N/A" sin oportunidad real- donde "sin oportunidad real" incluye
+      dos causas específicas de este dominio: (1) la interacción es administrativa según la regla 1.A, o (2) el
+      criterio se evalúa sobre lo ocurrido antes del cierre de venta (regla 1.B) y no había oportunidad antes de
+      ese punto.'
+    fields:
+      saludaalinicio:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 1. Sí ante cualquier forma de saludo o apertura, sin importar qué speaker lo dijo.'
+        operations: [filter, group, compare]
+      realizadospreguntasdeinvestigacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 2. Sí si realiza al menos 2 preguntas para entender la necesidad. No cuenta si las
+          preguntas se hicieron después de indicar ir a caja. N/A automático si la interacción es administrativa
+          o si la venta es con PAMI.'
+        operations: [filter, group, compare]
+      explicacomotomarlo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 3. Sí si explica cómo tomar/usar el medicamento o indica frecuencia/dosis/modo de uso.
+          N/A automático si la interacción es administrativa, si el medicamento es de uso crónico, o si la venta
+          es con PAMI -tiene prioridad incluso si el vendedor sí explicó cómo tomarlo-.'
+        operations: [filter, group, compare]
+      ofrecesolucionactivasinohaystock:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 4. Sólo evaluable si faltó stock: Sí si ofrece alternativa o curso de acción útil. N/A
+          si había stock.'
+        operations: [filter, group, compare]
+      sugierecomplementariorelacionado:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 5 (venta cruzada). Requiere RAG obligatorio contra la Base de Conocimiento externa
+          (fuera de este Data Map, compartida físicamente con Farma24). Sí si sugiere/ofrece/recomienda/menciona
+          un producto complementario relacionado con la necesidad principal. No cuenta si ocurre después del
+          cierre. N/A si la interacción es administrativa o se corta antes de una oportunidad evaluable.'
+        operations: [filter, group, compare]
+      evidencia_ventacruzada_rag:
+        type: text
+        nullable: true
+        description: Texto libre con el razonamiento (RAG) que justifica sugierecomplementariorelacionado.
+          Evidencia auxiliar de ese campo únicamente.
+        operations: [select_evidence]
+      intentasustitucionpertinente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 6 (sustitución). También usa RAG contra la Base de Conocimiento. N/A si la interacción
+          es administrativa, si faltó stock del producto principal, o si el producto es "No sustituible" con
+          receta/obra social/PAMI. Regla de oro: ante silencio o audio inaudible, el valor es siempre N/A, nunca
+          "No".'
+        operations: [filter, group, compare]
+      evidencia_sustitucion_rag:
+        type: text
+        nullable: true
+        description: Texto libre con el razonamiento (RAG) que justifica intentasustitucionpertinente. Evidencia
+          auxiliar de ese campo únicamente.
+        operations: [select_evidence]
+      ofreceadicionalnorelacionado:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 7. Sí si ofrece un producto adicional NO relacionado con la necesidad principal
+          (dermocosmética, perfumería, góndola) o menciona promociones/descuentos, siempre antes de ir a caja.'
+        operations: [filter, group, compare]
+      mencionaserviciosfuturos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 8. Sí si menciona servicios de la farmacia (vacunatorio, presión, envíos, horario
+          extendido, WhatsApp, vacuna antigripal, etc.).'
+        operations: [filter, group, compare]
+      despideyacompanaacaja:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 9. Sí ante cualquier frase de despedida, indicación de caja, entrega de ticket o
+          derivación al cobro. Marca el CIERRE de la venta: todo lo posterior se ignora para los pasos 1-8.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_maga_insights_categoricos_generales
+    use_when: Resultado (versión insights) y abordaje/tenencia de Banco Provincia o Cuenta DNI.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      categoricos_generales_resultado:
+        configured_values: [compra, no_compra]
+        observed_values: [compra, no_compra]
+        type: text
+        nullable: true
+        description: 'Resultado calculado por el insights (independiente del checklist). Ver
+          semantic_dependencies.resultado_dual_source: discrepa con demography.tipointeraccion en 6,4% de los
+          casos en Maga.'
+        operations: [filter, group, compare]
+      categoricos_generales_categoria_no_compra:
+        configured_values: [no_aplica, stock, precio, consulta, gestion_administrativa, otro]
+        observed_values: [no_aplica, consulta, stock, gestion_administrativa, otro, precio]
+        type: text
+        nullable: true
+        legacy: true
+        description: 'NO USAR como fuente primaria: ~92,1% NULL en Maga (74.042 de 80.380). Usar
+          demography.categorianocompra en su lugar.'
+        operations: [filter, group, compare]
+      categoricos_generales_gestion_no_compra:
+        type: text
+        nullable: true
+        legacy: true
+        description: 'COLUMNA MUERTA: 100% NULL verificado en Maga (80.380 de 80.380 filas). No usar. El campo
+          real y poblado es demography.gestionnocompra.'
+        operations: []
+      categoricos_generales_abordo_banco_provincia_o_cuenta_dni:
+        configured_values: [si, 'no', no_aplica]
+        observed_values: [si, 'no', no_aplica]
+        type: text
+        nullable: true
+        description: 'Si el vendedor introdujo explícitamente Banco Provincia o Cuenta DNI. NULL en 47.627 de
+          80.380 filas (~59,2%). REGLA DE TASA: base evaluada = si+no = 30.014 (excluir no_aplica y NULL), tasa
+          si = 34,6% (verificado 2026-09-07). Calcular sobre si+no+no_aplica es incorrecto.'
+        operations: [filter, group, compare]
+      categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn:
+        configured_values: [si, 'no', no_determinable]
+        observed_values: [si, 'no', no_determinable]
+        type: text
+        nullable: true
+        description: 'Indica si la conversación permite concluir que el cliente tiene/puede usar Banco Provincia
+          o Cuenta DNI. "si" también se dispara si algún producto tiene se_vendio_con_promo_banco_provincia=si en
+          el 97,8% de los casos (ver semantic_dependencies.banco_provincia). REGLA DE TASA: base evaluada = si+no
+          = 3.156 (excluir no_determinable y NULL), tasa si = 83,9%.'
+        operations: [filter, group, compare]
+  descriptive_insights:
+    source: dashboard_v2.vw_maga_insights_descriptivos_generales
+    use_when: Motivo textual de la no compra, y dimensiones de negocio (mes/año). AISLADA -ver known_findings_v1-.
+    grain: Una fila por recordingid (NO por conversation_id, a diferencia de Farma24); texto libre no agregable.
+    profile: descriptive_conversation_aislada
+    data_quality_note: 'A diferencia de Farma24, en Maga esta vista NO tiene conversation_id ni seller_id (sólo
+      seller_name, recordingid) y SIGUE ACTUALIZÁNDOSE con normalidad (no está congelada). No se puede cruzar
+      con ninguna otra fuente de Maga. Ver known_findings_v1 para el detalle completo.'
+    fields:
+      month:
+        type: integer
+        nullable: true
+        description: 'Mes de la conversación (nombre físico "month", no "business_month" como en Farma24 —
+          verificado contra information_schema.columns, no es un error de este mapa).'
+        operations: [filter, group]
+      year:
+        type: integer
+        nullable: true
+        description: 'Año de la conversación (nombre físico "year", no "business_year" como en Farma24).'
+        operations: [filter, group]
+      descriptivos_generales_tipo_interaccion_detalle:
+        type: text
+        nullable: true
+        description: 'Explicación breve del motivo de no compra (sólo poblado cuando el resultado de la
+          interacción es no_compra). Si el motivo fue falta de stock, menciona qué producto faltaba.'
+        operations: [select_evidence]
+  categorical_product_insights:
+    source: dashboard_v2.vw_maga_insights_categoricos_por_producto
+    use_when: Producto, marca, presentación, rol comercial, falta de stock y su gestión, venta con promoción
+      Banco Provincia, si el producto se terminó comprando.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto dentro de la conversación (empieza en 1, correlativo). Clave de join
+          con descriptive_product_insights.
+        operations: [join_key, filter]
+      producto:
+        type: text
+        nullable: true
+        description: 'Nombre del producto tal como fue mencionado, texto libre (no enum cerrado). 152 filas NULL
+          sobre 247.682 (0,06%), verificado — declarado nullable=true por precaución (mismo criterio que la
+          corrección de Farma24 V2). CASING: variantes de mayúsculas/minúsculas comunes (ej. "ibuprofeno" en 3
+          variantes, 11.340 filas) — normalizar con LOWER(TRIM(producto)) antes de agrupar o rankear.'
+        operations: [select_evidence, filter]
+      marca:
+        type: text
+        nullable: true
+        description: Marca o laboratorio del producto, sólo si hay evidencia clara. Mismo problema sistémico de
+          casing que producto — normalizar antes de agrupar o rankear.
+        operations: [select_evidence]
+      presentacion:
+        type: text
+        nullable: true
+        description: Dosis, concentración, tamaño, cantidad o forma farmacéutica. Null si no hay evidencia clara;
+          nunca inferida.
+        operations: [select_evidence]
+      rol_comercial:
+        configured_values: [pedido_inicial, sustituto, adicional_ofrecido_por_vendedor, solicitado_adicionalmente_por_cliente, no_determinable]
+        observed_values: [pedido_inicial, sustituto, adicional_ofrecido_por_vendedor, solicitado_adicionalmente_por_cliente, no_determinable]
+        type: text
+        nullable: true
+        description: 'Rol del producto en la interacción. IMPORTANTE: NULL para las filas anteriores al
+          2026-08-03 por corte de versión del prompt (106.726 de 247.682 pobladas, 43,1% — verificado 2026-09-07,
+          misma fecha de corte que Farma24). No es "no determinable" de negocio, es cobertura histórica.'
+        operations: [filter, group, compare]
+      se_vendio_con_promo_banco_provincia:
+        configured_values: [si, 'no', no_determinable]
+        observed_values: [si, 'no', no_determinable]
+        type: text
+        nullable: true
+        description: 'Si este producto quedó incluido en una compra pagada/financiada con Banco Provincia, Cuenta
+          DNI o cuotas sin interés aceptadas. Si "si" para cualquier producto, categorical_insights.cliente_tiene_banco_provincia_o_cuenta_dn
+          debe ser "si" en ~97,8% de los casos (ver semantic_dependencies.banco_provincia). REGLA DE TASA: base
+          evaluada = si+no = 39.244, tasa si = 14,8% (verificado 2026-09-07).'
+        operations: [filter, group, compare]
+      hubo_falta_stock:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: true
+        description: Si hubo falta real de disponibilidad física de este producto (no confundir con trabas de
+          receta, obra social, PAMI, autorización, cobertura, sistema, DNI, fecha o precio).
+        operations: [filter, group, compare]
+      que_hizo_vendedor:
+        configured_values: [ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada, no_aplica]
+        observed_values: [no_aplica, no_ofrecio_nada, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio]
+        type: text
+        nullable: true
+        description: Acción del vendedor frente a la falta de stock de ESTE producto. Sólo interpretable cuando
+          hubo_falta_stock=true (si es false, siempre no_aplica).
+        operations: [filter, group, compare]
+      se_termino_comprando:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: true
+        description: Si este producto puntual terminó vendiéndose. Un producto faltante reemplazado por un
+          sustituto exitoso queda en false para el original y true para el sustituto (filas separadas).
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_maga_insights_descriptivos_por_producto
+    use_when: Evidencia textual de falta de stock y de la acción del vendedor, por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index.
+        operations: [join_key, filter]
+      evidencia_falta_stock:
+        type: text
+        nullable: true
+        description: Cita textual breve que conecta el producto con la falta de stock. Casi siempre null si
+          hubo_falta_stock=false y casi siempre poblada si es true (patrón heredado de Farma24, no re-verificado
+          campo por campo en Maga — tratar como "casi siempre", no como regla absoluta).
+        operations: [select_evidence]
+      evidencia_accion_vendedor:
+        type: text
+        nullable: true
+        description: Cita textual del momento donde el vendedor ofreció sustituto/vale/droguería/otra
+          sucursal/envío. Casi siempre null si que_hizo_vendedor es no_ofrecio_nada o no_aplica (mismo patrón
+          heredado de Farma24, no re-verificado campo por campo).
+        operations: [select_evidence]
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'Este Data Map reutiliza la estructura de Farma24 V7 porque los prompts de negocio son carácter por carácter
+  idénticos, pero todos los números fueron re-verificados de forma independiente contra los datos propios de
+  Maga (ver metadata.known_findings_v1). La única diferencia estructural real (no sólo de datos) es
+  descriptive_insights, con un esquema físico distinto en Maga -ver ese hallazgo-.'
+- No se re-verificaron campo por campo las correlaciones "casi siempre" de evidencia_falta_stock/evidencia_accion_vendedor
+  contra que_hizo_vendedor/hubo_falta_stock -se heredó el patrón de Farma24 sin re-medir los porcentajes exactos
+  en Maga, a diferencia del resto del mapa-.
+- No se investigó la tabla dashboard_v2.reporte_semanal_farma24 (ni si existe un equivalente para Maga) — fuera
+  del alcance de este mapa, mismo criterio que Farma24.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

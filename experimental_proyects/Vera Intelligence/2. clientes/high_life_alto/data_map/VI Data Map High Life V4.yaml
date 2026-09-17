@@ -1,0 +1,725 @@
+metadata:
+  name: VI Data Map High Life V4
+  version: 4.0.0
+  client: High Life
+  model_target: Gemini 3.7
+  generated_at: '2026-09-09'
+  changes_from_v3:
+    - 'Investigada la CAUSA RAÍZ del hueco de 1.659 filas sin checklist (documentado en V3 sin explicar por
+      qué). Verificado con SQL directo contra Postgres QA: no es un problema de calidad de datos ni de
+      pipeline roto. 96,2% (1.596/1.659) de esas conversaciones están marcadas usefulforanalysis=TRUE (son
+      analizables), 99,9% (1.658/1.659) tienen fila poblada en categorical_insights, y el hueco está
+      distribuido proporcionalmente entre las 8 sucursales -no es un problema de tienda específica-. Por
+      semana, el volumen decae a casi cero justo en la semana del 2026-08-10 (arranque de v8). Conclusión: el
+      prompt de checklist (sales_evaluation) de High Life simplemente no corrió en producción entre el
+      2026-06-24 y el 2026-08-10 -probablemente pausado durante el rediseño del rubric viejo a v8-, mientras
+      el prompt de insights (conversation_insights) siguió corriendo con normalidad en el mismo período. No
+      requiere acción de este Data Map -es historia operativa, no una limitación de la vista-, pero cierra el
+      hallazgo que V3 dejó abierto.'
+  changes_from_v2:
+    - 'CORRECCIÓN (revisión manual directa contra Postgres QA, sin Gemini, motivada por el rechazo del gate
+      automático a la candidata V2): V1 y V2 afirmaban que el checklist viejo cubría "2.205 filas (72,1%) hasta
+      2026-08-15" y que no había huecos de checklist. Verificado que eso es incorrecto: sólo 546 filas tienen el
+      checklist viejo realmente poblado (vendedoramable IS NOT NULL), fecha 2026-06-09 a 2026-06-24. Las 1.659
+      filas restantes con fecha entre 2026-06-24 y 2026-09-08 no tienen NINGÚN checklist poblado (ni viejo, ni
+      v8, ni v10) — es un hueco real de cobertura, no sólo el hueco de fechas ya documentado. Corregidas las
+      referencias a "2.205 filas" en los tres lugares donde aparecía (hallazgos, routing/sources.performance) y
+      agregado el hallazgo del hueco real.'
+    - 'Validación de las 4 preguntas del banco dorado que el gate automático rechazó para V2
+      (q02_checklist_migration_trap, q05_polarity_flip_trap, q06_ocasion_uso_vigente_trap,
+      q11_motivador_visita_taxonomy_trap): se verificó con SQL directo contra Postgres QA que todos los números
+      que V2 declaraba para estas preguntas eran correctos (exactos o dentro del drift normal de una tabla que
+      crece a diario). El motivo del rechazo del gate es estructural, no un error de la candidata: el banco de
+      preguntas doradas (preguntas_evaluacion.yaml) se escribió el 2026-09-07 cuando "checklist vigente"
+      significaba v8; v10 entró en producción el 2026-09-08, el mismo día en que se generó V2. El gate compara
+      la respuesta del agente con la Data Map vieja (que no sabe que existe v10) contra la respuesta con la
+      candidata (que sí sabe) — para preguntas que dependen justo de esa definición, las respuestas van a diferir
+      siempre que exista v10, sin importar qué tan correcta sea la candidata. Promovido manualmente en base a
+      esta verificación directa, sin re-ejecutar el gate automático (que reproduciría el mismo desacuerdo
+      estructural). Pendiente para quien mantenga este proyecto: actualizar preguntas_evaluacion.yaml para que
+      sus 4 preguntas trampa reflejen el mundo de tres rubrics (viejo/v8/v10), de forma que una futura
+      regeneración sí pueda pasar el gate automático.'
+  scope: Sólo seis vistas dashboard_v2 de High Life. El tenant ('High Life') es fijo para este cliente; no
+    se resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Haber/High Life/checklist (Langfuse, label production, v10 al construir este
+      mapa — "Ritual de Experiencia High Life", 7 etapas, 19 criterios)
+    insights_prompt: clientes/Haber/High Life/insights (Langfuse, label production, v5 al construir este mapa
+      — idéntico carácter por carácter al de Mens Fashion/Roberts/Boggi, sin cashback)
+    note: 'El checklist vigente (v10) reestructura el Ritual de Experiencia en 19 criterios específicos sobre
+      7 etapas (Bienvenida y Conexión, Descubrimiento y Escucha Activa, Presentación y Storytelling, Demostración
+      Sensorial, Manejo de Objeciones, Cierre Natural y Confirmación, Despedida y Seguimiento). El prompt de
+      insights es el compartido de retail de moda. Verificado con GROUP BY/COUNT contra Postgres QA el 2026-09-09.'
+  changes_from_v1:
+    - 'Actualización de sales_evaluation v8 a v10 (Ritual de Experiencia High Life, 7 etapas): se reemplazaron
+      los 16 criterios de v8 por 19 criterios estructurados con nombres nuevos en Postgres (14 conversaciones
+      registradas con v10 desde 2026-09-08).'
+    - 'Los campos del rubric v8 pasan a la sección legacy_fields_v8_checklist en performance, conviviendo ahora
+      tres generaciones de checklist en la vista: checklist viejo (hasta 2026-08-15), rubric v8 (2026-08-10 a
+      2026-09-08) y rubric v10 vigente (desde 2026-09-08).'
+    - 'vendedorsaludasinfraesedepresion (roto en v8 con 0 filas) fue sustituido por vendedordabienvenidaysepresentaconsunombre
+      en v10, el cual sí recibe datos normalmente (verificado en QA).'
+  hallazgos_criticos_verificados_2026-09-09:
+    - 'TRES GENERACIONES DE CHECKLIST EN performance (vw_high_life_rendimiento_vendedor):
+      (1) CHECKLIST VIEJO: 26 campos (ej. vendedoramable, vendedorsepresenta), SÓLO 546 filas realmente pobladas
+      (17,9% de 3.059), fecha 2026-06-09 a 2026-06-24 -no 2.205 como decían V1/V2, ver hallazgo de hueco de
+      cobertura más abajo-.
+      (2) CHECKLIST V8 (Ritual de Experiencia v8): 16 campos (ej. vendedorhaceminimodospreguntasabiertas), 840 filas (27,5%), 2026-08-10 a 2026-09-08.
+      (3) CHECKLIST V10 VIGENTE (Ritual de Experiencia v10): 19 campos estructurados, 14 filas (0,5%), desde 2026-09-08.
+      Ninguna de las tres generaciones es directamente comparable con las otras; filtrar siempre por las columnas o fechas pertinentes.'
+    - 'HUECO REAL DE COBERTURA (2026-09-09, corregido — V1 y V2 afirmaban erróneamente "2.205 filas hasta
+      2026-08-15" y "sin solapamiento ni huecos de checklist"): hay 1.659 filas en vw_high_life_rendimiento_vendedor
+      (conversation_id y uploaded_at_local válidos, fecha 2026-06-24 a 2026-09-08) que NO tienen NINGÚN checklist
+      poblado -ni viejo, ni v8, ni v10-. El error de V1/V2 vino de confundir "conversaciones con fecha anterior
+      a la migración" con "conversaciones con el checklist viejo efectivamente poblado": son 546 pobladas +
+      1.659 sin ningún dato de checklist = 2.205 filas con fecha < 2026-08-15, de ahí el número incorrecto.
+      Verificado: COUNT(*) FILTER (WHERE vendedoramable IS NOT NULL) = 546 (vs 2.186 filas totales con fecha <
+      2026-08-10). Cualquier pregunta sobre el checklist viejo debe usar el filtro de campo poblado
+      (vendedoramable IS NOT NULL), nunca sólo un corte de fecha.
+      CAUSA RAÍZ (verificada V4): NO es un problema de calidad de datos. 96,2% de estas filas están marcadas
+      usefulforanalysis=TRUE (analizables) y 99,9% SÍ tienen fila en categorical_insights -el prompt de
+      insights procesó estas conversaciones con normalidad-. El hueco está repartido proporcionalmente entre
+      las 8 sucursales y decae semana a semana hasta casi cero justo la semana del 10/08. Conclusión: el
+      prompt de checklist (sales_evaluation) no corrió en producción entre el 24/06 y el 10/08 -probablemente
+      pausado durante el rediseño del rubric viejo a v8-, mientras insights (conversation_insights) sí siguió
+      activo. Es historia operativa del cliente, no una falla de esta vista ni de este Data Map.'
+    - 'CAMPOS OBLIGATORIOS POR PROTOCOLO EN V10: VendedorMencionaServicioSuMisura y VendedorOfreceTomarMedidasParaConocerTalla
+      aplican en toda interacción comercial analizable; no admiten N/A por el simple hecho de que el cliente no lo pida o conozca su talla.'
+    - 'DESPEDIDA Y AGRADECIMIENTO: VendedorAcompanaSeDespideConNombreYAgradeceVisita mide primordialmente la despedida
+      cordial con agradecimiento; por limitaciones de audio, no exige registrar acompañamiento físico a la puerta ni uso del nombre.'
+  known_findings_v1:
+  - 'VALIDACIÓN DE CONFIABILIDAD (2026-09-07, mismo día del onboarding): High Life había quedado en grado
+      "bajo" (ver README.md > convención de nombres de carpeta) por la severidad del hallazgo central de
+      abajo (73% del histórico bajo un rubric no comparable con el vigente). Se corrió el banco completo
+      de 11 preguntas -incluidas 5 marcadas es_trampa, varias apuntando directamente a este hallazgo y al
+      campo roto- y dio 11/11 sin ningún UNSAFE_ANSWER_FALLBACK. En particular, `q04_campo_roto_trap`
+      (pregunta sobre un campo con 0 filas pobladas) respondió correctamente que no hay datos disponibles
+      para esa pregunta, sin inventar un número ni confundirlo con otro criterio -exactamente lo que pide
+      `respuesta_esperada`-. No se encontró ninguna falla de ejecución: el agente maneja los dos rubrics
+      incompatibles, el rename de polaridad y el campo roto de forma correcta y honesta en todos los
+      casos probados. Con esta evidencia, carpeta renombrada de `high_life_bajo` a `high_life_medio`
+      (2026-09-07).
+      RECONSIDERADO EL MISMO DÍA, A PEDIDO DEL USUARIO: el criterio de dejarlo en "medio" por el tamaño
+      del hallazgo (73% del histórico) era inconsistente con cómo se gradúan Atlas y Farma24, que también
+      tienen hallazgos grandes y abiertos (el corte de cobertura de Atlas desde 2026-08-10, las
+      ambigüedades de denominador y filas huérfanas documentadas de Farma24) y quedaron en "alto" porque
+      la ejecución es confiable y cada limitación está correctamente advertida -exactamente lo que también
+      es cierto acá-. Además, el rubric vigente arrancó el 10/08 y crece todos los días (825 conversaciones
+      y subiendo) -no es una limitación fija que empeora con el tiempo, es una que se va achicando como
+      proporción del total, mismo patrón que el corte de Atlas-. No hay una razón consistente para tratar
+      a High Life distinto de esos dos clientes: la ejecución es igual de sólida (11/11, incluida la
+      trampa del campo roto respondida correctamente) y cada hallazgo -migración de rubric, rename de
+      polaridad, campo roto- tiene su propia regla explícita que el agente respeta. Carpeta renombrada de
+      `high_life_medio` a `high_life_alto` (2026-09-07, mismo día). El hallazgo central sigue documentado
+      tal cual, sin resolver (no se "arregló" nada nuevo) — sólo se corrigió el criterio de grado.'
+  - 'HALLAZGO CENTRAL — MIGRACIÓN DE CHECKLIST, TRES RUBRICS INCOMPATIBLES CONVIVIENDO EN performance: la vista
+      vw_high_life_rendimiento_vendedor contiene tres generaciones de checklist:
+      (1) CHECKLIST VIEJO (26 campos, ej. vendedoramable, vendedorsepresenta, vendedorrealizocierrecompra,
+      vendedorexplicoprogramadelealtad, vendedordestacaventajasconfeccionmedida) — es literalmente el mismo
+      rubric que usa Mens Fashion/Roberts (Recepción/Investigación/Asesoría/Complementos/Manejo de
+      Objeciones/Cierre, con cashback y confección a medida). Cubre SÓLO 546 conversaciones realmente pobladas
+      (2026-06-09 a 2026-06-24) -no 2.205, ver hallazgo de hueco de cobertura-.
+      (2) CHECKLIST V8 ("Ritual de Experiencia v8", 16 campos) — cubre 840 conversaciones (2026-08-10 a 2026-09-08).
+      (3) CHECKLIST V10 ("Ritual de Experiencia v10", 19 campos) — cubre conversaciones desde 2026-09-08.
+      (4) HUECO SIN CHECKLIST: 1.659 conversaciones con fecha entre 2026-06-24 y 2026-09-08 no tienen ningún
+      checklist poblado (ver hallazgo de hueco de cobertura).
+      ESTOS TRES RUBRICS NO SON DIRECTAMENTE COMPARABLES ENTRE SÍ. Cualquier pregunta sobre "todo el histórico"
+      de performance debe advertir que los datos fueron evaluados con protocolos comerciales distintos según la
+      época, no mezclar ambos como si fueran una serie temporal continua del mismo criterio, y que hay un hueco
+      real de 1.659 conversaciones sin ningún checklist.'
+  - 'DENTRO del checklist v8 hay una migración menor de nombres de campo (polaridad): 3 campos se renombraron
+      de negativo a positivo el 2026-08-24/25. Verificado en Postgres: vendedorinterrumpealcliente/
+      vendedorofrecedescuentocomoprimerarespuesta/vendedorusaurgenciafalsa (nombres viejos, polaridad negativa)
+      tienen 465 filas pobladas cada uno, fecha 2026-08-10 a 2026-08-24; sus reemplazos
+      vendedorevitainterrumpiralcliente/vendedorevitaofrecerdescuentocomoprimerarespuesta/
+      vendedorevitausarurgenciafalsa (polaridad positiva) tienen 375 filas cada uno en v8. SON EL MISMO
+      CRITERIO CON POLARIDAD INVERTIDA en v8.'
+  - 'CAMPO ROTO EN V8: VendedorSaludaSinFraseDePresion (primer campo de v8, etapa "Bienvenida y Conexión")
+      tuvo 0 filas pobladas en Postgres (columna física vendedorsaludasinfraesedepresion). En v10 fue
+      reemplazado por vendedordabienvenidaysepresentaconsunombre, que sí recibe datos.'
+  - 'categorical_insights (a diferencia de performance) SÍ cubre el histórico completo sin discontinuidad:
+      fecha mínima 2026-06-07, máxima 2026-09-08. Usar siempre COUNT(DISTINCT conversation_id).'
+  - 'categorical_insights tiene 274 filas huérfanas sobre 3.351 (8,2% — 3.351 filas totales vs 3.077
+      conversation_id distintos). Usar siempre COUNT(DISTINCT conversation_id).'
+  - 'ocasion_uso_dual_source: vendedorpreguntaocasionuso SÓLO existe en el checklist VIEJO (0 filas en v8).
+      En v10 existe vendedordescubreocasiononecesidaddeuso. Verificado contra hubo_pregunta_ocasion_de_uso
+      (categorical_insights, cubre todo el histórico).'
+  - 'motivador_visita taxonomy_drift: mismo fenómeno que el resto de los clientes hermanos de insights —
+      necesidad_especifica=894 (legado, segundo valor más frecuente después de no_claro=1.471), promocion=121
+      (legado), aparador=25 (legado), y otros valores legados menores (ecommerce=4, recomendacion=3,
+      referencia_externa=3, redes_sociales=2).'
+  - 'RAG no aplica: el checklist de High Life no declara geminiFileSearchStoreName. El store de
+      clientes/Haber/High Life/feedback es compartido con Boggi/Mens Fashion/Roberts y pertenece a otro
+      producto/feature, no a Vera Intelligence.'
+  - 'Dataset grande para este batch: más de 3.059 conversaciones totales en demografía y rendimiento.'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe
+  join declarado.
+- 'CRÍTICO para performance: identificar primero si la pregunta puede responderse con el checklist
+  vigente v10 (post 2026-09-08, 19 campos del Ritual de Experiencia), el rubric v8 (2026-08-10 a 2026-09-08,
+  16 campos) o si exige el histórico completo -en cuyo caso advertir las migraciones de rubric, ver known_findings_v1-.'
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si NULL es
+  parte legítima de la respuesta.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción, características de la conversación
+    avoid: no usar para motivos comerciales detallados ni evaluación del vendedor
+  performance:
+    questions: criterios del checklist vigente v10 (Ritual de Experiencia, 7 etapas, 19 campos) desde el 2026-09-08
+    avoid: 'NO mezclar con los campos del rubric v8 ni del checklist viejo como si fueran el mismo criterio
+      -son rubrics distintos, ver known_findings_v1-. No tratar N/A como incumplimiento.'
+  categorical_insights:
+    questions: resultado general, venta perdida, motivador, competencia, cierre o cantidades — cubre todo el
+      histórico
+    avoid: no usar para ejemplos o explicaciones textuales
+  descriptive_insights:
+    questions: por qué, cómo fue la ejecución, ejemplos, errores, mejores prácticas o acciones sugeridas
+    avoid: no agrupar ni calcular frecuencia de textos
+  categorical_product_insights:
+    questions: producto, compra, ocasión, fit, talla, color, objeción, inventario o complementarios por producto
+    avoid: no afirmar ventas transaccionales
+  descriptive_product_insights:
+    questions: ejemplos y explicaciones narrativas de un producto
+    avoid: no usar sin la vista categórica cuando la condición del producto debe comprobarse físicamente
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions: [store_id, store_name, sector_id, sector_name, employee_id, employee_full_name]
+    quality_filter: 'usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables. No
+      agregar por costumbre si no se pide explícitamente.'
+  descriptive_conversation:
+    row_key: conversation_id
+    tenant_field: seller
+    date_field: date
+    optional_dimensions: []
+    quality_filter: 'No asumir usefulforanalysis: no se verificó si esta vista lo expone de forma confiable.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('High Life') sobre el tenant_field de cada fuente
+    (seller_id en 5 de 6 fuentes, seller en descriptive_insights).
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: 'cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir
+    N/A y null. Para el checklist vigente v10: siempre filtrar primero a vendedordabienvenidaysepresentaconsunombre IS NOT NULL
+    (o uploaded_at_local >= 2026-09-08) para no mezclar con rubrics anteriores.'
+  categorical_rate_general_rule: La misma convención de performance_rate aplica a cualquier campo categórico
+    booleano o Sí/No/N-A del Data Map.
+  polarity_flip_rule: 'Para evaluar v8 histórico (10/08 a 24/08 vs 25/08 a 08/09): combinar el campo viejo
+    (polaridad negativa) invirtiendo su lectura con el campo nuevo (polaridad positiva). En v10 todos los
+    campos tienen polaridad positiva estándar.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  lost_sale_general: hubo_venta_perdida IS TRUE habilita motivo_principal_venta_perdida; excluir no_aplica.
+  ocasion_uso_dual_source: 'vendedordescubreocasiononecesidaddeuso (performance v10), vendedorpreguntaocasionuso
+    (performance viejo, hasta 24/06) y hubo_pregunta_ocasion_de_uso (categorical_insights, cubre todo el histórico)
+    representan indagación de ocasión/uso en sus respectivos períodos.'
+  checklist_migration: 'Ver known_findings_v1: tres rubrics de checklist conviven en performance (viejo hasta
+    2026-08-15; v8 del 2026-08-10 al 2026-09-08; v10 desde 2026-09-08). No sumar ni promediar tasas de distintos
+    períodos como si midieran lo mismo.'
+  polarity_flip: 'Ver known_findings_v1 y sql_rules.polarity_flip_rule: aplicable al período del rubric v8.'
+  saludo_sin_presion_broken: 'vendedorsaludasinfraesedepresion perteneció al rubric v8 (0 filas pobladas).
+    En v10 fue reemplazado por vendedordabienvenidaysepresentaconsunombre.'
+  motivador_visita_taxonomy: hay dos generaciones de taxonomía conviviendo (ver known_findings_v1).
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys: [conversation_id]
+    cardinality: conversation_to_conversation
+    note: descriptive_insights sí tiene conversation_id en High Life (igual que Boggi).
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys: [conversation_id, producto_index]
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_high_life_demografia
+    use_when: 'Características de las conversaciones y clientes: interacción, género, destinatario, tipo,
+      necesidad, decisión, precio y urgencia.'
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: &tipointeraccion_generico [cambio, compra, no_compra, queja]
+        observed_values: *tipointeraccion_generico
+        type: text
+        nullable: true
+        description: Resultado operativo de la interacción según el insights.
+        operations: [filter, group, compare]
+      genero_cliente:
+        configured_values: &genero_cliente [femenino, masculino, no_claro]
+        observed_values: *genero_cliente
+        type: text
+        nullable: true
+        description: Género del cliente. Sólo masculino/femenino con evidencia razonable.
+        operations: [filter, group, compare]
+      cliente_compra_para:
+        configured_values: &cliente_compra_para [no_claro, regalo, si_mismo, tercero]
+        observed_values: *cliente_compra_para
+        type: text
+        nullable: true
+        description: Destinatario de la compra.
+        operations: [filter, group, compare]
+      tipo_cliente:
+        configured_values: &tipo_cliente [no_claro, nuevo, recurrente]
+        observed_values: *tipo_cliente
+        type: text
+        nullable: true
+        description: nuevo = primera visita; recurrente = evidencia de compras previas.
+        operations: [filter, group, compare]
+      perfil_necesidad:
+        configured_values: &perfil_necesidad [casual, evento, exploracion, no_claro, reposicion, trabajo]
+        observed_values: *perfil_necesidad
+        type: text
+        nullable: true
+        description: Necesidad dominante que organiza la visita.
+        operations: [filter, group, compare]
+      nivel_decision_cliente:
+        configured_values: &nivel_decision_cliente [comparando, decidido, indeciso, no_claro]
+        observed_values: *nivel_decision_cliente
+        type: text
+        nullable: true
+        description: Nivel de decisión del cliente.
+        operations: [filter, group, compare]
+      sensibilidad_precio_general:
+        configured_values: &sensibilidad_precio_general [alta, baja, media, no_claro]
+        observed_values: *sensibilidad_precio_general
+        type: text
+        nullable: true
+        description: Sensibilidad del cliente frente al precio.
+        operations: [filter, group, compare]
+      urgencia_general:
+        configured_values: &urgencia_general [inmediata, no_claro, planeada]
+        observed_values: *urgencia_general
+        type: text
+        nullable: true
+        description: Urgencia temporal general de la necesidad del cliente.
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_high_life_rendimiento_vendedor
+    use_when: Criterios del checklist VIGENTE de High Life (v10, "Ritual de Experiencia", 7 etapas, 19 campos,
+      sólo conversaciones desde el 2026-09-08). Para períodos anteriores, ver legacy_fields.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    decision_semantics: 'Los campos vigentes están redactados como conductas POSITIVAS: "Sí" = cumplió la
+      conducta positiva; "No" = la conducta era aplicable, la oportunidad quedó capturada y el vendedor no la
+      cumplió; "N/A" = no aplicaba o la etapa relevante no quedó capturada con suficiente claridad.'
+    legacy_fields_v8_checklist:
+      description: 'Campos pertenecientes al checklist v8 (840 filas, 2026-08-10 a 2026-09-08), 16 criterios
+        del Ritual de Experiencia v8. Incluye los campos con rename de polaridad del 24/08 y el campo roto
+        vendedorsaludasinfraesedepresion.'
+      field_names: [vendedorsaludasinfraesedepresion, vendedorhaceminimodospreguntasabiertas,
+        vendedorevitainterrumpiralcliente, vendedorinterrumpealcliente, vendedorreflejaentendimiento,
+        vendedorpresentamaximotresopciones, vendedorusafraseanclada, vendedormencionaprecioalfinal,
+        vendedorinvitaaprobarproducto, vendedornombraelementosensorial, vendedorvalidaobjecionantesderesponder,
+        vendedorevitaofrecerdescuentocomoprimerarespuesta, vendedorofrecedescuentocomoprimerarespuesta,
+        vendedorconfirmarespuestafuesuficiente, vendedorusafrasedecierre, vendedorevitausarurgenciafalsa,
+        vendedorusaurgenciafalsa, vendedorcelebraelecciondelcliente, vendedorsedespideconnombredelcliente]
+    legacy_fields_v1_checklist:
+      description: 'Los siguientes campos pertenecen al checklist VIEJO (SÓLO 546 filas realmente pobladas,
+        2026-06-09 a 2026-06-24 -no 2.205, ver hallazgo de hueco de cobertura en metadata-),
+        mismo rubric que usa hoy Mens Fashion/Roberts. NO forman parte del checklist vigente de High Life.'
+      field_names: [vendedoramable, vendedorsepresenta, vendedorrealizocierrecompra, vendedorofrecioasistencia,
+        vendedorofreciotomarmedidas, vendedormuestraprendas, vendedormencionadescuentos,
+        vendedoragradecioeinvitovolver, vendedorexplicoprogramadelealtad, vendedorconfirmoenvioticketemail,
+        vendedorofreciomesessinintereses, vendedormencionoprogramadelealtad, vendedorsugiriocomplementos,
+        vendedorpreguntaocasionuso, vendedormencionobeneficiosprendas, vendedormencionoconfeccionamedida,
+        vendedorinvitoaencuestasatisfaccion, vendedormencionanuevoslanzamientos,
+        vendedormencionotrescomplementos, conocimientosuficiente, vendedorrecomiendasegunocasionuso,
+        vendedordestacaventajasconfeccionmedida, vendedorpreguntapreferenciascliente,
+        vendedorofrecebeneficiosanteobjeccionprecio, vendedorofrecesolucionanteobjeccioncomosevesiente]
+    fields:
+      vendedordabienvenidaysepresentaconsunombre:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Bienvenida y Conexión. Sí: el inicio está capturado, el vendedor saluda o da la bienvenida
+          y se presenta verbalmente con su nombre. No: inicio capturado y falta al menos una de las dos conductas.
+          N/A si el inicio no quedó capturado.'
+        operations: [filter, group, compare]
+      vendedorpreguntasiconocehighlife:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No']
+        type: text
+        nullable: true
+        description: 'Bienvenida y Conexión. Sí: pregunta explícitamente si el cliente conoce High Life o si es su
+          primera vez en la tienda. No: conexión inicial capturada y no realiza la pregunta. N/A si la conexión no
+          quedó capturada.'
+        operations: [filter, group, compare]
+      vendedorpresentamarcasonuevascolecciones:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Bienvenida y Conexión. Sí: presenta/informa comercialmente al menos UNA marca (High Life, Calderoni,
+          Ermenegildo Zegna, Boss, Boggi, Cerruti, Loro Piana) o una nueva colección. "Bienvenido a High Life" por sí
+          solo no cuenta.'
+        operations: [filter, group, compare]
+      vendedorpreguntanombredelcliente:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Descubrimiento y Escucha Activa. Sí: solicita, pregunta o verifica el nombre del cliente. No:
+          etapa capturada y no lo hace. Que el cliente lo diga espontáneamente no basta.'
+        operations: [filter, group, compare]
+      vendedordescubreocasiononecesidaddeuso:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Descubrimiento y Escucha Activa. Sí: al menos una pregunta que explora para qué se busca la
+          prenda o en qué contexto se usará (evento, trabajo, boda, etc.). No cuentan preguntas puramente logísticas
+          de talla/color/stock.'
+        operations: [filter, group, compare]
+      vendedorpreguntafechalugarocodigodevestimenta:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Descubrimiento y Escucha Activa. Sí: ante una ocasión/contexto conocido, pregunta al menos UNO de:
+          fecha, lugar o código de vestimenta. N/A si no existe ocasión/contexto conocido.'
+        operations: [filter, group, compare]
+      vendedorpreguntapreferenciasdeprendacolormaterialoestilo:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Descubrimiento y Escucha Activa. Sí: pregunta explícitamente por al menos una preferencia entre
+          tipo de prenda, color, material o estilo.'
+        operations: [filter, group, compare]
+      vendedorrecomiendasegunnecesidadouso:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Presentación y Storytelling. Sí: existe necesidad/ocasión conocida, presenta/recomienda una prenda
+          y relaciona verbalmente la recomendación con esa necesidad/uso. N/A si falta necesidad conocida o presentación.'
+        operations: [filter, group, compare]
+      vendedormencionaserviciosumisura:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Presentación y Storytelling. Protocolo obligatorio (aplica siempre). Sí: menciona explícitamente
+          Su Misura o servicio de confección sobre medida de High Life. No: interacción comercial capturada y no lo menciona.
+          N/A solo ante imposibilidad de evaluar por corte/calidad de audio.'
+        operations: [filter, group, compare]
+      vendedorofrecetomarmedidasparaconocertalla:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Presentación y Storytelling. Protocolo obligatorio (aplica siempre, incluso si el cliente ya conoce
+          su talla). Sí: ofrece verbalmente tomar medidas o medir al cliente para conocer/confirmar talla. N/A solo por
+          recorte/audio inaudible.'
+        operations: [filter, group, compare]
+      vendedorhabladesuavidadligerezatecnologiacalidadobeneficios:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Demostración Sensorial. Sí: describe explícitamente al menos un atributo o beneficio entre suavidad/tacto,
+          ligereza/peso, tecnología, calidad o beneficio concreto. Mencionar solo tela (ej. "es lana") no basta sin cualidad/beneficio.'
+        operations: [filter, group, compare]
+      vendedorinvitaaprobarselasprendas:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Demostración Sensorial. Sí: invita verbalmente al cliente a probarse una o más prendas presentadas.
+          No inferir por ruidos de probador posteriores.'
+        operations: [filter, group, compare]
+      vendedorproponesolucionanteobjeciones:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Manejo de Objeciones. Aplica a objeciones reales que NO sean falta de stock. Sí: propone respuesta/solución
+          concreta orientada a resolver cada objeción evaluable (aclarar, reforzar valor, otra prenda/talla/estilo). N/A si no hubo
+          objeción real.'
+        operations: [filter, group, compare]
+      vendedorofrecesolucionantefaltadeproducto:
+        configured_values: *si_no_na
+        observed_values: [N/A, Sí]
+        type: text
+        nullable: true
+        description: 'Manejo de Objeciones. Sí: ante falta confirmada de producto (artículo/talla/color no disponible), propone
+          al menos una solución concreta y viable (otra sucursal, envío a domicilio, entrega/recolección, alternativa disponible viable).
+          N/A si no hubo falta de producto.'
+        operations: [filter, group, compare]
+      vendedorofrecepromocionesomesessinintereses:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Manejo de Objeciones. Sí: informa/ofrece al menos una promoción vigente o meses sin intereses en un momento
+          comercial adecuado (en precio, decisión, objeción, cierre, o ante pregunta del cliente). Mención prematura como simple
+          enganche de saludo es "No".'
+        operations: [filter, group, compare]
+      vendedorconfirmabuenaeleccionoproductoselegidos:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Cierre Natural y Confirmación. Aplica ante elección clara del cliente. Sí: valida positivamente la decisión
+          o confirma verbalmente los productos elegidos. N/A si no hubo elección clara.'
+        operations: [filter, group, compare]
+      vendedorconsultadatospararegistrooactualizacion:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Despedida y Seguimiento. Sí: solicita, pregunta o verifica al menos un dato (teléfono, nombre completo,
+          cumpleaños o correo electrónico) para registro o actualización al llegar a cierre/caja/postventa.'
+        operations: [filter, group, compare]
+      vendedorconfirmaticketeinvitaaresponderencuesta:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Despedida y Seguimiento. Sí: ante compra/postventa, invita explícitamente al cliente a responder o completar
+          la encuesta de servicio (el ticket solo no basta). N/A si no hubo compra/postventa.'
+        operations: [filter, group, compare]
+      vendedoracompanasedespideconnombreyagradecevisita:
+        configured_values: *si_no_na
+        observed_values: [N/A, 'No', Sí]
+        type: text
+        nullable: true
+        description: 'Despedida y Seguimiento. Sí: final capturado y realiza una despedida cordial que incluye agradecimiento.
+          No exige escuchar acompañamiento físico ni nombre del cliente en audio para marcar Sí.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_high_life_insights_categoricos_generales
+    use_when: Resultados y hallazgos categóricos generales de la conversación. Cubre TODO el histórico (a
+      diferencia de performance).
+    grain: Una fila por conversación.
+    data_quality_note: 'Esta vista tiene 274 filas huérfanas sobre 3.351 (8,2% — verificado 2026-09-07: 3.351
+      filas totales vs 3.077 conversation_id distintos). SIEMPRE usar COUNT(DISTINCT conversation_id).'
+    profile: standard_conversation
+    fields:
+      tipo_interaccion:
+        configured_values: *tipointeraccion_generico
+        observed_values: *tipointeraccion_generico
+        type: text
+        nullable: true
+        description: Clasificación del desenlace de la conversación.
+        operations: [filter, group, compare]
+      resultado_general:
+        configured_values: &resultado_general [cambio, compra_parcial, compra_total, no_compra, queja]
+        observed_values: *resultado_general
+        type: text
+        nullable: true
+        description: 'compra_total: todas las necesidades principales resueltas en compra. compra_parcial:
+          se compra algo pero queda algo relevante sin resolver.'
+        operations: [filter, group, compare]
+      motivador_visita:
+        configured_values: &motivador_visita_vigente [boda, cumpleanos_aniversario, evento_formal_social, graduacion, no_claro, otra_necesidad_especifica, regalo, reposicion_renovacion, trabajo, uso_cotidiano, viaje]
+        observed_values: [no_claro, necesidad_especifica, promocion, reposicion_renovacion, uso_cotidiano, evento_formal_social, boda, trabajo, aparador, regalo, graduacion, viaje, cumpleanos_aniversario, ecommerce, recomendacion, referencia_externa, otra_necesidad_especifica, redes_sociales]
+        type: text
+        nullable: true
+        taxonomy_drift: 'Dos generaciones de enum conviven (ver known_findings_v1): necesidad_especifica=894
+          (legado, segundo valor más frecuente), promocion=121 (legado), aparador=25 (legado), y valores
+          legados minoritarios adicionales.'
+        description: Necesidad concreta que explica por qué el cliente llega a la tienda.
+        operations: [filter, group, compare]
+      origen_inspiracion_cliente:
+        configured_values: &origen_inspiracion [ecommerce_propio, ecommerce_terceros, no_claro, redes_sociales, referencia_externa]
+        observed_values: *origen_inspiracion
+        type: text
+        nullable: true
+        description: Fuente externa que inspiró la visita.
+        operations: [filter, group, compare]
+      intencion_compra_inicial:
+        configured_values: *sensibilidad_precio_general
+        observed_values: *sensibilidad_precio_general
+        type: text
+        nullable: true
+        description: Intención de compra inicial del cliente.
+        operations: [filter, group, compare]
+      hubo_mencion_competencia:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si aparece comparación o referencia real a otra marca/tienda/opción externa.
+        operations: [filter, group, compare]
+      hubo_mencion_a_medida:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si se menciona interés en a_medida/sastrería.
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_a_medida:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true sólo si el vendedor propone activamente a_medida/sastrería.
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_complementarios:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si el vendedor propone al menos un producto adicional.
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_paquete:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si el vendedor arma una solución integral con múltiples prendas.
+        operations: [filter, group, compare]
+      hubo_pregunta_ocasion_de_uso:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: true
+        description: 'true sólo si el vendedor pregunta o explora para qué necesita el producto el cliente.'
+        operations: [filter, group, compare]
+      atencion_pasiva_vendedor:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si el vendedor es mayormente reactivo, con poca iniciativa.
+        operations: [filter, group, compare]
+      falta_cierre_vendedor:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si, correspondiendo avanzar, el vendedor no intenta obtener una decisión.
+        operations: [filter, group, compare]
+      no_ofrece_solucion_completa:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si el caso justificaba una solución más completa y el vendedor no la construye.
+        operations: [filter, group, compare]
+      hubo_venta_perdida:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: true si al menos una necesidad/producto relevante queda sin resolverse en compra.
+        operations: [filter, group, compare]
+      motivo_principal_venta_perdida:
+        configured_values: &motivo_perdida_general [calidad_valor, diseno_estilo, ejecucion_vendedor, fit, inventario, no_aplica, precio, tiempo_entrega]
+        observed_values: *motivo_perdida_general
+        type: text
+        nullable: false
+        description: Causa dominante de la venta perdida; sólo interpretable cuando hubo_venta_perdida=true.
+        operations: [filter, group, compare]
+      cantidad_productos_mencionados:
+        type: integer
+        nullable: false
+        description: Cantidad de productos comercialmente relevantes mencionados.
+        operations: [filter, group, aggregate]
+      cantidad_productos_comprados:
+        type: integer
+        nullable: false
+        description: Cantidad de productos con se_compro=true.
+        operations: [filter, group, aggregate]
+  descriptive_insights:
+    source: dashboard_v2.vw_high_life_insights_descriptivos_generales
+    use_when: Explicaciones y evidencia textual general de la conversación.
+    grain: Una fila por conversación; texto libre no agregable como categoría.
+    profile: descriptive_conversation
+    data_quality_note: 'Tiene conversation_id (se puede unir normalmente, igual que Boggi). 7.811 filas
+      totales — más que el total de conversaciones (3.092); no se investigó si tiene duplicados o filas
+      huérfanas propias, tratar con cautela hasta confirmar.'
+    fields:
+      resumen_ejecutivo_conversacion: {type: text, nullable: true, description: Resume qué quería el cliente, qué se negoció, qué compró y qué quedó sin resolver., operations: [select_evidence]}
+      que_quiere_el_cliente_y_que_tenemos: {type: text, nullable: true, description: Match, mismatch o solución parcial entre necesidad y oferta disponible., operations: [select_evidence]}
+      que_no_estamos_resolviendo: {type: text, nullable: true, description: Principal brecha accionable que explica la no compra o compra parcial., operations: [select_evidence]}
+      por_que_llega_y_por_que_compra: {type: text, nullable: true, description: Conecta motivador de visita, fuente de inspiración y driver real de cierre., operations: [select_evidence]}
+      rol_de_a_medida_en_la_conversacion: {type: text, nullable: true, description: Si la confección a medida fue relevante en la conversación., operations: [select_evidence]}
+      evaluacion_ejecucion_vendedor: {type: text, nullable: true, description: Evalúa investigación, iniciativa, cierre, soluciones y manejo de objeciones., operations: [select_evidence]}
+      mejores_practicas_detectadas: {type: text, nullable: true, description: Conductas replicables y claramente valiosas. NULL si no hay ninguna destacable., operations: [select_evidence]}
+      errores_principales_detectados: {type: text, nullable: true, description: Fallas observables con impacto real. NULL si no hay error claro., operations: [select_evidence]}
+      insight_cruzado_principal: {type: text, nullable: true, description: Conecta al menos dos variables reales del caso., operations: [select_evidence]}
+      accion_sugerida: {type: text, nullable: true, description: Una única acción corta, concreta y ejecutable., operations: [select_evidence]}
+  categorical_product_insights:
+    source: dashboard_v2.vw_high_life_insights_categoricos_por_producto
+    use_when: Atributos y resultados categóricos por producto mencionado.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto dentro de la conversación. Clave de join con descriptive_product_insights., operations: [join_key, filter]}
+      producto_index_relacionado: {type: integer, nullable: true, description: Vincula un producto complementario/alternativo con su producto principal., operations: [join_key, filter]}
+      producto:
+        configured_values: &producto_enum [abrigo, accesorios, blazer_y_saco, calzado, camisa, chamarra_y_chaleco, jeans, otro, pantalon, polos_y_playeras, separ_pantalon, separ_saco, sweater, traje]
+        observed_values: *producto_enum
+        type: text
+        nullable: false
+        description: 'Categoría normalizada. Más mencionados en High Life: traje=1.393, camisa=958,
+          chamarra_y_chaleco=478, accesorios=469, pantalon=457, blazer_y_saco=453.'
+        operations: [filter, group, compare]
+      rol_producto_en_conversacion: {configured_values: &rol_producto [alternativo, complementario, no_claro, principal], observed_values: *rol_producto, type: text, nullable: false, description: Rol dominante del producto en la historia comercial., operations: [filter, group, compare]}
+      ocasion_de_uso: {configured_values: &ocasion_de_uso [boda, casual, evento, no_claro, regalo, trabajo], observed_values: *ocasion_de_uso, type: text, nullable: true, description: Ocasión para la que el cliente considera usar el producto., operations: [filter, group, compare]}
+      fit_buscado: {configured_values: &fit_buscado [no_claro, regular, relaxed, slim], observed_values: *fit_buscado, type: text, nullable: true, description: Calce buscado, sólo con evidencia suficiente., operations: [filter, group, compare]}
+      color_solicitado_producto: {configured_values: &color_enum [amarillo_naranja, azul, blanco_hueso, cafe_beige, gris, multicolor_otros, negro, rojo_vino, rosa_morado, verde], observed_values: *color_enum, type: text, nullable: true, description: Color principal solicitado., operations: [filter, group, compare]}
+      color_comprado_producto: {configured_values: *color_enum, observed_values: *color_enum, type: text, nullable: true, description: Color final comprado. Sólo si se_compro=true., operations: [filter, group, compare]}
+      color_o_diseno_relevante: {configured_values: &si_no_minuscula ['no', si], observed_values: *si_no_minuscula, type: text, nullable: true, description: si = color/diseño influyó realmente en la decisión., operations: [filter, group, compare]}
+      talla_solicitada_producto: {configured_values: &talla_enum [a_medida, chica_34-36, dos_extra_grande_50+, extra_grande_44-46-48, grande_42, mediana_38-40], observed_values: *talla_enum, type: text, nullable: true, description: Rango de talla principal buscado., operations: [filter, group, compare]}
+      talla_comprada_producto: {configured_values: *talla_enum, observed_values: *talla_enum, type: text, nullable: true, description: Talla final comprada. Sólo si se_compro=true., operations: [filter, group, compare]}
+      percepcion_calidad: {configured_values: &percepcion_calidad [confeccion, marca, multiples, no_claro, relacion_valor_precio, tela], observed_values: *percepcion_calidad, type: text, nullable: true, description: Dimensión que sostiene la percepción de calidad/valor., operations: [filter, group, compare]}
+      se_compro: {type: boolean, configured_values: [false, true], observed_values: [false, true], nullable: false, description: true sólo cuando el producto termina resuelto en compra., operations: [filter, group, compare]}
+      resultado_producto: {configured_values: &resultado_producto [comprado, no_comprado, pendiente, reemplazado], observed_values: *resultado_producto, type: text, nullable: true, description: comprado (equivale a se_compro=true); no_comprado; reemplazado; pendiente., operations: [filter, group, compare]}
+      motivo_venta_perdida_producto: {configured_values: &motivo_perdida_producto [calidad_valor, diseno_estilo, ejecucion_vendedor, falta_color, falta_modelo, falta_talla, fit, no_claro, precio, tiempo_entrega], observed_values: *motivo_perdida_producto, type: text, nullable: true, description: Causa dominante de la pérdida de este producto específico., operations: [filter, group, compare]}
+      urgencia_cliente: {configured_values: *urgencia_general, observed_values: *urgencia_general, type: text, nullable: true, description: Urgencia asociada específicamente a este producto., operations: [filter, group, compare]}
+      sensibilidad_precio: {configured_values: *sensibilidad_precio_general, observed_values: *sensibilidad_precio_general, type: text, nullable: true, description: Sensibilidad al precio asociada a este producto., operations: [filter, group, compare]}
+      objecion_principal: {configured_values: &objecion_principal [calidad, comparacion_competencia, estilo_diseno, fit, marca, precio, tiempo_entrega, urgencia], observed_values: *objecion_principal, type: text, nullable: true, description: Objeción comercial dominante expresada sobre este producto., operations: [filter, group, compare]}
+      hubo_manejo_objecion: {type: boolean, configured_values: [false, true], observed_values: [false, true], nullable: false, description: true sólo si el vendedor trabaja realmente la objeción., operations: [filter, group, compare]}
+      resultado_manejo_objecion: {configured_values: &resultado_manejo_objecion [exitoso, fallido, no_aplica, parcial], observed_values: *resultado_manejo_objecion, type: text, nullable: false, description: Resultado del manejo de la objeción., operations: [filter, group, compare]}
+      solucion_ante_falta: {configured_values: &solucion_ante_falta [a_medida, ajuste_sastreria, busqueda_otra_tienda, no_aplica, sin_solucion, sustitucion_funciona, sustitucion_no_funciona], observed_values: *solucion_ante_falta, type: text, nullable: false, description: Solución ofrecida ante falta real de talla, color, modelo o disponibilidad., operations: [filter, group, compare]}
+      hubo_ofrecimiento_complementario: {type: boolean, configured_values: [false, true], observed_values: [false, true], nullable: false, description: true si el vendedor propone activamente un complemento vinculado a este producto., operations: [filter, group, compare]}
+      hubo_ofrecimiento_a_medida: {type: boolean, configured_values: [false, true], observed_values: [false, true], nullable: false, description: true si el vendedor propone explícitamente a_medida para este producto., operations: [filter, group, compare]}
+      resultado_a_medida: {configured_values: &resultado_a_medida [cierra_venta, no_aplica, no_cierra_venta], observed_values: *resultado_a_medida, type: text, nullable: false, description: Resultado comercial de la confección a medida para este producto., operations: [filter, group, compare]}
+      disparador_de_cierre: {configured_values: &disparador_cierre [a_medida, asesoria_vendedor, calidad_producto, fit_correcto, paquete_completo, promocion, urgencia], observed_values: *disparador_cierre, type: text, nullable: true, description: Factor principal que destraba/impulsa el cierre de este producto. Sólo aplica si hubo compra., operations: [filter, group, compare]}
+  descriptive_product_insights:
+    source: dashboard_v2.vw_high_life_insights_descriptivos_por_producto
+    use_when: Evidencia y explicación textual por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index., operations: [join_key, filter]}
+      resumen_producto: {type: text, nullable: true, description: Mini-historia comercial del producto., operations: [select_evidence]}
+      preferencias_cliente_producto: {type: text, nullable: true, description: Fit, color, diseño, ocasión y preferencias sobre este producto., operations: [select_evidence]}
+      brechas_de_inventario_producto: {type: text, nullable: true, description: Faltas de talla, color, modelo o producto y su impacto., operations: [select_evidence]}
+      sensibilidad_precio_y_umbral_producto: {type: text, nullable: true, description: Cómo pesó el precio y cualquier umbral concreto mencionado., operations: [select_evidence]}
+      objeciones_y_respuesta_vendedor_producto: {type: text, nullable: true, description: La objeción, la respuesta del vendedor y su resultado., operations: [select_evidence]}
+      complementarios_y_paquete_producto: {type: text, nullable: true, description: Complementarios/paquete vinculados a este producto y su resultado., operations: [select_evidence]}
+      rol_de_a_medida_producto: {type: text, nullable: true, description: Si la confección a medida fue ofrecida, considerada, rechazada o tuvo impacto., operations: [select_evidence]}
+      resultado_final_producto: {type: text, nullable: true, description: Si terminó comprado, no comprado, reemplazado o pendiente., operations: [select_evidence]}
+      accion_sugerida_producto: {type: text, nullable: true, description: Una única acción concreta vinculada a la fricción real de este producto., operations: [select_evidence]}
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'LIMITACIÓN PRINCIPAL: el checklist tiene tres rubrics incompatibles (viejo, sólo 546 filas realmente pobladas
+  entre 2026-06-09 y 2026-06-24; v8 del 2026-08-10 al 2026-09-08, 840 filas; v10 desde 2026-09-08, 14 filas), y
+  un hueco real de 1.659 conversaciones (2026-06-24 a 2026-09-08) sin ningún checklist poblado -causa raíz
+  cerrada en V4: el prompt de checklist simplemente no corrió en producción en ese rango, mientras insights sí
+  siguió activo (99,9% de esas filas tienen fila en categorical_insights); no es una falla de datos-. Ver
+  metadata.known_findings_v1 y metadata.hallazgos_criticos_verificados_2026-09-09 (corregido V3: V1/V2 afirmaban
+  erróneamente "2.205 filas hasta 2026-08-15" confundiendo corte de fecha con campo realmente poblado).'
+- 'vendedorsaludasinfraesedepresion (VendedorSaludaSinFraseDePresion) no tuvo datos en el rubric v8. En v10 fue
+  sustituido por vendedordabienvenidaysepresentaconsunombre, que sí recibe datos.'
+- categorical_insights cubre todo el histórico sin el hueco de performance, pero no se confirmó si hay
+  población idéntica entre ambas fuentes en el rango de la discontinuidad.
+- descriptive_insights tiene más filas que conversaciones totales (7.811 vs 3.092) — no se investigó si hay
+  duplicados o huérfanas propias.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

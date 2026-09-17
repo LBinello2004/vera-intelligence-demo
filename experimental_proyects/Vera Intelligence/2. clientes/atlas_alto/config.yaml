@@ -1,0 +1,58 @@
+client_id: atlas
+display_name: "Atlas"
+tenant: "Atlas"
+model: gemini-3.7-flash
+data_map: "2. clientes/atlas_alto/data_map/VI Data Map Atlas V2.yaml"
+
+# Cada fuente declara el campo que debe contener el tenant autorizado. El
+# validador SQL exige el filtro de forma deterministica antes de ejecutar.
+# Las 5 vistas principales usan seller_id. insights_descriptivos_generales
+# usa seller_name (no tiene seller_id ni conversation_id) -mismo patron que
+# se vio en Maga-.
+sources:
+  dashboard_v2.vw_atlas_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_atlas_rendimiento_vendedor:
+    tenant_field: seller_id
+  dashboard_v2.vw_atlas_insights_categoricos_generales:
+    tenant_field: seller_id
+  dashboard_v2.vw_atlas_insights_descriptivos_generales:
+    tenant_field: seller_name
+  dashboard_v2.vw_atlas_insights_categoricos_por_producto:
+    tenant_field: seller_id
+  dashboard_v2.vw_atlas_insights_descriptivos_por_producto:
+    tenant_field: seller_id
+
+# Busqueda vectorial (2026-09-15): habilitada tras verificar en vivo 10.805 embeddings reales para
+# seller_id='Atlas' en analytics_v2.conversation_embeddings, con el embedding_config_id vigente del
+# proyecto. resumen_verificado no esta disponible para este cliente (ver
+# _DESCRIPTIVOS_UNSUPPORTED_TENANTS en vector_search.py -su vista de insights descriptivos no tiene
+# conversation_id, mismo problema que Maga), pero el resto de search_conversations (fragmento
+# reconstruido, tienda, vendedor, fecha, distancia relativa) funciona igual que en los demas
+# clientes.
+vector_search:
+  top_k: 5
+
+# Fuentes semanticas autorizadas. El agente no puede listar ni solicitar otros
+# contenidos de Langfuse; siempre resuelve la version marcada production.
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Atlas/checklist"
+    label: production
+    business_scope: "Criterios de atención y desempeño del vendedor en tienda de colchones"
+  conversation_insights:
+    name: "clientes/Atlas/insights"
+    label: production
+    business_scope: "Motivos de no compra, necesidad del cliente, premiumización, objeciones, competencia, complementos y prueba de producto"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Atlas no tiene RAG: su prompt de checklist no declara geminiFileSearchStoreName
+# (verificado en Langfuse) -a diferencia de Farma24/Maga, no hay catálogo de
+# productos conectado como herramienta de este cliente.

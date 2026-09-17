@@ -1,0 +1,192 @@
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar usefulforanalysis IS TRUE y contar conversaciones distintas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '9.998 conversaciones analizables'
+
+  - id: q02_resultado_general
+    pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe usar tipointeraccion, no confundirlo con secompro (que es por producto).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE tipointeraccion = 'Compra') AS compras,
+        COUNT(*) FILTER (WHERE usefulforanalysis) AS base
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren'
+    respuesta_esperada: '7.785 de 9.998 (77,9%)'
+
+  - id: q03_consulta_tecnica_trap
+    pregunta: ¿Qué porcentaje de conversaciones terminan sin que el cliente compre?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: "Consulta técnica" es un valor DISTINTO de "No compra" en tipointeraccion -el agente
+      no debe mezclarlos sin aclarar, ni ignorar "Consulta técnica" como si no existiera.'
+    sql: |
+      SELECT tipointeraccion, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 2 DESC
+    respuesta_esperada: 'No compra=4.543 (45,5%) y Consulta técnica=1.208 (12,1%) son categorías
+      separadas -el agente debe distinguirlas, no sumarlas sin aclarar ni ignorar la segunda'
+
+  - id: q04_tasa_investiga_necesidad
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor investiga la necesidad del cliente?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE investiganecesidadcliente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE investiganecesidadcliente IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren'
+    respuesta_esperada: '7.043 de 8.364 (84,2%)'
+
+  - id: q05_mesa_experiencia_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor invita a la Mesa de Experiencia?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: N/A es mayoría (70,6%) por diseño -sólo aplica a Smart Home/experiencias demostrables-,
+      el agente debe aclarar esto, no presentar el N/A como incumplimiento generalizado.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE invitaamesadeexperiencia = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE invitaamesadeexperiencia IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren'
+    respuesta_esperada: '2.484 de 3.980 (62,4%), aclarando que sólo aplica a una minoría de
+      conversaciones relacionadas con Smart Home/experiencia demostrable (N/A=70,6% del total, por
+      diseño del criterio)'
+
+  - id: q06_top_categoria_producto
+    pregunta: ¿Cuál es la categoría de producto más consultada?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Debe usar la vista de producto, grano por producto no por conversación.
+    sql: |
+      SELECT categoria, COUNT(*) AS total
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren'
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 5
+    respuesta_esperada: 'Cables=2.862 (17,7% de 16.125 filas de producto), seguido de Energia=2.476 y
+      Casa y oficina=1.694'
+
+  - id: q07_respuesta_falta_producto_trap
+    pregunta: Cuando un producto no está disponible, ¿qué hace el vendedor con más frecuencia?
+    fuentes_requeridas: [categorical_product_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: este campo tiene decenas de variantes de texto libre fuera del enum configurado
+      (incluido al menos un dato corrupto). El agente debe advertir esta fragmentación o agrupar por
+      categoría semántica, no presentar una distribución exacta como si el campo fuera un enum
+      limpio.'
+    sql: |
+      SELECT respuestaantefaltadeproducto, COUNT(*)
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren' AND disponibleentienda = 'No'
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 10
+    respuesta_esperada: 'El agente debe advertir que este campo tiene muchas variantes de texto y no
+      es un enum perfectamente limpio antes de dar una distribución; la categoría más frecuente es
+      "no dio solución" (agrupando variantes de tilde), seguida de "ofreció un producto similar"'
+
+  - id: q08_tasa_cambio_opinion
+    pregunta: ¿Con qué frecuencia el cliente cambia de opinión y elige un producto distinto al que buscaba?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Debe distinguir las 3 categorías de cambiodeopinion.
+    sql: |
+      SELECT cambiodeopinion, COUNT(*)
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren'
+      GROUP BY 1
+      ORDER BY 2 DESC
+    respuesta_esperada: 'Mantiene su elección original=11.577 (71,8%, mayoría), decide no comprar
+      nada=4.125 (25,6%), elige otro producto=423 (2,6%, minoría real)'
+
+  - id: q09_tasa_programa_lealtad
+    pregunta: ¿Con qué frecuencia el vendedor ofrece o reconoce el programa de lealtad (Steren Card)?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE ofreceprogramadelealtad = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE ofreceprogramadelealtad IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren'
+    respuesta_esperada: '5.665 de 7.876 (71,9%)'
+
+  - id: q10_motivo_no_compra_null_trap
+    pregunta: ¿Cuál es el motivo principal de no compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: motivo_no_compra mezcla NULL real y el string "N/A" para "no aplica" -el agente debe
+      filtrar ambos como no-aplicable al calcular la distribución sobre no-compras reales, sin
+      confundir "no determinable" (un motivo real, aunque vago) con "no aplica" (la pregunta no
+      corresponde).'
+    sql: |
+      SELECT motivo_no_compra, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND tipointeraccion = 'No compra'
+      GROUP BY 1
+      ORDER BY 2 DESC
+    respuesta_esperada: '"Motivo no determinable o conversación insuficiente" es el más frecuente
+      (1.041 de 4.543 no-compras, ~22,9%) — el agente debe aclarar que es un motivo vago/indeterminado,
+      no un motivo específico bien identificado'
+
+  - id: q11_genero_distribucion
+    pregunta: ¿Cómo se distribuyen los clientes por género?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Debe presentar ambos valores con sus conteos y porcentajes.
+    sql: |
+      SELECT genero_cliente, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren'
+      GROUP BY 1
+      ORDER BY 2 DESC
+    respuesta_esperada: 'Masculino=12.420 (91,8%), Femenino=1.116 (8,2%)'
+
+  - id: q12_tasa_confirma_pago
+    pregunta: ¿En qué porcentaje de los cierres el vendedor confirma el monto y método de pago?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Base evaluada = Sí + No, excluir N/A y NULL. Debe exigir los DOS componentes (monto + método).
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE confirmamontoymetododepago = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE confirmamontoymetododepago IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren'
+    respuesta_esperada: '2.957 de 7.064 (41,9%) — tasa baja cuando aplica'
+
+  - id: q13_insights_descriptivos_evidencia_trap
+    pregunta: Dame algunos ejemplos textuales de objeciones que mencionan los clientes.
+    fuentes_requeridas: [insights_descriptivos]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: es texto libre, no debe agregarse ni presentarse como una distribución/ranking -sólo
+      evidencia puntual con contexto (fecha/tienda si están disponibles).'
+    sql: |
+      SELECT objeciones_mencionadas_cliente, seller_name, store_name, upload_time_mexico
+      FROM dashboard_v2.vw_steren_insights_descriptivos
+      WHERE seller_name = 'Steren' AND objeciones_mencionadas_cliente IS NOT NULL
+      LIMIT 5
+    respuesta_esperada: 'El agente debe dar ejemplos textuales puntuales, no una distribución
+      agregada ni un ranking de objeciones'

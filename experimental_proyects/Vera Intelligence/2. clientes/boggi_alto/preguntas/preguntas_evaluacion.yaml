@@ -1,0 +1,204 @@
+metadata:
+  name: Preguntas de evaluación VI - Boggi
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas.
+  data_map_version: VI Data Map Boggi V1.yaml
+  tenant: Boggi
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-07
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". Las preguntas marcadas es_trampa=true están diseñadas
+    específicamente para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas (COUNT DISTINCT conversation_id).
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_demografia
+      WHERE seller_id = 'Boggi' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '721'
+
+  - id: q02_tasa_se_presenta
+    pregunta: ¿En qué porcentaje de las interacciones evaluables el vendedor se presentó?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - vendedorsepresenta admite Sí/No/N/A; la tasa se calcula sobre Sí+No.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorsepresenta = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorsepresenta IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_boggi_rendimiento_vendedor
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'Sí=222, base evaluada=712, tasa=31,18%'
+
+  - id: q03_tasa_explica_marca
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor explicó algo sobre la marca Boggi?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - Sólo cuenta explicar un atributo sustantivo de la marca (origen, estilo, sastrería, calidad); mencionar
+      "Boggi" únicamente como saludo no alcanza.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorexplicalamarca = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorexplicalamarca IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_boggi_rendimiento_vendedor
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'Sí=63, base evaluada=663, tasa=9,50%'
+
+  - id: q04_resultado_no_es_dual_source
+    pregunta: ¿Cuántas conversaciones terminaron en compra?
+    fuentes_requeridas: [demography]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA (inversa a la de otros clientes): en Boggi, demography.tipointeraccion y
+      categorical_insights.tipo_interaccion coinciden en el 100% de los casos (no son dos mediciones
+      independientes acá). El agente no debería advertir sobre una discrepancia que no existe para este
+      cliente, ni tratarlas como fuentes en conflicto.'
+    sql: |
+      SELECT tipointeraccion, COUNT(*) AS total
+      FROM dashboard_v2.vw_boggi_demografia
+      WHERE seller_id = 'Boggi'
+      GROUP BY tipointeraccion
+    respuesta_esperada: 'compra=314, no_compra=466, cambio=2'
+
+  - id: q05_ocasion_uso_dual_source_trap
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor preguntó la ocasión de uso?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: existen dos campos independientes — hubo_pregunta_ocasion_de_uso (categorical_insights,
+      fuente primaria) y vendedorpreguntaocasionuso (performance, checklist). Coinciden 90,3% de las veces.'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_pregunta_ocasion_de_uso) AS con_pregunta,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_generales
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'Usando hubo_pregunta_ocasion_de_uso (categorical_insights, fuente primaria), no
+      vendedorpreguntaocasionuso del checklist.'
+
+  - id: q06_complementarios_dual_source_trap
+    pregunta: ¿En qué porcentaje de conversaciones el vendedor ofreció productos complementarios?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: hubo_ofrecimiento_complementarios (categorical_insights) y vendedorsugiriocomplementos
+      (performance) coinciden sólo 76,8% de las veces en Boggi -la peor alineación medida en este batch-.
+      Usar siempre hubo_ofrecimiento_complementarios como fuente primaria.'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_ofrecimiento_complementarios) AS con_oferta,
+        COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_generales
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'Usando hubo_ofrecimiento_complementarios (fuente primaria), no
+      vendedorsugiriocomplementos del checklist.'
+
+  - id: q07_legacy_programa_privilege_trap
+    pregunta: ¿Cuántas veces el vendedor ofreció el programa Privilege?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: vendedorofreceprogramaprivilege existe como columna pero está 100% NULL (0 de 782 filas) y no
+      forma parte del checklist v5 vigente de Boggi. El agente debe aclarar que no hay datos sobre este
+      criterio en absoluto (ni siquiera histórico), no inventar un número ni confundirlo con otro campo.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorofreceprogramaprivilege IS NOT NULL) AS con_dato,
+        COUNT(*) AS total
+      FROM dashboard_v2.vw_boggi_rendimiento_vendedor
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'No hay datos sobre este criterio (0 de 782 filas pobladas) — el agente debe decir
+      que no puede responder esto, no inventar una cifra.'
+
+  - id: q08_distribucion_resultado_general
+    pregunta: Dame la distribución de resultado_general de las conversaciones.
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Usar COUNT(DISTINCT conversation_id) para evitar las 34 filas huérfanas.
+    sql: |
+      SELECT resultado_general, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_generales
+      WHERE seller_id = 'Boggi'
+      GROUP BY resultado_general
+      ORDER BY total DESC
+    respuesta_esperada: 'no_compra=472, compra_total=230, compra_parcial=76, cambio=1'
+
+  - id: q09_top_motivo_venta_perdida
+    pregunta: De las conversaciones con venta perdida, ¿cuál es el motivo principal más frecuente?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Filtrar hubo_venta_perdida IS TRUE; excluir no_aplica del ranking.
+    sql: |
+      SELECT motivo_principal_venta_perdida, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_generales
+      WHERE seller_id = 'Boggi' AND hubo_venta_perdida IS TRUE
+      GROUP BY motivo_principal_venta_perdida
+      ORDER BY total DESC
+    respuesta_esperada: 'inventario=185 es el más frecuente (siguen ejecucion_vendedor=74, diseno_estilo=15,
+      no_aplica=8, precio=7, fit=5, tiempo_entrega=4)'
+
+  - id: q10_top5_producto
+    pregunta: ¿Cuáles son los productos más mencionados?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Agrupar por producto sobre categorical_product_insights (grano por producto).
+    sql: |
+      SELECT producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_por_producto
+      WHERE seller_id = 'Boggi'
+      GROUP BY producto
+      ORDER BY total DESC
+      LIMIT 5
+    respuesta_esperada: 'pantalon=176, polos_y_playeras=171, camisa=165, blazer_y_saco=131, calzado=96'
+
+  - id: q11_top_objecion_principal
+    pregunta: ¿Cuál es la objeción más común que expresan los clientes sobre los productos?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Filtrar objecion_principal IS NOT NULL antes de rankear.
+    sql: |
+      SELECT objecion_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_por_producto
+      WHERE seller_id = 'Boggi' AND objecion_principal IS NOT NULL
+      GROUP BY objecion_principal
+      ORDER BY total DESC
+    respuesta_esperada: 'fit=103 es la más común (siguen estilo_diseno=97, precio=61, urgencia=25,
+      calidad=20, tiempo_entrega=11, marca=2, comparacion_competencia=1)'
+
+  - id: q12_tasa_ofrece_descuentos
+    pregunta: ¿En qué porcentaje de las conversaciones el vendedor mencionó descuentos o promociones?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - No requiere que haya habido una objeción de precio previa; base evaluada = Sí+No.
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorofrecedescuentospromociones = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorofrecedescuentospromociones IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_boggi_rendimiento_vendedor
+      WHERE seller_id = 'Boggi'
+    respuesta_esperada: 'Sí=521, base evaluada=660, tasa=78,94%'
+
+  - id: q13_motivador_visita_taxonomy_trap
+    pregunta: Dame la distribución completa de motivador de visita de todo el histórico.
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 3
+    requisitos:
+    - 'TRAMPA: motivador_visita tiene dos generaciones de taxonomía conviviendo. Como la pregunta pide "todo
+      el histórico", el agente debería incluir ambos conjuntos.'
+    sql: |
+      SELECT motivador_visita, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_boggi_insights_categoricos_generales
+      WHERE seller_id = 'Boggi'
+      GROUP BY motivador_visita
+      ORDER BY total DESC
+    respuesta_esperada: 'no_claro=456, promocion=86 (legado), necesidad_especifica=83 (legado),
+      reposicion_renovacion=42, uso_cotidiano=19, evento_formal_social=6, regalo=6, viaje=5, trabajo=3,
+      aparador=1 (legado), NULL=106'

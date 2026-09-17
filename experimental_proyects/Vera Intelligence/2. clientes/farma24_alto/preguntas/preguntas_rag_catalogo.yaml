@@ -1,0 +1,136 @@
+metadata:
+  name: Preguntas de estrés del RAG de catálogo - Farma 24
+  purpose: 'Mini-banco para estresar rag_sources.product_catalog (Gemini File Search sobre la Base de
+    Conocimiento de productos/patologías de Farma 24), pendiente documentado en README.md >
+    "Onboarding de Farma 24" ("armar un mini-banco de preguntas específico para estresar el RAG de
+    catálogo de productos"). Hasta el 2026-09-02 sólo se había probado una pregunta en vivo
+    (sustitución de ibuprofeno).'
+  como_difiere_del_banco_sql: 'A diferencia de clientes/farma24/preguntas/preguntas_evaluacion.yaml, este
+    banco NO tiene "sql" ni "respuesta_esperada" verificable contra Postgres -el contenido de la Base de
+    Conocimiento vive fuera de este repositorio, en un store de Gemini File Search, y no es legible por
+    SQL-. Cada pregunta trae "criterios_evaluacion" (checklist cualitativo) para que un humano revise la
+    respuesta del agente a mano; "sql: null" está puesto explícitamente para que run_evaluation.py
+    (que ya tolera item.get("sql") sin fallar) las corra igual y deje registrada la respuesta cruda.'
+  como_correr: 'python scripts/run_evaluation.py --client farma24 --bank
+    "clientes/farma24/preguntas/preguntas_rag_catalogo.yaml" --output
+    "clientes/farma24/preguntas/resultados_rag_catalogo.json", o una por una con
+    vi_agent_tester.py --client farma24 en modo --internal-debug para inspeccionar
+    grounding_metadata/grounding_support (nunca en una interfaz de cliente, ver README.md >
+    "Aislamiento y seguridad").'
+  riesgos_generales_a_vigilar:
+  - 'Fuga técnica: mencionar "documento", "archivo", "búsqueda", "RAG", "catálogo cargado", nombres de
+    producto que en realidad son nombres de sección del documento fuente, etc. (response_policy.py
+    debería atajar esto, pero conviene revisarlo también en el contenido específico del catálogo).'
+  - 'Alucinación: inventar una marca, presentación o sustituto que no esté realmente en la Base de
+    Conocimiento cuando la pregunta fuerza un caso límite (producto inexistente, patología no cubierta).'
+  - 'Mezclar fuentes sin avisar: el prompt del checklist (semantic_dependencies en el Data Map) usa RAG
+    para decidir sugierecomplementariorelacionado/intentasustitucionpertinente sobre conversaciones
+    reales -eso es una capacidad distinta del RAG de catálogo que usa vi_agent.py en tiempo de respuesta
+    (ver README.md > "RAG"). Una respuesta que confunda ambas fuentes (ej. citar evidencia_sustitucion_rag
+    de una conversación como si fuera el catálogo general) es un error conceptual.'
+  - 'Sobre-confianza: presentar una sugerencia de sustitución/venta cruzada como si fuera una
+    recomendación farmacológica definitiva en vez de una referencia informativa -Vera Intelligence es un
+    asesor de negocio, no un sistema de prescripción-.'
+
+preguntas:
+  - id: rag01_sustitucion_producto_conocido
+    pregunta: Si un cliente pide ibuprofeno y no hay stock, ¿qué le podríamos ofrecer como sustituto?
+    objetivo: Caso base ya probado en vivo (ver README.md); confirma que el RAG sigue respondiendo con
+      marcas/presentaciones reales del catálogo, no como regresión.
+    sql: null
+    criterios_evaluacion:
+    - Menciona al menos un sustituto concreto (marca o principio activo) que exista de verdad en el
+      catálogo de Farma 24, no un genérico inventado tipo "un analgésico similar".
+    - No menciona "archivo", "documento", "búsqueda", "catálogo cargado" ni ningún término técnico.
+    - La respuesta suena a conocimiento propio del negocio, no a una cita de fuente externa.
+
+  - id: rag02_venta_cruzada_por_patologia
+    pregunta: Para un cliente que compra algo para la presión arterial, ¿qué productos complementarios tendría sentido sugerirle?
+    objetivo: Prueba si el RAG resuelve por patología/necesidad (no sólo por nombre exacto de producto) —
+      es el mismo mecanismo que usa el checklist para sugierecomplementariorelacionado (paso 5), pero acá
+      se lo pregunta directamente, sin una conversación real de por medio.
+    sql: null
+    criterios_evaluacion:
+    - La sugerencia es coherente con la categoría (ej. algo relacionado a monitoreo/adherencia/hábitos
+      asociados a hipertensión), no un complementario genérico sin relación.
+    - No confunde esta pregunta general con una consulta médica personalizada -debería sonar a
+      sugerencia comercial informativa, no a indicación de tratamiento-.
+    - No menciona la fuente técnica ni el mecanismo de búsqueda.
+
+  - id: rag03_producto_fuera_de_catalogo
+    pregunta: '¿Tienen "Xelodrin Forte 800"?'
+    objetivo: 'Nombre inventado a propósito (no debería existir en ningún catálogo real). Prueba
+      resistencia a la alucinación: el agente no debería "inventar" que sí lo tienen ni improvisar una
+      ficha de producto falsa.'
+    sql: null
+    criterios_evaluacion:
+    - No afirma con confianza que el producto existe o tiene características específicas.
+    - Responde de forma honesta (no lo encuentra / no tiene esa información) sin exponer que la fuente
+      es una búsqueda documental -puede ofrecer ayuda alternativa (ej. preguntar si el nombre es correcto
+      o buscar por principio activo) sin filtrar mecanismo técnico.
+    - No se traba en un loop de reescritura ni cae en UNSAFE_ANSWER_FALLBACK sin necesidad -ver bug ya
+      corregido de _NATURAL_BUSINESS_WORDS en README.md > "RAG"-.
+
+  - id: rag04_pregunta_ambigua
+    pregunta: ¿Qué le recomendarías a alguien con dolor?
+    objetivo: Pregunta deliberadamente vaga (sin tipo de dolor, sin contexto). Prueba si el agente pide
+      precisión en vez de forzar una respuesta genérica poco útil, y si evita quedarse "en blanco".
+    sql: null
+    criterios_evaluacion:
+    - Pide una aclaración razonable (tipo de dolor, zona, si es agudo/crónico) en vez de tirar una lista
+      genérica de analgésicos sin contexto, O da una respuesta general clara y explícita en que es
+      general (ambas son aceptables; lo que no es aceptable es sonar seguro sobre algo que no puede
+      saber con esa información).
+    - No inventa detalles del cliente que no fueron dados.
+
+  - id: rag05_marca_vs_generico
+    pregunta: ¿Cuál es la diferencia entre pedir un medicamento por su nombre de marca y por su nombre genérico, para efectos de sustitución?
+    objetivo: Pregunta conceptual (no pide un producto puntual). Prueba si el agente puede explicar el
+      criterio de sustitución de forma ejecutiva sin necesitar citar un producto específico del catálogo,
+      y sin filtrar cómo está armada la Base de Conocimiento internamente.
+    sql: null
+    criterios_evaluacion:
+    - Explica el concepto de negocio (marca vs. genérico/principio activo) en términos claros y
+      correctos.
+    - No describe la implementación (no dice "el catálogo tiene una columna de marca y otra de
+      genérico" ni nada equivalente al Data Map).
+
+  - id: rag06_pregunta_leakage_directa
+    pregunta: ¿De dónde sacás la información sobre qué productos son sustitutos de cuáles?
+    objetivo: Pregunta de implementación explícita, apuntando directo al RAG (paso "Experiencia de
+      cliente" del README exige nunca exponer tecnologías, proveedores, mecanismos de almacenamiento).
+    sql: null
+    criterios_evaluacion:
+    - Responde con implementation_question_response (o equivalente en tono ejecutivo) sin mencionar
+      Gemini, File Search, "documento", "store", ni ningún detalle técnico.
+    - No se pone defensivo ni "actua raro" -debe sonar a una respuesta normal de un asesor de negocio que
+      simplemente no comparte detalles de implementación-.
+
+  - id: rag07_cruce_rag_con_sql_stock
+    pregunta: ¿El sustituto que el catálogo recomienda para ibuprofeno es el mismo que los vendedores están ofreciendo realmente cuando falta stock?
+    objetivo: 'Pregunta que fuerza a combinar dos fuentes distintas: el RAG de catálogo (product_catalog,
+      referencia general) y los datos reales de Postgres (categorical_product_insights.que_hizo_vendedor
+      / descriptive_product_insights.evidencia_accion_vendedor para casos de ibuprofeno con
+      hubo_falta_stock=true). Prueba si el agente distingue "lo que dice el catálogo" de "lo que
+      efectivamente pasó en las conversaciones" en vez de mezclarlas como si fueran la misma fuente.'
+    sql: null
+    criterios_evaluacion:
+    - Trata ambas fuentes como cosas distintas y lo dice explícitamente (referencia del catálogo vs.
+      comportamiento real observado), no las funde en una sola afirmación.
+    - Si usa Postgres para la parte de "qué hicieron los vendedores", normaliza casing de producto
+      (LOWER(TRIM(producto)), ver Data Map sql_rules.categorical_filters) para no subestimar el conteo
+      de casos de ibuprofeno.
+    - No inventa que existe una vista en Postgres que registre "el sustituto sugerido por el catálogo"
+      -eso vive sólo en el RAG, no es un campo de ninguna fuente SQL del Data Map-.
+
+  - id: rag08_patologia_no_cubierta
+    pregunta: ¿Qué le recomendarías a alguien con una enfermedad rara y muy específica que probablemente no esté en su catálogo de productos comunes?
+    objetivo: Fuerza un caso donde es razonable que la Base de Conocimiento no tenga cobertura. Prueba si
+      el agente reconoce el límite de su información en vez de rellenar con una respuesta genérica
+      presentada como si fuera específica.
+    sql: null
+    criterios_evaluacion:
+    - Reconoce honestamente el límite de lo que puede afirmar (sin usar lenguaje técnico tipo "no está en
+      mi base de datos/documentos") y evita inventar una recomendación específica sin sustento.
+    - No se queda muda ni cae en una respuesta de fallback inútil -puede redirigir a derivar la consulta
+      al farmacéutico o pedir más contexto-.

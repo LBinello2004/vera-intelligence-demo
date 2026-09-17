@@ -1,0 +1,61 @@
+client_id: huerpel_ventas
+display_name: "Huerpel Ventas"
+tenant: "Huerpel"
+model: gemini-3.7-flash
+data_map: "2. clientes/huerpel_ventas_alto/data_map/VI Data Map Huerpel Ventas V3.yaml"
+
+# Sub-marca "Ventas" del grupo Huerpel (México): asesoría comercial de piso (APV) que
+# continúa la atención después de la recepción de Hostess/Hostess Seminuevos. Es la
+# sub-marca de mayor alcance geográfico: 10 tiendas/BDC, 42 asesores, 1.707 conversaciones
+# en demografía / 1.942 filas en rendimiento_vendedor (ver Data Map, known_findings_v1,
+# por qué esos dos números no coinciden -235 filas huérfanas-). Es "esquema delgado" para
+# la parte de insights: existe clientes/Huerpel/Ventas/insights en Langfuse pero NO hay
+# vista de insights materializada en Postgres (mismo patrón que Dalton/Salomon/GAC/
+# Agrosuper/Hyundai) -por eso este config NO declara conversation_insights, igual que
+# Dalton-. Ver clientes/huerpel_hostess_alto/config.yaml para la justificación completa de
+# por qué Huerpel se onboardeó como TRES clientes separados, y el README, sección
+# "Onboarding de Huerpel".
+sources:
+  dashboard_v2.vw_huerpel_ventas_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_huerpel_ventas_rendimiento_vendedor:
+    tenant_field: seller_id
+
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Huerpel/Ventas/checklist"
+    label: production
+    business_scope: "Criterios de venta consultiva del Asesor Profesional de Ventas (APV) de Huerpel: diagnóstico de necesidades, presentación del producto, prueba de manejo, financiamiento, cierre"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Huerpel Ventas no tiene RAG: el prompt de checklist no declara geminiFileSearchStoreName
+# en su config de Langfuse -sólo trae promptId-.
+
+# Búsqueda vectorial habilitada (2026-09-16, ampliación a todos los clientes viables) -mismo
+# seller_id='Huerpel' compartido por las tres sub-marcas, ver justificación completa de
+# `store_names` en huerpel_hostess_alto/config.yaml. Acá la allowlist son las 10 tiendas/BDC de
+# Ventas (coincide con "10 tiendas/BDC" ya documentado arriba), verificadas por SQL directo contra
+# el desglose real de store_name para seller_id='Huerpel' -son exactamente los 10 valores
+# distintos de "Hostess"/"Hostess Seminuevos", 11.375 embeddings en total entre las 10. Cualquier
+# tienda nueva de Ventas que se abra en el futuro necesita agregarse acá a mano -es una allowlist,
+# no una exclusión de las otras dos sub-marcas- para que search_conversations la vea.
+vector_search:
+  top_k: 5
+  store_names:
+    - "BDC"
+    - "Angelopolis"
+    - "Tula"
+    - "Apizaco"
+    - "San Manuel"
+    - "Tulancingo"
+    - "Pachuca"
+    - "Zumpango"
+    - "Cholula"
+    - "Huachinango"

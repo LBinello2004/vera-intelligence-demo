@@ -1,0 +1,734 @@
+metadata:
+  name: VI Data Map Farma24 V4
+  version: 4.0.0
+  client: Farma 24
+  model_target: Gemini 3.7
+  generated_at: '2026-09-02'
+  scope: Sólo seis vistas dashboard_v2 de Farma 24. El tenant ('Farma 24') es fijo para este cliente; no se resuelve
+    dinámicamente. Existe además una tabla `reporte_semanal_farma24` en dashboard_v2 que NO está incluida en este mapa
+    (no se investigó todavía) — no autorizarla hasta revisarla.
+  source_of_truth:
+    checklist_prompt: clientes/Farma 24/checklist (Langfuse, label production, v17 al construir este mapa)
+    insights_prompt: clientes/Farma 24/insights (Langfuse, label production, v10 al construir este mapa)
+    note: Construido con el mismo método que Mens Fashion V3/V4 -leer el texto completo de ambos prompts, sacar el
+      schema real con information_schema.columns, y verificar con GROUP BY contra Postgres QA cualquier enum o
+      relación entre campos que pareciera sospechosa-. Si el checklist o el insights suben de versión, revalidar.
+  domain_notes: 'El dominio de Farma 24 (farmacia) es sustancialmente distinto al de Mens Fashion: el checklist define
+    "interacciones administrativas" (retiros, PAMI, vacunación, toma de presión) donde varios pasos se marcan N/A
+    automáticamente; hay una regla de corte donde todo lo posterior a la despedida/derivación a caja se ignora para
+    evaluar los pasos 1-8; y el checklist exige RAG obligatorio contra una Base de Conocimiento externa (fuera de este
+    Data Map) para decidir venta cruzada (paso 5) y sustitución (paso 6) — el resultado de ese razonamiento se guarda
+    como texto libre en evidencia_ventacruzada_rag / evidencia_sustitucion_rag, pero el Data Map no tiene acceso a esa
+    Base de Conocimiento en sí.'
+  changes_from_v1: 'V2 (2026-08-31, misma jornada que V1) completa la auditoría exhaustiva campo por campo que V1
+    había dejado pendiente (ver pendiente_de_verificar de V1): los 9 criterios Sí/No/N/A del checklist, marca,
+    presentacion, producto, evidencia_*, business_month/business_year, y la relación empírica entre N/A de distintos
+    pasos y la regla de interacción administrativa. Encontró 4 hallazgos nuevos (ver hallazgos_criticos_verificados_2026-08-31_ronda2)
+    y 1 corrección directa a un campo mal declarado (producto.nullable). También motivó, en paralelo, un
+    reliability_warning agregado a semantic_dependencies.banco_provincia después de que el agente real fallara una
+    pregunta trampa sobre esa regla en la primera corrida de clientes/farma24/preguntas/preguntas_evaluacion.yaml
+    (ver detalle en ese archivo, pregunta q11, y en README.md > "Onboarding de Farma 24").'
+  changes_from_v2: 'V3 (2026-09-02) resuelve el punto (2) de pendiente_de_verificar de V2 -origen de las filas
+    huérfanas de descriptive_insights- y agrega 1 hallazgo nuevo encontrado al investigarlo: descriptive_insights
+    dejó de recibir filas nuevas el 2026-08-05, a diferencia de las otras 5 vistas que siguen creciendo. Ver
+    hallazgos_criticos_verificados_2026-09-02 más abajo, la nota actualizada de descriptive_insights y
+    joins.general_evidence, y limitations. Los demás puntos de pendiente_de_verificar de V2 -(1), (3), (4)- siguen
+    abiertos, sin cambios.'
+  changes_from_v3: 'V4 (2026-09-02) cierra una ambiguedad de denominador en
+    categoricos_generales_abordo_banco_provincia_o_cuenta_dni, encontrada al poner a prueba el pipeline de
+    actualizacion automatica del Data Map (ver README.md > "Actualizacion automatica del Data Map", hallazgo 4):
+    dos corridas independientes del agente contra el mismo Data Map V3 dieron 47,6% y 42,2% para la misma pregunta
+    -mismo numerador (35.375), denominador distinto (74.381 vs 83.903)- porque el campo no declaraba
+    explicitamente su base evaluada, a diferencia de los 9 criterios Si/No/N/A de performance que si la tienen
+    (sql_rules.performance_rate). Ver hallazgos_criticos_verificados_2026-09-02_v4 y la nota agregada al campo en
+    sources.categorical_insights.'
+  hallazgos_criticos_verificados_2026-09-02_v4:
+  - 'DENOMINADOR AMBIGUO EN categoricos_generales_abordo_banco_provincia_o_cuenta_dni: verificado contra Postgres
+      QA (257.899 filas totales): si=35.375, no=39.006, no_aplica=9.522, NULL=173.996. sql_rules.performance_rate
+      define la base evaluada como "Si o No, excluyendo N/A y null" para los 9 criterios de performance, pero ese
+      criterio nunca se declaro explicitamente aplicable a este campo categorico de categorical_insights (mismo
+      patron si/no/no_aplica). Aplicando la misma convencion que ya usa el resto del Data Map: base evaluada =
+      si+no = 74.381 (excluyendo no_aplica y NULL), tasa = 35.375/74.381 = 47,6%. Es la convencion correcta -la
+      misma que ya usa sql_rules.performance_rate en todo el resto del mapa-, no una convencion nueva. Se agrego
+      la regla explicita al campo para que no vuelva a quedar implicita.'
+  hallazgos_criticos_verificados_2026-09-02:
+  - 'ORIGEN DE LAS FILAS HUÉRFANAS DE descriptive_insights RESUELTO: no es un bug de escritura ni conversaciones
+      borradas de demography -es un corte de arranque de pipeline. Verificado contra Postgres QA: el 100% de las
+      filas huérfanas de descriptive_insights (y de las 52 huérfanas de performance) tienen uploaded_at_local
+      ANTERIOR a la fecha mínima de demography (2026-06-02 06:01:13) -cero huérfanas con fecha igual o posterior a
+      ese momento-. El volumen diario de demography ya arranca a régimen normal el primer día (2287 filas el
+      2026-06-02, contra 2399/2390 los días siguientes), no hay una rampa de adopción gradual: es un go-live limpio
+      del pipeline de checklist/demography el 2026-06-02, mientras que el pipeline de insights (descriptive_insights)
+      ya venía ingiriendo desde el 2026-05-13. Toda conversación subida en esas 3 semanas previas tiene lectura de
+      insights descriptivos pero nunca tuvo checklist -de ahí el huérfano-. No usar esta explicación para asumir que
+      el mismo patrón aplica a otras vistas sin verificar -categorical_insights, categorical_product_insights y
+      descriptive_product_insights no tienen huérfanas (0 en los tres casos, sin cambios respecto a V2).'
+  - 'HALLAZGO NUEVO, no documentado hasta ahora: descriptive_insights (vw_farma24_insights_descriptivos_generales)
+      dejó de recibir filas nuevas el 2026-08-05 (216.346 filas, last_updatedat máximo = 2026-08-05T13:29:58Z,
+      idéntico a los 216.346 de la auditoría del 2026-08-31 -es decir, ya estaba congelada en ese momento, sólo que
+      no se había notado-). Las otras 5 vistas (demography, performance, categorical_insights,
+      categorical_product_insights, descriptive_product_insights) siguen recibiendo filas hasta hoy (2026-09-02,
+      last_updatedat máximo = hoy en las 5). Es la ÚNICA vista de las 6 con este comportamiento -no se investigó la
+      causa (no está en el alcance de este Data Map, requiere revisar el pipeline de insights descriptivos
+      generales), sólo se cuantificó y documentó el impacto: cualquier pregunta sobre motivo textual de no-compra
+      (descriptivos_generales_tipo_interaccion_detalle) o sobre business_month/business_year de esta vista NO
+      refleja conversaciones posteriores al 2026-08-05, a diferencia de las demás fuentes del Data Map que sí están
+      al día.'
+  - 'CONTEO DE HUÉRFANAS ACTUALIZADO Y ABIERTO A MONITOREO: hoy (2026-09-02) hay 52.878 filas huérfanas en
+      descriptive_insights sobre 216.346 (24,4%), más que las 48.752 (22,5%) documentadas en la auditoría del
+      2026-08-31 -aunque descriptive_insights está congelada desde el 5 de agosto y por lo tanto ese total no debería
+      cambiar-. Como demography sigue creciendo (257.551 filas el 2026-08-31 -> 258.198 hoy), el aumento es
+      matemáticamente compatible con que la fecha mínima efectiva de demography se haya movido hacia adelante en
+      estos días (ej. por un ajuste de retención o reprocesamiento de datos muy antiguos), lo que convertiría filas
+      antes "matched" en huérfanas sin que nada cambie en descriptive_insights. NO SE VERIFICÓ esta hipótesis contra
+      un snapshot histórico de demography.min(uploaded_at_local) -no existe tal snapshot-, así que queda como
+      hipótesis razonable, no como hallazgo confirmado. Queda abierto: la próxima vez que se audite este Data Map,
+      volver a medir demography.min(uploaded_at_local) y el conteo de huérfanas; si demography.min sigue
+      2026-06-02T06:01:13 y el conteo de huérfanas sigue creciendo, la hipótesis de retención queda descartada y hay
+      que investigar otra causa.'
+  hallazgos_criticos_verificados_2026-08-31:
+  - 'DOS campos de "resultado de la interacción" que pueden discrepar: demography.tipointeraccion (calculado por el
+      checklist, valores "Compra"/"No compra") y categorical_insights.categoricos_generales_resultado (calculado
+      independientemente por el insights, valores "compra"/"no_compra") no siempre coinciden. Verificado cruzando
+      ambas vistas por conversation_id: de ~257k filas, difieren en aproximadamente el 7% de los casos (16.659
+      Compra/no_compra + 1.530 No compra/compra). Cualquier pregunta sobre "cuántas compras hubo" debe declarar
+      explícitamente cuál de los dos campos usa, y idealmente aclarar que son dos lecturas independientes que pueden
+      no coincidir.'
+  - 'DOS campos de "categoría de no compra" con enums DISTINTOS y cobertura muy distinta: demography.categorianocompra
+      (checklist, PascalCase: GestionAdministrativa/Stock/Consulta/Otro/Precio/N/A, poblado en prácticamente el
+      100% de las filas) vs categorical_insights.categoricos_generales_categoria_no_compra (insights, snake_case:
+      gestion_administrativa/stock/consulta/otro/precio/no_aplica, con ~94% de NULL). Usar demography.categorianocompra
+      como fuente primaria; la versión de insights está mucho más incompleta.'
+  - 'categorical_insights.categoricos_generales_gestion_no_compra es una COLUMNA MUERTA: verificado que el 100% de
+      las filas (257.517 de 257.517) son NULL. No usar. El campo equivalente real y poblado es
+      demography.gestionnocompra (checklist).'
+  - 'categorical_insights.categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn tiene el nombre físico
+      TRUNCADO por el límite de 63 caracteres de identificadores de Postgres (falta la "i" final de "dni"). Verificado
+      contra information_schema.columns que ese es el nombre real de la columna, no un error de este mapa.'
+  - 'categorical_product_insights.rol_comercial es NULL para el ~66% de las filas históricas (459.308 de 735.242), y
+      la NULL no está distribuida al azar: es NULL de forma consistente para filas con uploaded_at_local anterior al
+      2026-08-03, y está poblada para filas posteriores. Es un corte de versión del prompt (el campo se agregó
+      recién), no un problema de calidad de datos — no inventar un "motivo" de negocio para esos NULL.'
+  - Todas las 6 vistas usan seller_id como tenant_field de forma consistente (a diferencia de Mens Fashion, donde una
+    vista usaba seller). Un solo profile alcanza para las 6 fuentes.
+  - No se detectaron filas huérfanas con conversation_id NULL en demography (257.551 filas = 257.551 conversation_id
+    distintos), a diferencia del hallazgo de Mens Fashion V3 en su vista categórica general.
+  hallazgos_criticos_verificados_2026-08-31_ronda2:
+  - 'FILAS HUÉRFANAS en descriptive_insights: 48.752 de las 216.346 filas (22,5%) tienen un conversation_id que NO
+      existe en demography bajo NINGÚN seller_id (verificado con LEFT JOIN sin filtrar tenant — no es una fuga entre
+      clientes, son huérfanas puras). Un JOIN de esta vista contra demography descarta automáticamente ese 22,5%; un
+      análisis que use esta vista sola (ej. business_month/business_year o el motivo textual) puede incluir filas sin
+      respaldo en ninguna conversación real. performance tiene el mismo problema en menor escala (412 filas
+      huérfanas, ~0,16%, insignificante). categorical_insights, categorical_product_insights y
+      descriptive_product_insights NO tienen filas huérfanas (0 en los tres casos).'
+  - 'CASING DUPLICADO SISTÉMICO en producto Y marca (categorical_product_insights): no es un caso aislado de la
+      pregunta de falta de stock (como se documentó inicialmente en el golden bank) — afecta a la tabla completa. Ej.
+      "ibuprofeno" tiene 3 variantes de casing distintas sumando 33.299 filas, "protector gástrico" tiene 4 variantes
+      (3.655 filas), "Buscapina"/"buscapina"/"BUSCAPINA" ídem para marca. Cualquier GROUP BY producto o GROUP BY marca
+      sin normalizar (LOWER(TRIM(...)) o similar) subestima y fragmenta el ranking real. Ver
+      sql_rules.categorical_filters para la regla operativa agregada.'
+  - 'producto TENÍA nullable=false en V1 pero está mal: hay 336 filas con producto NULL (de 735.799), verificado
+      directamente contra Postgres. Corregido en este mapa (V2) a nullable=true.'
+  - 'Las correlaciones evidencia<->campo categórico (evidencia_falta_stock con hubo_falta_stock, evidencia_accion_vendedor
+      con que_hizo_vendedor) se cumplen en la gran mayoría de los casos pero NO al 100%: hay excepciones del orden de
+      decenas a pocos miles de filas sobre un total de ~735k (ver detalle en las descripciones de esos campos más
+      abajo). Está documentado como "casi siempre", no como regla absoluta -mismo espíritu que el reliability_warning
+      de semantic_dependencies.banco_provincia-.'
+  - 'La cobertura NULL de categoricos_generales_abordo_banco_provincia_o_cuenta_dni (178.335 de 257.517, ~69%) es
+      MUCHO más amplia que las 16.357 filas donde categoricos_generales_resultado también es NULL (el proxy habitual
+      de "el insights no corrió sobre esta conversación"). Hay 161.978 filas adicionales con resultado poblado pero
+      abordo_banco NULL — es una cobertura genuinamente baja para este campo específico, no explicable sólo por
+      "insights no corrió". Tratar el NULL de este campo como dato faltante amplio, no como señal de una causa única.'
+  - 'Verificación positiva: los 9 criterios Sí/No/N/A del checklist (saludaalinicio, realizadospreguntasdeinvestigacion,
+      explicacomotomarlo, ofrecesolucionactivasinohaystock, sugierecomplementariorelacionado,
+      intentasustitucionpertinente, ofreceadicionalnorelacionado, mencionaserviciosfuturos, despideyacompanaacaja)
+      tienen el enum limpio: sólo Sí/No/N/A/NULL, sin valores inesperados ni variantes de casing. El único NULL en
+      cada campo (1 fila) corresponde a la MISMA conversación huérfana/rota en las 9 columnas simultáneamente, no a 9
+      problemas distintos.'
+  - 'business_month y business_year (descriptive_insights) coinciden EXACTAMENTE con el mes/año calendario de
+      uploaded_at_local en el 100% de la muestra verificada (167.594 filas cruzadas) — no hay un calendario contable
+      distinto ni desfasaje. El caveat de V1 ("no verificado todavía") queda resuelto: son equivalentes al calendario
+      normal.'
+  - 'La regla de interacción administrativa (semantic_dependencies.administrative_interactions) NO produce un patrón
+      de "todo o nada" verificable por correlación de N/A: los pasos 2, 3, 5 y 6 NO están N/A juntos en la mayoría de
+      los casos (la combinación "los 4 en N/A" es sólo 23.245 filas de 257.551; hay combinaciones más frecuentes con
+      sólo 1 o 2 de esos 4 pasos en N/A, ej. 58.132 filas con paso 2 y 6 en N/A pero 3 y 5 no). Esto es consistente
+      con que cada paso tiene, además de la causa administrativa compartida, causas de N/A propias (ej. medicamento
+      crónico para el paso 3, corte de venta antes de la oportunidad para el paso 5). NO intentar inferir "esta
+      conversación fue una interacción administrativa" a partir de la correlación de N/A entre pasos — no es un
+      proxy confiable, y el Data Map no tiene un campo explícito para esa clasificación.'
+  pendiente_de_verificar: 'V2 completó la auditoría exhaustiva campo por campo iniciada en V1 (ver
+    hallazgos_criticos_verificados_2026-08-31_ronda2). El punto (2) de esta lista -origen de las filas huérfanas de
+    descriptive_insights- quedó RESUELTO en V3 (ver hallazgos_criticos_verificados_2026-09-02): es un corte de
+    arranque de pipeline (demography/checklist arrancó el 2026-06-02, tres semanas después que insights), no un bug.
+    V3 también dejó abierto un punto nuevo: por qué descriptive_insights dejó de recibir filas el 2026-08-05
+    mientras las otras 5 vistas siguen actualizándose (no investigado, fuera del alcance de este Data Map), y si el
+    aumento del conteo de huérfanas (48.752 -> 52.878) se debe a que la fecha mínima de demography se movió hacia
+    adelante (hipótesis sin confirmar, ver hallazgos_criticos_verificados_2026-09-02). Puntos que siguen abiertos de
+    V2, de menor severidad: (1) las excepciones puntuales en las correlaciones evidencia<->categórico no se
+    investigaron caso por caso, sólo se cuantificaron; (3) reporte_semanal_farma24 sigue sin investigar ni
+    autorizar; (4) no se verificó la relación entre saludaalinicio/realizadospreguntasdeinvestigacion y la regla 1.A
+    a nivel de transcripción individual (sólo el proxy estadístico de correlación de N/A entre pasos, que resultó
+    no ser un patrón todo-o-nada) — esa relación exacta depende del contenido de cada conversación y no es
+    verificable con SQL agregado.'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige evidencia y existe
+  join declarado.
+- Antes de escribir SQL, resolver profile, grano y tenant.
+- 'Si la pregunta involucra "resultado de la interacción" (compra/no compra) o "categoría de no compra", decidir
+  explícitamente si usar la versión del checklist (demography) o la del insights (categorical_insights) — no son
+  intercambiables, ver hallazgos_criticos_verificados_2026-08-31.'
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si NULL es parte
+  legítima de la respuesta (ej. "en cuántas conversaciones no se evaluó rol_comercial por ser anteriores a agosto").
+- Si la pregunta agrupa o rankea por producto o marca, normalizar casing (LOWER(TRIM(...)) o equivalente) antes de
+  agrupar — ver hallazgos_criticos_verificados_2026-08-31_ronda2 y sql_rules.categorical_filters.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción (versión checklist), categoría y gestión de no-compra, características
+      de la conversación
+    avoid: no usar como única fuente de "resultado" sin aclarar que existe una segunda lectura en categorical_insights
+      que puede discrepar
+  performance:
+    questions: criterios del protocolo de atención (saludo, preguntas de investigación, explicación de uso, venta
+      cruzada, sustitución, adicionales, servicios futuros, despedida)
+    avoid: no tratar N/A como incumplimiento — el checklist marca N/A automáticamente en interacciones administrativas
+      (retiros, PAMI, vacunación, etc.) y tras el cierre de venta
+  categorical_insights:
+    questions: resultado (versión insights), abordaje y tenencia de Banco Provincia/Cuenta DNI
+    avoid: no usar categoricos_generales_categoria_no_compra (muy incompleta) ni categoricos_generales_gestion_no_compra
+      (columna muerta, 100% NULL) — usar los equivalentes de demography
+  descriptive_insights:
+    questions: motivo textual de no compra
+    avoid: no agrupar ni calcular frecuencia de texto libre; recordar que ~24% de las filas de esta vista son
+      huérfanas -conversaciones subidas antes del go-live de demography el 2026-06-02, ver
+      hallazgos_criticos_verificados_2026-09-02- y que la vista dejó de recibir filas nuevas el 2026-08-05 (no
+      refleja conversaciones más recientes, a diferencia de las demás fuentes)
+  categorical_product_insights:
+    questions: producto, marca, presentación, rol comercial, falta de stock, acción del vendedor ante falta de
+      stock, venta con promoción Banco Provincia, si se compró
+    avoid: recordar que rol_comercial es NULL para casi toda la historia anterior a agosto 2026 por corte de versión,
+      no lo trates como "no determinable" del negocio; normalizar casing antes de agrupar por producto o marca
+  descriptive_product_insights:
+    questions: evidencia textual de falta de stock y de la acción del vendedor, por producto
+    avoid: no usar sin la vista categórica cuando hay que confirmar hubo_falta_stock/que_hizo_vendedor
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente. reporte_semanal_farma24 NO
+    está autorizado (no investigado todavía).
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Farma 24') sobre seller_id en cada fuente utilizada.
+  time: Filtrar profiles.standard_conversation.date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir N/A y
+    null. N/A no es incumplimiento (ver semantic_dependencies.administrative_interactions y
+    semantic_dependencies.sale_closed_cutoff).
+  categorical_rate_general_rule: 'AGREGADO V4 (2026-09-02): la misma convencion de performance_rate -base evaluada = valores afirmativo/negativo, EXCLUYENDO cualquier variante de no_aplica/N/A y NULL- aplica a CUALQUIER campo categorico de 2-3 valores con semantica si/no/no_aplica en todo el Data Map, no solo a los 9 criterios de performance. Se agrego explicitamente porque categoricos_generales_abordo_banco_provincia_o_cuenta_dni no la tenia declarada y eso causo que dos corridas del agente calcularan la misma tasa con dos denominadores distintos (47,6% vs 42,2%, ver hallazgos_criticos_verificados_2026-09-02_v4). Antes de calcular una tasa sobre cualquier campo con no_aplica/N/A en sus configured_values, aplicar esta regla salvo que el campo tenga una nota mas especifica que la contradiga explicitamente.'
+  categorical_filters: 'Usar valores de configured_values (no sólo observed_values) respetando tipo, mayúsculas y
+    acentos — OJO: demography.tipointeraccion usa "Compra"/"No compra" con mayúscula inicial y espacio, mientras que
+    categorical_insights.categoricos_generales_resultado usa "compra"/"no_compra" en snake_case. Son dos convenciones
+    de casing distintas para dos campos distintos, no un error de tipeo. EXCEPCIÓN a "usar el valor tal cual": producto
+    y marca (categorical_product_insights) tienen casing inconsistente por variantes de captura, no por diseño —
+    normalizar con LOWER(TRIM(...)) o INITCAP antes de agrupar o rankear, si no el conteo por producto/marca queda
+    fragmentado y subestimado (ver hallazgos_criticos_verificados_2026-08-31_ronda2).'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo
+    (incluye evidencia_ventacruzada_rag y evidencia_sustitucion_rag de performance).
+semantic_dependencies:
+  resultado_dual_source: 'Ver hallazgos_criticos_verificados_2026-08-31. demography.tipointeraccion y
+    categorical_insights.categoricos_generales_resultado son cálculos independientes que discrepan ~7% de las veces.
+    Declarar siempre cuál se usó.'
+  categoria_no_compra_dual_source: 'Preferir demography.categorianocompra (checklist, casi 100% poblado) sobre
+    categorical_insights.categoricos_generales_categoria_no_compra (insights, ~94% NULL).'
+  gestion_no_compra_dead_column: 'categorical_insights.categoricos_generales_gestion_no_compra está 100% NULL. Usar
+    siempre demography.gestionnocompra.'
+  stock: demography.gestionnocompra sólo es interpretable cuando demography.categorianocompra = 'Stock'; para el
+    resto de los casos vale 'no_aplica'. A nivel producto, categorical_product_insights.que_hizo_vendedor sólo es
+    interpretable cuando hubo_falta_stock IS TRUE; si no, vale 'no_aplica'.
+  administrative_interactions: 'Regla 1.A del checklist: retiros web, pedidos ya preparados, IOMA, MEPPES, PAMI
+    oncológico, tratamientos ya autorizados, toma de presión, pesarse y vacunación se consideran "interacciones
+    administrativas" -salvo que en la misma conversación aparezca después asesoramiento farmacéutico real-, y en ese
+    caso los pasos 2 (preguntas de investigación), 3 (explica cómo tomarlo), 5 (venta cruzada) y 6 (sustitución) del
+    checklist se marcan automáticamente N/A. Esos N/A no representan una oportunidad perdida. RELIABILITY WARNING
+    (verificado 2026-08-31 contra Postgres QA, ver hallazgos_criticos_verificados_2026-08-31_ronda2): la N/A de estos
+    4 pasos NO co-ocurre como un bloque uniforme -sólo 23.245 de 257.551 filas tienen los 4 pasos en N/A a la vez;
+    hay combinaciones parciales mucho más frecuentes-. Esto es normal (cada paso también tiene causas de N/A propias),
+    pero significa que la correlación de N/A entre pasos NO sirve como proxy para detectar si una conversación fue
+    una interacción administrativa; no construir SQL que intente esa inferencia.'
+  sale_closed_cutoff: 'Regla 1.B del checklist: una vez que el vendedor se despide o deriva a caja, todo lo que ocurre
+    después en la transcripción se ignora para evaluar los pasos 1 a 8 (sólo el paso 9, despedida, puede validarse en
+    ese momento). Esto significa que "No" en pasos 1-8 refleja lo que pasó ANTES del cierre, no toda la conversación.'
+  chronic_medication_na: 'PASO 3 (explicaComoTomarlo) se marca N/A automáticamente si el medicamento es crónico
+    (anticonceptivos, hipertensión, diabetes, asma, EPOC, tiroides, colesterol, cardiovasculares, osteoporosis,
+    clonazepam) o si la venta es con PAMI, incluso si el vendedor efectivamente explicó cómo tomarlo. Esta regla no es
+    verificable desde el Data Map (depende del medicamento mencionado en la transcripción), sólo documentarla como
+    contexto de por qué el "N/A" de este campo es alto.'
+  banco_provincia: 'Si algún producto tiene se_vendio_con_promo_banco_provincia=si, entonces
+    cliente_tiene_banco_provincia_o_cuenta_dni=si a nivel conversación (regla declarada explícitamente en el prompt).
+    RELIABILITY WARNING (verificado 2026-08-31 contra Postgres QA): la regla se cumple en ~98.3% de los casos, NO en
+    el 100%. Sobre 6608 conversaciones con al menos un producto vendido con la promo, 6496 tienen cliente_tiene=si
+    como se espera, pero 111 tienen cliente_tiene=no_determinable y 1 tiene cliente_tiene=no — probablemente
+    conversaciones donde el insights no llegó a procesar completamente el campo a nivel conversación aunque sí lo
+    hizo a nivel producto. NO responder "siempre" o "sin excepción" a preguntas sobre esta regla sin verificar contra
+    datos reales o sin aclarar el ~1.7% de excepciones conocidas. La relación inversa NO aplica: cliente_tiene=si no
+    implica que algún producto se haya vendido con la promo, y abordo_banco_provincia_o_cuenta_dni=si tampoco lo
+    implica. Este reliability_warning se agregó después de que el agente real fallara la pregunta trampa q11 de
+    clientes/farma24/preguntas/preguntas_evaluacion.yaml respondiendo "sí, siempre" sin verificar contra datos; tras
+    el fix, la misma pregunta re-testeada dio la respuesta correcta con el matiz del 98.3%.'
+  rol_comercial_coverage: 'rol_comercial es NULL para conversaciones anteriores a ~2026-08-03 por corte de versión del
+    prompt insights (ver hallazgos_criticos_verificados_2026-08-31). Para preguntas sobre todo el histórico, aclarar
+    esta limitación de cobertura en vez de tratar el NULL como "no determinable" de negocio.'
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: 'descriptive_insights tiene ~24% de filas huérfanas (52.878 de 216.346 al 2026-09-02) sin conversation_id
+      válido en demography. CAUSA CONFIRMADA (ver hallazgos_criticos_verificados_2026-09-02): son conversaciones
+      subidas antes del go-live del pipeline de demography/checklist (2026-06-02); el pipeline de insights ya
+      ingería desde 3 semanas antes. Un INNER JOIN contra categorical_insights o demography descarta esas filas
+      automáticamente (comportamiento correcto); un análisis que use descriptive_insights SOLA (ej. distribución de
+      business_month) puede estar incluyendo esas filas huérfanas sin darse cuenta. Además, esta vista dejó de
+      recibir filas nuevas el 2026-08-05 -no refleja conversaciones posteriores a esa fecha, a diferencia de las
+      otras 5 fuentes del Data Map, que siguen actualizándose-.'
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys:
+    - conversation_id
+    - producto_index
+    cardinality: product_to_product
+  resultado_cross_check:
+    left: demography
+    right: categorical_insights
+    keys:
+    - conversation_id
+    cardinality: conversation_to_conversation
+    note: Sólo para contrastar demography.tipointeraccion contra categorical_insights.categoricos_generales_resultado
+      cuando la pregunta pida explícitamente comparar ambas lecturas o entender por qué discrepan.
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_farma24_demografia
+    use_when: Resultado de la interacción (versión checklist), categoría y gestión de no-compra.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [Compra, No compra]
+        observed_values: [Compra, No compra]
+        type: text
+        nullable: true
+        description: 'Resultado calculado por el checklist (regla 1.E). "No compra" únicamente cuando el cliente se
+          retira sin llevarse nada Y no queda ninguna gestión activa (pedido a droguería, vale de retiro, búsqueda en
+          otra sucursal, envío a domicilio). En cualquier otro caso, incluida una conversación cortada sin final
+          claro, es "Compra". OJO: casing con mayúscula inicial y espacio, distinto de
+          categorical_insights.categoricos_generales_resultado (minúsculas, snake_case) — son dos campos calculados
+          independientemente que pueden discrepar (~7% de los casos, ver hallazgos_criticos_verificados).'
+        operations: [filter, group, compare]
+      categorianocompra:
+        configured_values: [N/A, GestionAdministrativa, Stock, Consulta, Otro, Precio]
+        observed_values: [N/A, GestionAdministrativa, Stock, Consulta, Otro, Precio]
+        type: text
+        nullable: true
+        description: 'Categoría del motivo de no compra (sólo poblado con sentido cuando tipointeraccion="No compra";
+          N/A en caso contrario). GestionAdministrativa cubre receta/obra social/PAMI/autorización/documentación/
+          problemas de sistema o fecha -no confundir con Stock-. Stock es sólo cuando el producto/presentación/marca
+          no está disponible. Fuente PRIMARIA de esta categoría: la versión de categorical_insights
+          (categoricos_generales_categoria_no_compra) está mucho más incompleta, ver semantic_dependencies.'
+        operations: [filter, group, compare]
+      gestionnocompra:
+        configured_values: [no_aplica, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada]
+        observed_values: [no_aplica, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada]
+        type: text
+        nullable: true
+        description: 'Qué hizo el vendedor ante una no-compra por falta de stock. Sólo interpretable cuando
+          categorianocompra="Stock" (en cualquier otro caso vale "no_aplica"). "no_ofrecio_nada" exige evidencia
+          verbal de que hubo falta de stock -nunca es el valor por defecto-. Es el campo REAL y poblado para esto; el
+          equivalente de categorical_insights (categoricos_generales_gestion_no_compra) es una columna muerta, 100%
+          NULL, no usar.'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_farma24_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de atención en farmacia (checklist Sí/No/N/A).
+    grain: Una fila por conversación con múltiples columnas de criterios, más 2 columnas de evidencia textual.
+    profile: standard_conversation
+    decision_semantics: 'Los 9 criterios Sí/No/N/A siguen la misma lógica de desempate que Mens Fashion -"Sí" con
+      evidencia clara de cumplimiento, "No" con oportunidad real mas sin cumplimiento, "N/A" sin oportunidad real- PERO
+      acá "sin oportunidad real" incluye dos causas específicas de Farma 24 que no existían en Mens Fashion: (1) la
+      interacción es administrativa según la regla 1.A (ver semantic_dependencies.administrative_interactions), o (2)
+      el criterio se evalúa sobre lo ocurrido ANTES del cierre de venta (regla 1.B, ver
+      semantic_dependencies.sale_closed_cutoff) y no había oportunidad antes de ese punto.'
+    data_quality_note: 'Verificado 2026-08-31: los 9 campos siguientes tienen enum limpio (sólo Sí/No/N/A, sin
+      variantes de casing ni valores inesperados). 412 filas (~0,16%) son huérfanas (conversation_id sin match en
+      demography) — volumen insignificante, no requiere tratamiento especial. 1 fila tiene NULL en las 9 columnas
+      simultáneamente (misma conversación rota en las 9, no 9 problemas distintos).'
+    fields:
+      saludaalinicio:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 1. Sí ante cualquier forma de saludo o apertura ("Hola", "Buen día", "¿en qué te ayudo?",
+          "¿qué estás necesitando?"), sin importar qué speaker lo dijo. No tiene reglas de N/A específicas más allá
+          de las generales (interacción administrativa, corte de venta).'
+        operations: [filter, group, compare]
+      realizadospreguntasdeinvestigacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 2. Sí si realiza al menos 2 preguntas para entender la necesidad (cualquier pregunta al
+          cliente cuenta). No cuenta si las preguntas se hicieron después de indicar ir a caja (cierre de venta). N/A
+          automático si la interacción es administrativa (regla 1.A) o si la venta es con PAMI (todo PAMI, no sólo
+          el oncológico de 1.A).'
+        operations: [filter, group, compare]
+      explicacomotomarlo:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 3. Sí si explica cómo tomar/usar el medicamento o indica frecuencia/dosis/modo de uso. N/A
+          automático si la interacción es administrativa, si el medicamento es de uso crónico (anticonceptivos,
+          hipertensión, diabetes, asma, EPOC, tiroides, colesterol, cardiovasculares, osteoporosis, clonazepam) o si
+          la venta es con PAMI -esta regla de N/A tiene prioridad incluso si el vendedor sí explicó cómo tomarlo-.'
+        operations: [filter, group, compare]
+      ofrecesolucionactivasinohaystock:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 4. Sólo evaluable si faltó stock: Sí si ofrece alternativa o curso de acción útil (marca
+          alternativa, otra presentación, vale de retiro, envío, pedir a droguería, derivar a otra sucursal, dejar
+          teléfono para seguimiento). N/A si había stock (es decir, si no faltó nada, este paso no aplica).'
+        operations: [filter, group, compare]
+      sugierecomplementariorelacionado:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 5 (venta cruzada). Requiere RAG obligatorio contra una Base de Conocimiento externa (fuera
+          de este Data Map) que relaciona patología/necesidad con productos de venta cruzada esperados; el detalle de
+          ese razonamiento queda en evidencia_ventacruzada_rag. Sí si sugiere/ofrece/recomienda/menciona/pregunta por
+          un producto complementario relacionado con la necesidad principal (no simplemente el mismo producto en otra
+          marca/tamaño). No cuenta si ocurre después del cierre de venta. N/A si la interacción es administrativa, o
+          si la conversación se corta antes de que exista una oportunidad evaluable (salvo que ya haya evidencia
+          previa de Sí).'
+        operations: [filter, group, compare]
+      evidencia_ventacruzada_rag:
+        type: text
+        nullable: true
+        description: Texto libre con el detalle del razonamiento (contra la Base de Conocimiento externa, vía RAG)
+          que justifica el valor de sugierecomplementariorelacionado. Es evidencia auxiliar de ESTE campo únicamente
+          -el propio prompt indica no usarlo para decidir ofrecesolucionactivasinohaystock, tipointeraccion,
+          categorianocompra ni gestionnocompra-.
+        operations: [select_evidence]
+      intentasustitucionpertinente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 6 (sustitución). También usa RAG contra la Base de Conocimiento para catalogar el producto
+          pedido como Sustituible / No Sustituible / Genérico para sustituir; el detalle queda en
+          evidencia_sustitucion_rag. N/A si la interacción es administrativa, si faltó stock del producto principal
+          (en ese caso el criterio relevante es ofrecesolucionactivasinohaystock, no este), o si el producto es "No
+          sustituible" y la venta es con receta/obra social/PAMI. Regla de oro del prompt: ante silencio o audio
+          inaudible del vendedor, el valor es siempre N/A, nunca "No" -"No" exige evidencia verbal clara de que
+          entregó la marca pedida sin ofrecer alternativa-.'
+        operations: [filter, group, compare]
+      evidencia_sustitucion_rag:
+        type: text
+        nullable: true
+        description: Texto libre con el detalle del razonamiento (RAG contra la Base de Conocimiento externa) que
+          justifica el valor de intentasustitucionpertinente. Evidencia auxiliar de ESTE campo únicamente, mismo
+          criterio que evidencia_ventacruzada_rag.
+        operations: [select_evidence]
+      ofreceadicionalnorelacionado:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 7. Sí si ofrece un producto adicional NO relacionado con la necesidad principal
+          (dermocosmética, perfumería, góndola) o menciona promociones/descuentos/cuotas vigentes de cualquier tipo,
+          siempre antes de indicar ir a caja. No confundir con sugierecomplementariorelacionado (paso 5), que exige
+          relación con la necesidad principal.'
+        operations: [filter, group, compare]
+      mencionaserviciosfuturos:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 8. Sí si menciona servicios de la farmacia (vacunatorio, medición de presión, envíos a
+          domicilio, horario extendido, WhatsApp, vacuna antigripal, etc.).'
+        operations: [filter, group, compare]
+      despideyacompanaacaja:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'PASO 9. Sí ante cualquier frase de despedida, indicación de pasar por caja, acompañamiento a
+          caja, entrega de ticket o derivación al cobro. Este paso marca el CIERRE de la venta -ver
+          semantic_dependencies.sale_closed_cutoff-: todo lo que ocurra después en la transcripción se ignora para
+          evaluar los pasos 1 a 8. Es el único paso que puede evaluarse en o después de ese momento.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_farma24_insights_categoricos_generales
+    use_when: Resultado (versión insights) y abordaje/tenencia de Banco Provincia o Cuenta DNI.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      categoricos_generales_resultado:
+        configured_values: [compra, no_compra]
+        observed_values: [compra, no_compra]
+        type: text
+        nullable: true
+        description: 'Resultado calculado por el insights (independiente del checklist). "no_compra" únicamente
+          cuando el cliente se retira sin llevarse nada Y no queda gestión activa (pedido a droguería, vale, búsqueda
+          en otra sucursal, envío, derivación a caja, cobro, ticket, entrega). Ver semantic_dependencies.resultado_dual_source
+          antes de usar este campo: discrepa con demography.tipointeraccion en ~7% de los casos.'
+        operations: [filter, group, compare]
+      categoricos_generales_categoria_no_compra:
+        configured_values: [no_aplica, stock, precio, consulta, gestion_administrativa, otro]
+        observed_values: [no_aplica, consulta, stock, gestion_administrativa, otro, precio]
+        type: text
+        nullable: true
+        legacy: true
+        description: 'NO USAR como fuente primaria: ~94% NULL (241.321 de 257.551). Usar demography.categorianocompra
+          en su lugar (casi 100% poblado). Enum en snake_case, distinto del PascalCase de demography.categorianocompra
+          -son campos separados con distinta cobertura, no la misma columna con dos formatos-.'
+        operations: [filter, group, compare]
+      categoricos_generales_gestion_no_compra:
+        type: text
+        nullable: true
+        legacy: true
+        description: 'COLUMNA MUERTA: 100% NULL verificado (257.517 de 257.517 filas). No usar bajo ninguna
+          circunstancia. El campo real y poblado es demography.gestionnocompra.'
+        operations: []
+      categoricos_generales_abordo_banco_provincia_o_cuenta_dni:
+        configured_values: [si, 'no', no_aplica]
+        observed_values: [si, 'no', no_aplica]
+        type: text
+        nullable: true
+        description: 'Si el vendedor introdujo explícitamente Banco Provincia o Cuenta DNI (preguntar tenencia,
+          confirmar medio de pago, mencionar promo/cuotas, proponer su uso). "no" exige que haya existido una
+          oportunidad comercial real (cliente consultó/pidió/compró algo, hubo asesoramiento, la interacción avanzó
+          comercialmente) y el vendedor no lo mencionó. "no_aplica" sólo cuando no hubo oportunidad comercial
+          razonable (retiro web puro, gestión administrativa sin conversación de productos, interacción cortada muy
+          temprano). No inferir este campo únicamente de categoricos_generales_resultado: una interacción "compra"
+          puede ser no_aplica, y una "no_compra" puede ser "no" si hubo oportunidad real de abordarlo. COBERTURA
+          (verificado 2026-08-31): NULL en 178.335 de 257.517 filas (~69%) — mucho más amplio que las 16.357 filas
+          donde categoricos_generales_resultado también es NULL. No asumir que el NULL de este campo se explica sólo
+          por "el insights no corrió sobre esta conversación"; es una cobertura genuinamente baja para este campo en
+          particular. REGLA DE TASA (agregada V4, 2026-09-02, ver changes_from_v3): si la pregunta pide un
+          porcentaje o tasa de abordaje sobre este campo, la base evaluada es si+no (74.381 filas verificadas
+          2026-09-02) -EXCLUIR no_aplica (9.522) y NULL (173.996), mismo criterio que sql_rules.performance_rate
+          aplica a los 9 criterios de performance. Ejemplo verificado: si=35.375 sobre base evaluada=74.381 da
+          47,6%; calcular sobre si+no+no_aplica (83.903) da 42,2% y es INCORRECTO -no es la convencion de este
+          Data Map-.'
+        operations: [filter, group, compare]
+      categoricos_generales_cliente_tiene_banco_provincia_o_cuenta_dn:
+        configured_values: [si, 'no', no_determinable]
+        observed_values: [si, 'no', no_determinable]
+        type: text
+        nullable: true
+        description: 'NOTA DE NOMBRE FÍSICO: esta columna se llama así (sin la "i" final de "dni") por el límite de
+          63 caracteres de Postgres para identificadores; no es un typo de este mapa, está verificado contra
+          information_schema.columns. Indica si la conversación permite concluir que el cliente tiene/puede usar
+          Banco Provincia o Cuenta DNI. "si" también se dispara automáticamente si algún producto tiene
+          se_vendio_con_promo_banco_provincia=si en ~98.3% de los casos (ver semantic_dependencies.banco_provincia,
+          incluye reliability_warning con las excepciones conocidas). Una preferencia por otro medio de pago, sin
+          confirmar ni negar tenencia, NO alcanza para marcar "no" -en ese caso es "no_determinable"-.'
+        operations: [filter, group, compare]
+  descriptive_insights:
+    source: dashboard_v2.vw_farma24_insights_descriptivos_generales
+    use_when: Motivo textual de la no compra, y dimensiones de negocio (mes/año).
+    grain: Una fila por conversación; texto libre no agregable como categoría.
+    profile: standard_conversation
+    data_quality_note: 'Verificado 2026-08-31, actualizado 2026-09-02: 52.878 de las 216.346 filas (~24%) son
+      HUÉRFANAS -su conversation_id no existe en demography bajo ningún seller_id-. No es una fuga entre clientes
+      (verificado con JOIN sin filtrar tenant), son filas sin conversación real detrás. CAUSA CONFIRMADA (2026-09-02,
+      ver hallazgos_criticos_verificados_2026-09-02 de metadata): son conversaciones subidas antes del go-live del
+      pipeline de demography/checklist (2026-06-02 06:01:13) -el pipeline de insights ya venía ingiriendo desde el
+      2026-05-13-, no un bug de escritura ni conversaciones borradas. Un JOIN de esta vista contra demography o
+      categorical_insights descarta esas filas automáticamente; usar esta vista SOLA para agregaciones (ej.
+      distribución de business_month) puede incluir huérfanas sin darse cuenta -ver joins.general_evidence-. Además,
+      esta vista dejó de recibir filas nuevas el 2026-08-05 (last_updatedat máximo) mientras las otras 5 vistas
+      siguen actualizándose a diario -no refleja conversaciones posteriores a esa fecha-.'
+    fields:
+      business_month:
+        type: integer
+        nullable: true
+        description: Mes de negocio de la conversación. Verificado 2026-08-31 contra Postgres (167.594 filas
+          cruzadas con demography) que coincide EXACTAMENTE con el mes calendario de uploaded_at_local -no hay
+          calendario contable distinto ni desfasaje-.
+        operations: [filter, group]
+      business_year:
+        type: integer
+        nullable: true
+        description: Año de negocio de la conversación. Mismo comportamiento verificado que business_month -coincide
+          exactamente con el año calendario de uploaded_at_local-.
+        operations: [filter, group]
+      descriptivos_generales_tipo_interaccion_detalle:
+        type: text
+        nullable: true
+        description: 'Explicación breve del motivo de no compra (sólo poblado cuando el resultado de la interacción
+          es no_compra; null si es compra). Si el motivo fue falta de stock, menciona qué producto faltaba.'
+        operations: [select_evidence]
+  categorical_product_insights:
+    source: dashboard_v2.vw_farma24_insights_categoricos_por_producto
+    use_when: Producto, marca, presentación, rol comercial, falta de stock y su gestión, venta con promoción Banco
+      Provincia, si el producto se terminó comprando.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto dentro de la conversación (empieza en 1, correlativo, no se repite). Clave
+          de join con descriptive_product_insights.
+        operations: [join_key, filter]
+      producto:
+        type: text
+        nullable: true
+        description: 'Nombre del producto tal como fue mencionado, lo más específico posible (conserva dosis,
+          concentración, presentación si aparecen en la transcripción). Texto libre, no es un enum cerrado -no
+          confundir con marca ni con presentacion, que son campos separados-. CORRECCIÓN V2: este campo estaba
+          declarado nullable=false en V1; verificado 2026-08-31 que hay 336 filas con producto NULL (de 735.799).
+          CASING: variantes de mayúsculas/minúsculas para el mismo producto son comunes y afectan volúmenes grandes
+          (ej. "ibuprofeno" en 3 variantes, 33.299 filas) -normalizar con LOWER(TRIM(producto)) antes de agrupar o
+          rankear, ver sql_rules.categorical_filters-.'
+        operations: [select_evidence, filter]
+      marca:
+        type: text
+        nullable: true
+        description: 'Marca o laboratorio del producto, sólo si hay evidencia clara en la conversación. Null si el
+          producto y la marca están fusionados sin poder separarse, o si no hay marca clara. COBERTURA (verificado
+          2026-08-31): poblada en 163.823 de 735.799 filas (~22,3%) -es normal que la mayoría sea NULL, el campo
+          exige evidencia explícita-. CASING: mismo problema sistémico que producto (ej. "Tafirol" con 3 variantes,
+          4.561 filas; "Buscapina" con 3 variantes, 3.906 filas) -normalizar antes de agrupar o rankear-.'
+        operations: [select_evidence]
+      presentacion:
+        type: text
+        nullable: true
+        description: 'Dosis, concentración, tamaño, cantidad o forma farmacéutica (ej. "400", "600 mg", "jarabe",
+          "comprimidos", "gotas"). Null si no aparece evidencia clara; nunca inferida. COBERTURA (verificado
+          2026-08-31): poblada en 309.229 de 735.799 filas (~42%).'
+        operations: [select_evidence]
+      rol_comercial:
+        configured_values: [pedido_inicial, sustituto, adicional_ofrecido_por_vendedor, solicitado_adicionalmente_por_cliente, no_determinable]
+        observed_values: [pedido_inicial, sustituto, adicional_ofrecido_por_vendedor, solicitado_adicionalmente_por_cliente, no_determinable]
+        type: text
+        nullable: true
+        description: 'Rol del producto en la interacción: pedido_inicial (responde a la necesidad inicial),
+          sustituto (reemplaza otro producto/marca/presentación no disponible o inviable), adicional_ofrecido_por_vendedor
+          (complementario, iniciativa del vendedor -sugerir/ofrecer/recomendar/mencionar/preguntar alcanza-),
+          solicitado_adicionalmente_por_cliente (complementario, iniciativa del cliente), no_determinable. IMPORTANTE:
+          NULL para el ~66% de las filas anteriores a 2026-08-03 por corte de versión del prompt -no es "no
+          determinable" de negocio, es cobertura histórica, ver hallazgos_criticos_verificados-.'
+        operations: [filter, group, compare]
+      se_vendio_con_promo_banco_provincia:
+        configured_values: [si, 'no', no_determinable]
+        observed_values: [si, 'no', no_determinable]
+        type: text
+        nullable: true
+        description: 'Si este producto puntual quedó incluido en una compra pagada/financiada con Banco Provincia,
+          Cuenta DNI o cuotas sin interés aceptadas (las cuotas sin interés cuentan como Banco Provincia sólo si
+          fueron aceptadas/usadas, no por la sola mención). Se resuelve por evidencia directa del producto o porque
+          la operación completa quedó confirmada con la promo y el producto claramente forma parte de ella -no exige
+          mención repetida por cada producto-. Si "si" para cualquier producto de la conversación, entonces
+          categorical_insights.cliente_tiene_banco_provincia_o_cuenta_dn debe ser "si" en ~98.3% de los casos (ver
+          semantic_dependencies.banco_provincia, incluye reliability_warning).'
+        operations: [filter, group, compare]
+      hubo_falta_stock:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: true
+        description: 'Si hubo falta real de disponibilidad física de este producto/marca/dosis/presentación (no
+          confundir con trabas de receta, obra social, PAMI, autorización, cobertura, sistema, DNI, fecha o precio
+          -esas nunca son "falta de stock"-). NULL sólo en filas donde el insights directamente no corrió sobre esa
+          conversación (mismo patrón de NULL que rol_comercial/que_hizo_vendedor/se_termino_comprando en esas filas,
+          45.483 filas verificado). Enum limpio: sólo true/false/NULL, sin valores inesperados.'
+        operations: [filter, group, compare]
+      que_hizo_vendedor:
+        configured_values: [ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio, no_ofrecio_nada, no_aplica]
+        observed_values: [no_aplica, no_ofrecio_nada, ofrecio_sustituto, ofrecio_vale_o_drogueria, ofrecio_otra_sucursal_o_envio]
+        type: text
+        nullable: true
+        description: 'Acción del vendedor frente a la falta de stock de ESTE producto. Sólo interpretable cuando
+          hubo_falta_stock=true (si es false, siempre vale no_aplica). "no_ofrecio_nada" exige evidencia de falta de
+          stock real -no es el valor por defecto-.'
+        operations: [filter, group, compare]
+      se_termino_comprando:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: true
+        description: 'Si este producto puntual terminó vendiéndose (comprado, cobrado, entregado, derivado a caja,
+          pedido a droguería con gestión concreta, vale de retiro generado, envío coordinado). Un producto original
+          faltante que fue reemplazado por un sustituto exitoso queda en false para el original y true para el
+          sustituto (son filas separadas). Enum limpio: sólo true/false/NULL, sin valores inesperados (verificado
+          2026-08-31).'
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_farma24_insights_descriptivos_por_producto
+    use_when: Evidencia textual de falta de stock y de la acción del vendedor, por producto.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index
+          (mismos índices y misma cantidad de filas que categorical_product_insights para esa conversación).
+        operations: [join_key, filter]
+      evidencia_falta_stock:
+        type: text
+        nullable: true
+        description: 'Cita textual breve que conecta el producto con la falta de stock (si la respuesta del vendedor
+          fue sólo una negación, incluye también el pedido inmediatamente anterior del cliente). CASI SIEMPRE null si
+          hubo_falta_stock=false -verificado 2026-08-31: se cumple en 595.257 de 595.268 filas con hubo_falta_stock=false
+          (11 excepciones); y CASI SIEMPRE poblada si hubo_falta_stock=true (95.038 de 95.042, 4 excepciones). No es
+          una regla absoluta, tratar como "casi siempre" en vez de "siempre".'
+        operations: [select_evidence]
+      evidencia_accion_vendedor:
+        type: text
+        nullable: true
+        description: 'Cita textual del momento donde el vendedor ofreció sustituto/vale/droguería/otra sucursal/envío.
+          CASI SIEMPRE null si que_hizo_vendedor es no_ofrecio_nada o no_aplica -verificado 2026-08-31: hay 442
+          excepciones (406 en no_aplica, 36 en no_ofrecio_nada) sobre ~629k filas con esos dos valores- y CASI SIEMPRE
+          poblada cuando sí ofreció algo -25 excepciones sobre ~60k filas con una acción efectiva-. No es una regla
+          absoluta, tratar como "casi siempre" en vez de "siempre".'
+        operations: [select_evidence]
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'V2 (2026-08-31) completó la auditoría campo por campo que V1 había dejado pendiente. V3 (2026-09-02) resolvió el
+  origen de las filas huérfanas de descriptive_insights y encontró que esa misma vista dejó de actualizarse el
+  2026-08-05. Ver hallazgos_criticos_verificados_2026-08-31_ronda2 y hallazgos_criticos_verificados_2026-09-02 para
+  el detalle, y pendiente_de_verificar para lo que sigue abierto (de severidad menor). Tratar con el mismo nivel de
+  confianza que Mens Fashion V4 -auditoría completa realizada, no un punto de partida sin verificar-.'
+- 'descriptive_insights (motivo textual de no-compra, business_month/business_year de esa vista) no refleja
+  conversaciones posteriores al 2026-08-05 -la vista dejó de recibir filas nuevas en esa fecha mientras las otras 5
+  fuentes del Data Map siguen al día-. No se investigó la causa (requiere revisar el pipeline de insights
+  descriptivos generales, fuera del alcance de este Data Map).'
+- La tabla dashboard_v2.reporte_semanal_farma24 existe pero no fue investigada ni autorizada en este mapa.
+- No se investigó todavía la relación exacta entre la "Base de Conocimiento" externa que usa el RAG del checklist
+  (paso 5 y 6) y los datos disponibles en Postgres -esa base no es una fuente de este Data Map, sólo su resultado
+  narrativo queda en evidencia_ventacruzada_rag / evidencia_sustitucion_rag-.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

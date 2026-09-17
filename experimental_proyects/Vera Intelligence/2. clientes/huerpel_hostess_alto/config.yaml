@@ -1,0 +1,69 @@
+client_id: huerpel_hostess
+display_name: "Huerpel Hostess"
+tenant: "Huerpel"
+model: gemini-3.7-flash
+data_map: "2. clientes/huerpel_hostess_alto/data_map/VI Data Map Huerpel Hostess V2.yaml"
+
+# Huerpel es un grupo concesionario Nissan (México) con TRES sub-marcas en Langfuse
+# (Hostess, Hostess Seminuevos, Ventas). A diferencia de Dalton (donde sólo UNA de dos
+# sub-marcas tenía vista real en Postgres), las TRES sub-marcas de Huerpel SÍ tienen
+# vistas propias en Postgres (8 vistas en total, ver README "Onboarding de Huerpel").
+# Se onboardearon como TRES clientes separados, no uno con múltiples business_rulebooks,
+# porque client_config.py y el system_instruction de vi_agent.py sólo soportan UN
+# "sales_evaluation" y UN "conversation_insights" por cliente (las claves están hardcodeadas
+# en el prompt del agente con semántica fija: "sales_evaluation para atención/desempeño del
+# vendedor... conversation_insights para resultados, motivos..."). Forzar 3 checklists
+# distintos bajo esas mismas dos claves perdería especificidad de negocio real (Hostess,
+# Hostess Seminuevos y Ventas tienen roles y checklists completamente distintos), y
+# extender el esquema para soportar N pares de rulebooks es un cambio de código compartido
+# que afecta a los otros 17 clientes existentes -fuera de alcance de este onboarding sin
+# supervisión humana-. Ver detalle completo en el README.
+#
+# Esta es la sub-marca "Hostess": recepción inicial en agencia de autos NUEVOS Nissan
+# (tienda única, 5.609 conversaciones / 5.046 analizables). El rol de la hostess NO
+# incluye cerrar venta ni asesoría comercial completa -eso lo hace el APV de Ventas-.
+sources:
+  dashboard_v2.vw_huerpel_hostess_demografia:
+    tenant_field: seller_id
+  dashboard_v2.vw_huerpel_hostess_rendimiento_vendedor:
+    tenant_field: seller_id
+  dashboard_v2.vw_huerpel_hostess_insights_categoricos:
+    tenant_field: seller_id
+
+business_rulebooks:
+  sales_evaluation:
+    name: "clientes/Huerpel/Hostess/checklist"
+    label: production
+    business_scope: "Criterios de recepción inicial en agencia de autos nuevos (Huerpel Hostess): bienvenida, identificación del tipo de visita, datos de contacto, conexión con el asesor"
+  conversation_insights:
+    name: "clientes/Huerpel/Hostess/insights"
+    label: production
+    business_scope: "Tipo de visita, vehículo solicitado, medio publicitario de origen, intención de toma de vehículo usado y tipo de operación"
+  # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
+  # versionado en este mismo repo ("2. clientes/_shared/business_rulebooks/coaching_playbook.md"),
+  # borrador técnico sin revisión del equipo de negocio todavía. Ver README de
+  # "3. experimentos/coaching_playbook/".
+  coaching_playbook:
+    source: local
+    path: "2. clientes/_shared/business_rulebooks/coaching_playbook.md"
+    business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
+
+# Huerpel Hostess no tiene RAG: ninguno de los dos prompts (checklist/insights) declara
+# geminiFileSearchStoreName en su config de Langfuse -sólo traen promptId-.
+
+# Búsqueda vectorial habilitada (2026-09-16, ampliación a todos los clientes viables) -verificado
+# por SQL directo: seller_id='Huerpel' tiene 26.817 embeddings en total, pero ese seller_id está
+# COMPARTIDO por las tres sub-marcas de Huerpel (Hostess, Hostess Seminuevos, Ventas -ver docstring
+# arriba). Sin más, search_conversations() de Hostess devolvería conversaciones de Ventas y
+# viceversa -mismo tipo de fuga entre clientes que sql_security.py evita para dashboard_v2, pero acá
+# no aplica porque la tabla vectorizada es física y no tiene una vista por sub-marca-. Se resuelve
+# con `store_names` (ver VectorSearchConfig en client_config.py, agregado junto con esta
+# habilitación): allowlist obligatoria de `store_name` que vector_search.py aplica ADEMÁS del
+# filtro de tenant. "Hostess" es tienda única para esta sub-marca (13.769 embeddings verificados,
+# el volumen más alto de las tres) -confirmado con SELECT DISTINCT store_name agrupado por
+# seller_id='Huerpel': ese valor de store_name es exclusivo de esta sub-marca, no lo comparte
+# ninguna otra. Sin insights_descriptivos_generales -resumen_verificado sale None.
+vector_search:
+  top_k: 5
+  store_names:
+    - "Hostess"

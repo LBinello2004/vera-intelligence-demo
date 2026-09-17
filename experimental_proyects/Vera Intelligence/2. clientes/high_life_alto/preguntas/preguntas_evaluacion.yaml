@@ -1,0 +1,223 @@
+metadata:
+  name: Preguntas de evaluación VI - High Life
+  purpose: Banco de preguntas doradas ("golden") para medir qué tan bien responde vi_agent.py.
+    Cada pregunta tiene el SQL que la responde correctamente y el resultado real (verificado contra
+    Postgres QA por Claude, no por el agente) al momento de construir este archivo. Límite duro de 20
+    preguntas.
+  data_map_version: VI Data Map High Life V3.yaml
+  tenant: High Life
+  verified_against: dashboard_v2 (Postgres QA), consultado el 2026-09-09 (actualizado desde 2026-09-07)
+  nota_migracion_checklist: 'High Life tuvo DOS migraciones de checklist reales: (1) del rubric viejo al
+    "Ritual de Experiencia v8" el 10/08, y (2) de v8 a "Ritual de Experiencia v10" el 08/09 -esta segunda
+    migración fue la que rompió el gate automático al promover V2 el 2026-09-09, ver
+    metadata.calibracion_2026-09-09 más abajo-. Varias preguntas de este banco están diseñadas para
+    verificar que el agente no mezcle rubrics distintos como si fueran comparables.'
+  calibracion_2026-09-09: 'Las preguntas q02, q03, q05 y q06 estaban redactadas con lenguaje relativo
+    ("checklist vigente", "conversaciones recientes") que asumía implícitamente que "vigente" seguiría
+    siendo v8 para siempre. Cuando v10 reemplazó a v8 el 08/09, el gate automático (que compara en vivo la
+    respuesta del agente con la Data Map vieja vs. la candidata, ver data_map_auto_update.py > run_gate)
+    rechazó V2 porque las respuestas legítimamente cambian de números al reencuadrar qué es "vigente" -no
+    porque la candidata estuviera mal (verificado a mano con SQL directo, ver metadata.changes_from_v2 de
+    VI Data Map High Life V3.yaml-. Se reescribieron esas 4 preguntas para anclarlas a fechas o versiones
+    de rubric FIJAS en vez de a "vigente"/"reciente" (que cambia de significado con cada migración futura),
+    y se calibró max_missing_numbers donde la pregunta sigue siendo estructuralmente sensible a una futura
+    migración (p.ej. si aparece un rubric v12). El objetivo es que la PRÓXIMA migración de checklist no
+    vuelva a necesitar esta misma intervención manual.'
+  how_to_use: 'Pasarle cada "pregunta" tal cual a vi_agent.py o vi_agent_tester.py y comparar su
+    respuesta contra "respuesta_esperada". Las preguntas marcadas es_trampa=true están diseñadas
+    específicamente para detectar errores conocidos de interpretación del Data Map.'
+
+preguntas:
+  - id: q01_total_analizables
+    pregunta: ¿Cuántas conversaciones analizables hay en total?
+    fuentes_requeridas: [demography]
+    requisitos:
+    - Filtrar usefulforanalysis IS TRUE.
+    - Contar conversaciones distintas.
+    sql: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_high_life_demografia
+      WHERE seller_id = 'High Life' AND usefulforanalysis IS TRUE
+    respuesta_esperada: '2866 (2026-09-09; crece a diario, no comparar como número congelado)'
+
+  - id: q02_checklist_migration_trap
+    pregunta: ¿En qué porcentaje de todas las conversaciones históricas el vendedor cerró bien la venta?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    max_missing_numbers: 6
+    requisitos:
+    - 'TRAMPA GRAVE: no existe un único criterio de "cierre" aplicable a todo el histórico. High Life tuvo
+      TRES generaciones de checklist con criterios de cierre distintos: rubric viejo (vendedorrealizocierrecompra,
+      sólo 546 filas realmente pobladas, 2026-06-09 a 2026-06-24), v8 (vendedorusafrasedecierre, 2026-08-10 a
+      2026-09-08) y v10 (vendedorconfirmabuenaeleccionoproductoselegidos, desde 2026-09-08). El agente debe
+      explicar los tres períodos por separado, no promediarlos como si fueran el mismo criterio.'
+    - 'CALIBRADO 2026-09-09: esta pregunta es intrínsecamente sensible a futuras migraciones de checklist -cada
+      vez que aparezca un nuevo rubric, la respuesta correcta va a citar un período y un campo más que la
+      respuesta anterior-. max_missing_numbers=6 tolera esa reestructuración legítima sin dejar de detectar
+      una regresión real (ej. que el candidato deje de mencionar un período que sí seguía existiendo).'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorusafrasedecierre = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorusafrasedecierre IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_high_life_rendimiento_vendedor
+      WHERE seller_id = 'High Life'
+    respuesta_esperada: 'Rubric viejo (vendedorrealizocierrecompra): Sí=204, base=515, tasa=39,6% (2026-06-09 a
+      2026-06-24). Rubric v8 (vendedorusafrasedecierre): Sí=269, base=432, tasa=62,3% (2026-08-10 a
+      2026-09-08). Rubric v10 (vendedorconfirmabuenaeleccionoproductoselegidos): Sí=4, base=8, tasa=50,0% (desde
+      2026-09-08). El agente NO debe promediar los tres en una única tasa "histórica".'
+
+  - id: q03_tasa_preguntas_abiertas
+    pregunta: Durante el período del rubric v8 (2026-08-10 a 2026-09-08), ¿en qué porcentaje de las conversaciones el vendedor hizo al menos 2 preguntas abiertas antes de presentar producto?
+    fuentes_requeridas: [performance]
+    requisitos:
+    - 'Este criterio (vendedorhaceminimodospreguntasabiertas) sólo existe en el rubric v8 -no en el rubric
+      viejo ni en v10-. Pregunta reescrita 2026-09-09 para anclarla al período v8 explícitamente en vez de
+      "conversaciones recientes" (que dejó de ser inequívoco al aparecer v10 el 08/09).'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorhaceminimodospreguntasabiertas = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE vendedorhaceminimodospreguntasabiertas IN ('Sí','No')) AS base_evaluada
+      FROM dashboard_v2.vw_high_life_rendimiento_vendedor
+      WHERE seller_id = 'High Life'
+    respuesta_esperada: 'Sí=230, base evaluada=490, tasa=46,94% (rubric v8, 2026-08-10 a 2026-09-08)'
+
+  - id: q04_campo_roto_trap
+    pregunta: ¿Qué porcentaje de los vendedores saludó sin frase de presión?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    requisitos:
+    - 'TRAMPA: vendedorsaludasinfraesedepresion tiene 0 filas pobladas en Postgres pese a ser parte del
+      checklist vigente. El agente debe decir explícitamente que no puede responder esto con los datos
+      disponibles, no inventar un número ni confundirlo con otro criterio de bienvenida.'
+    sql: |
+      SELECT COUNT(*) FILTER (WHERE vendedorsaludasinfraesedepresion IS NOT NULL) AS con_dato
+      FROM dashboard_v2.vw_high_life_rendimiento_vendedor
+      WHERE seller_id = 'High Life'
+    respuesta_esperada: '0 filas con dato. El agente debe decir que no tiene información para responder esto.'
+
+  - id: q05_polarity_flip_trap
+    pregunta: Durante el período del rubric v8 (2026-08-10 a 2026-09-08), ¿con qué frecuencia el vendedor interrumpe al cliente?
+    fuentes_requeridas: [performance]
+    es_trampa: true
+    max_missing_numbers: 3
+    requisitos:
+    - 'TRAMPA: el criterio de interrupción cambió de nombre y polaridad a mitad del período v8
+      (vendedorinterrumpealcliente, polaridad negativa, 10/08-24/08 vs vendedorevitainterrumpiralcliente,
+      polaridad positiva, 25/08-08/09 — mismo hecho, invertido). Para cubrir todo el período v8 hay que
+      combinar ambos invirtiendo la lectura del campo viejo, no ignorarlo ni promediarlo directo.'
+    - 'Pregunta reescrita 2026-09-09: decía "todo el período del checklist vigente", que dejó de ser
+      inequívoco al aparecer v10 (que además NO tiene ningún campo de interrupción -el criterio se eliminó
+      del rubric-, verificado contra information_schema.columns). El agente correcto debe decir
+      explícitamente que v10 no mide esto, no inventar un número para el período v10.'
+    sql: |
+      SELECT
+        COUNT(*) FILTER (WHERE vendedorinterrumpealcliente = 'Sí') AS interrumpe_periodo_viejo,
+        COUNT(*) FILTER (WHERE vendedorinterrumpealcliente IN ('Sí','No')) AS base_periodo_viejo,
+        COUNT(*) FILTER (WHERE vendedorevitainterrumpiralcliente = 'No') AS interrumpe_periodo_nuevo,
+        COUNT(*) FILTER (WHERE vendedorevitainterrumpiralcliente IN ('Sí','No')) AS base_periodo_nuevo
+      FROM dashboard_v2.vw_high_life_rendimiento_vendedor
+      WHERE seller_id = 'High Life'
+    respuesta_esperada: 'Tramo 10/08-24/08 (vendedorinterrumpealcliente): interrumpe=21, base=151, tasa=13,9%.
+      Tramo 25/08-08/09 (vendedorevitainterrumpiralcliente="No"): interrumpe=3, base=165, tasa=1,8%. El agente
+      debe combinar ambos como el mismo hecho con polaridad invertida (no como criterios distintos), y aclarar
+      que el criterio no existe en v10 (desde 08/09).'
+
+  - id: q06_ocasion_uso_vigente_trap
+    pregunta: Desde el 10 de agosto de 2026 (inicio del rubric "Ritual de Experiencia", v8+v10 combinados), ¿en qué porcentaje de las conversaciones el vendedor indagó la ocasión de uso del cliente?
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 3
+    requisitos:
+    - 'TRAMPA: NINGUNA generación del "Ritual de Experiencia" (ni v8 ni v10) tiene un criterio de "ocasión de
+      uso" en performance (vendedorpreguntaocasionuso sólo existe en el rubric viejo, previo al 10/08). La
+      única fuente disponible para todo el período post-10/08 es hubo_pregunta_ocasion_de_uso de
+      categorical_insights -esto es estable independientemente de si el rubric vigente es v8, v10 o una
+      futura v-siguiente-.'
+    - 'Pregunta reescrita 2026-09-09: decía "conversaciones recientes", ambiguo y depende de cuándo se lea.
+      Anclada ahora a la fecha fija 2026-08-10 (frontera estable entre "rubric viejo" y "familia Ritual de
+      Experiencia", no cambia con futuras migraciones dentro de esa familia).'
+    sql: |
+      SELECT
+        COUNT(DISTINCT conversation_id) FILTER (WHERE hubo_pregunta_ocasion_de_uso AND uploaded_at_local >= '2026-08-10') AS con_pregunta,
+        COUNT(DISTINCT conversation_id) FILTER (WHERE uploaded_at_local >= '2026-08-10') AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_generales
+      WHERE seller_id = 'High Life'
+    respuesta_esperada: 'con_pregunta=430, total=873, tasa=49,3% (desde 2026-08-10). El agente debe usar
+      hubo_pregunta_ocasion_de_uso (categorical_insights), no vendedorpreguntaocasionuso (que no existe para
+      este período).'
+
+  - id: q07_distribucion_resultado_general
+    pregunta: Dame la distribución de resultado_general de las conversaciones.
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Usar COUNT(DISTINCT conversation_id) para evitar las 274 filas huérfanas.
+    sql: |
+      SELECT resultado_general, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_generales
+      WHERE seller_id = 'High Life'
+      GROUP BY resultado_general
+      ORDER BY total DESC
+    respuesta_esperada: 'no_compra=1554, compra_total=1111, compra_parcial=403, cambio=5, queja=4'
+
+  - id: q08_top_motivo_venta_perdida
+    pregunta: De las conversaciones con venta perdida, ¿cuál es el motivo principal más frecuente?
+    fuentes_requeridas: [categorical_insights]
+    requisitos:
+    - Filtrar hubo_venta_perdida IS TRUE; excluir no_aplica del ranking.
+    sql: |
+      SELECT motivo_principal_venta_perdida, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_generales
+      WHERE seller_id = 'High Life' AND hubo_venta_perdida IS TRUE
+      GROUP BY motivo_principal_venta_perdida
+      ORDER BY total DESC
+    respuesta_esperada: 'inventario=577 es el más frecuente (siguen ejecucion_vendedor=451,
+      diseno_estilo=135, no_aplica=106, precio=63, tiempo_entrega=46, fit=36, calidad_valor=5)'
+
+  - id: q09_top6_producto
+    pregunta: ¿Cuáles son los productos más mencionados?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Agrupar por producto sobre categorical_product_insights (grano por producto).
+    sql: |
+      SELECT producto, COUNT(*) AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_por_producto
+      WHERE seller_id = 'High Life'
+      GROUP BY producto
+      ORDER BY total DESC
+      LIMIT 6
+    respuesta_esperada: 'traje=1393, camisa=958, chamarra_y_chaleco=478, accesorios=469, pantalon=457,
+      blazer_y_saco=453'
+
+  - id: q10_top_objecion_principal
+    pregunta: ¿Cuál es la objeción más común que expresan los clientes sobre los productos?
+    fuentes_requeridas: [categorical_product_insights]
+    requisitos:
+    - Filtrar objecion_principal IS NOT NULL antes de rankear.
+    sql: |
+      SELECT objecion_principal, COUNT(*) AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_por_producto
+      WHERE seller_id = 'High Life' AND objecion_principal IS NOT NULL
+      GROUP BY objecion_principal
+      ORDER BY total DESC
+    respuesta_esperada: 'estilo_diseno=650 es la más común (siguen fit=489, precio=444, urgencia=96,
+      calidad=74, tiempo_entrega=36, comparacion_competencia=5, marca=4)'
+
+  - id: q11_motivador_visita_taxonomy_trap
+    pregunta: Dame la distribución completa de motivador de visita de todo el histórico.
+    fuentes_requeridas: [categorical_insights]
+    es_trampa: true
+    max_missing_numbers: 5
+    requisitos:
+    - 'TRAMPA: motivador_visita tiene dos generaciones de taxonomía conviviendo. Como la pregunta pide "todo
+      el histórico", el agente debería incluir ambos conjuntos.'
+    sql: |
+      SELECT motivador_visita, COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_high_life_insights_categoricos_generales
+      WHERE seller_id = 'High Life'
+      GROUP BY motivador_visita
+      ORDER BY total DESC
+    respuesta_esperada: 'no_claro=1471, necesidad_especifica=894 (legado), promocion=121 (legado),
+      reposicion_renovacion=102, uso_cotidiano=99, evento_formal_social=97, boda=58, trabajo=40,
+      aparador=25 (legado), regalo=12, graduacion=8, viaje=8, cumpleanos_aniversario=6, ecommerce=4 (legado),
+      recomendacion=3 (legado), referencia_externa=3, otra_necesidad_especifica=3, redes_sociales=2 (legado),
+      NULL=395'
