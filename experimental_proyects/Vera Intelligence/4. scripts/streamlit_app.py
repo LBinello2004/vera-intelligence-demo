@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 import uuid
@@ -838,7 +839,42 @@ def _has_vector_search(client_id: str) -> bool:
         return False
 
 
+def _check_shared_password() -> bool:
+    """Portón de contraseña compartida (2026-09-17, pedido explícito: la app quedó desplegada con
+    link público -cualquiera que lo consiga entra directo, sin registro de quién- y esto agrega una
+    fricción mínima antes de mostrar datos reales de negocio de los 19 clientes). No es login
+    individual (no identifica quién entró, no hay control de acceso por persona) -es sólo una traba
+    contra el "alguien reenvía el link sin querer" que preocupaba. Para eso, ver la alternativa de
+    login con Google + dominio ya evaluada y descartada por ahora en "8. README.md".
+
+    La contraseña real vive ÚNICAMENTE como secret (`VI_DEMO_PASSWORD`), nunca en este archivo -así
+    no queda en el historial de git de un repo que puede terminar público. Si el secret no está
+    configurado, la app queda cerrada por default (fail-closed): mejor un demo roto por olvido de
+    configuración que un demo abierto sin que nadie se dé cuenta.
+    """
+    expected = os.getenv("VI_DEMO_PASSWORD")
+    if st.session_state.get("shared_password_ok"):
+        return True
+    st.markdown("### 🔒 Acceso restringido")
+    if not expected:
+        st.error(
+            "Esta app no tiene configurada la contraseña de acceso (VI_DEMO_PASSWORD) -avisale a "
+            "quien la administra."
+        )
+        return False
+    entered = st.text_input("Contraseña", type="password", key="shared_password_input")
+    if st.button("Entrar"):
+        if entered == expected:
+            st.session_state["shared_password_ok"] = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    return False
+
+
 def main() -> None:
+    if not _check_shared_password():
+        st.stop()
     _cancel_active_analysis()
     ui_run_id = uuid.uuid4().hex
     with ACTIVE_CLIENT_LOCK:
