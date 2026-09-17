@@ -1,0 +1,19 @@
+# Copia en la raíz del repo, a pedido de Streamlit Community Cloud: ahora que el "Main file path"
+# es "demo_app.py" (raíz, sin espacios -ver ese archivo para el porqué), Streamlit busca
+# requirements.txt en la carpeta del archivo principal, que pasó a ser la raíz. Mismo contenido que
+# "experimental_proyects/Vera Intelligence/4. scripts/requirements.txt".
+streamlit>=1.63.0
+pandas>=3.0.5
+plotly>=5.24.0
+psycopg[binary]>=3.2.0,<4.0.0
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+requests>=2.31.0
+sqlglot>=30.17.0,<31.0.0
+google-genai>=2.13.0
+# Opcionales -sin sus credenciales (CREDENTIALS_PATH) el resto de la app sigue funcionando
+# (audio_playback.py/rag_sources.py degradan sin romper nada, ver sus docstrings), pero hacen
+# falta para que "🔊 Escuchar" reproduzca audio real.
+firebase-admin>=6.0.0
+google-cloud-storage>=2.0.0
