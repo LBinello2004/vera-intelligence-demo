@@ -184,9 +184,25 @@ EMBEDDING_DIMENSION = 768
 # no sólo que quedó cerca en el espacio de embeddings). NO reemplaza la limitación estructural ya
 # documentada (6. busqueda_vectorial/README.md: la distancia vectorial sola no separa limpio
 # nuances subjetivas, ~15-20% de precisión en 4 métodos probados) -es una segunda pasada que
-# reduce falsos positivos ANTES de que lleguen al modelo principal, con el mismo modelo de
-# producción del cliente (mismo criterio que "por qué el gate usa el modelo real, no uno más
-# barato" en 8. README.md). Ver `VectorSearchRepository._judge_relevance`.
+# reduce falsos positivos ANTES de que lleguen al modelo principal. Ver
+# `VectorSearchRepository._judge_relevance`.
+#
+# CAMBIADO (2026-09-18, misma sesión que amplió el trigger proactivo de search_conversations en
+# vi_agent.py -pedido explícito: usarla mucho más, y evitar que el costo total "se vaya a la
+# mierda" con ese mayor volumen): antes corría con el modelo real de producción del cliente
+# (`self.client.model`), citando el mismo criterio que "por qué el gate usa el modelo real, no uno
+# más barato" (8. README.md). Ese criterio no traslada bien acá: el gate valida si el SISTEMA que
+# le habla al cliente sigue respondiendo bien tras un cambio de Data Map -ahí sí importa que el
+# modelo evaluado sea el mismo que sirve en producción. Este juez no evalúa nada del cliente ni de
+# su Data Map, es clasificación genérica de texto ("¿este fragmento corto respalda esta query?"),
+# independiente del modelo que atiende al cliente. Verificado en vivo con la misma query real
+# (fragmentos reales, LOW thinking) en los tres modelos: los tres dieron el mismo veredicto
+# correcto, pero gemini-3.5-flash-lite lo resolvió con 0 tokens de "thinking" (vs. 138 de
+# gemini-3.7-flash y 109 de gemini-3.1-flash-lite) -sumado a su precio por token, ~8,5x más barato
+# que el modelo de producción para esta tarea puntual. Decisión confirmada explícitamente con el
+# usuario antes de aplicarla (a diferencia del gate, que sigue con su modelo real -no reabrir esa
+# sin releer la sección del README).
+JUDGE_MODEL = "gemini-3.5-flash-lite"
 _JUDGE_PROMPT_TEMPLATE = """Sos un verificador estricto de resultados de búsqueda semántica sobre conversaciones reales de venta.
 
 Búsqueda del usuario: "{query}"
@@ -233,6 +249,20 @@ _CANDIDATE_MULTIPLIER = 4
 _MAX_CANDIDATES = 60
 
 _DATE_FORMAT = "%Y-%m-%d"
+
+
+def _as_optional_str(value: object) -> str | None:
+    """Normaliza un argumento opcional de string antes de validarlo -encontrado en vivo
+    (2026-09-18, cliente farma24_alto): el modelo a veces manda `{}` (dict vacío) en vez de omitir
+    un parámetro opcional que no quiere setear (parece un artefacto de function calling automático
+    de Gemini con parámetros `str | None`, no algo que dependa del prompt). Sin esto,
+    `date_from={}`/`store_name={}`/etc. rompía con `'dict' object has no attribute 'strip'` -un
+    error de tipo poco claro para el modelo, que gastaba 2 llamadas fallidas reintentando con la
+    misma forma antes de finalmente omitir el parámetro por su cuenta. Cualquier valor que no sea
+    un string no vacío (dict, list, número, string vacío/sólo espacios) se trata como "no lo pasó"."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
 
 
 def _parse_date_arg(value: str | None, *, arg_name: str) -> str | None:
@@ -664,6 +694,10 @@ class VectorSearchRepository:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("La búsqueda requiere un texto no vacío.")
         top_k = max(_MIN_TOP_K, min(int(top_k), _MAX_TOP_K))
+        store_name = _as_optional_str(store_name)
+        employee_name = _as_optional_str(employee_name)
+        date_from = _as_optional_str(date_from)
+        date_to = _as_optional_str(date_to)
         date_from = _parse_date_arg(date_from, arg_name="date_from")
         date_to = _parse_date_arg(date_to, arg_name="date_to")
 
@@ -867,16 +901,17 @@ class VectorSearchRepository:
                 }
             )
 
-        # LLM-as-judge (2026-09-14, ver _JUDGE_PROMPT_TEMPLATE): segunda pasada con el modelo real
-        # del cliente sobre los resultados ya recuperados, antes de devolverlos. Corre siempre
-        # -no sólo para queries "subjetivas"-: distinguir de antemano qué pregunta lo necesita
-        # sería una heurística frágil, y el costo de una llamada extra por búsqueda es acotado.
-        # candidates_returned_before_judge se loguea para poder medir, con datos reales, cuánto
-        # recorta el juez en la práctica -no asumido de antemano.
+        # LLM-as-judge (2026-09-14, ver _JUDGE_PROMPT_TEMPLATE): segunda pasada sobre los
+        # resultados ya recuperados, antes de devolverlos, con JUDGE_MODEL (2026-09-18: modelo
+        # barato dedicado, ver su docstring arriba -ya no el modelo real del cliente). Corre
+        # siempre -no sólo para queries "subjetivas"-: distinguir de antemano qué pregunta lo
+        # necesita sería una heurística frágil, y el costo de una llamada extra por búsqueda es
+        # acotado. candidates_returned_before_judge se loguea para poder medir, con datos reales,
+        # cuánto recorta el juez en la práctica -no asumido de antemano.
         candidates_returned_before_judge = len(resultados)
         judge_start = time.perf_counter()
         veredictos = _judge_relevance(
-            query, resultados, model=self.client.model, api_key=api_key,
+            query, resultados, model=JUDGE_MODEL, api_key=api_key,
             usage_recorder=self._usage_recorder, client_id=self.client.client_id,
         )
         judge_ms = round((time.perf_counter() - judge_start) * 1000, 1)

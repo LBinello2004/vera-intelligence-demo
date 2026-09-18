@@ -37,6 +37,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import pandas as pd  # noqa: E402
 import plotly.express as px  # noqa: E402
 import streamlit as st  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
 import vi_agent  # noqa: E402
 import audio_playback  # noqa: E402
@@ -85,7 +86,11 @@ def _greeting_cache_fingerprint() -> str:
     base = vi_agent._content_fingerprint(
         vi_agent.build_system_instruction(), vi_agent._build_tools_list()
     )
-    return hashlib.sha256((base + "\x00" + GREETING_PROMPT).encode("utf-8")).hexdigest()
+    # + greeting_vector_search_clause() (2026-09-18): el prompt real que se envía incluye esta
+    # cláusula opcional -si cambia (o si vector_search se activa/desactiva para el cliente), un
+    # saludo cacheado con la versión anterior tiene que invalidarse también.
+    prompt_text = GREETING_PROMPT + vi_agent.greeting_vector_search_clause()
+    return hashlib.sha256((base + "\x00" + prompt_text).encode("utf-8")).hexdigest()
 
 
 def _load_cached_greeting(
@@ -132,13 +137,15 @@ def _save_cached_greeting(
 
 GREETING_PROMPT = (
     "Presentate en 1-2 oraciones como Vera Intelligence y armá un menú de 3-4 puntos (no 5) de los "
-    "tipos de análisis de negocio en los que podés ayudar a la gerencia de {client_name}, basado en "
-    "las áreas que cubre la información disponible para este cliente. Cada punto: título corto en "
-    "negrita seguido de UNA sola frase breve (máximo ~15 palabras), sin sub-cláusulas ni ejemplos "
-    "entre paréntesis -nada de listas dentro de un punto. No uses jerga técnica ni menciones cómo "
-    "obtenés la información. Cerrá con una sola pregunta corta sobre en qué le gustaría enfocarse "
-    "hoy, sin repetir el menú. Toda la respuesta tiene que entrar cómoda en una pantalla sin "
-    "scrollear mucho -priorizá que sea corta por sobre completa."
+    "tipos de análisis de negocio en los que podés ayudar a la gerencia de {client_name}, basado "
+    "ÚNICAMENTE en las áreas que cubren los campos y criterios reales disponibles para este cliente "
+    "-nunca una categoría de negocio genérica que suene relevante pero que no puedas resolver de "
+    "verdad con lo que tenés disponible (sin ese respaldo real, no la incluyas). Cada punto: título "
+    "corto en negrita seguido de UNA sola frase breve (máximo ~15 palabras), sin sub-cláusulas ni "
+    "ejemplos entre paréntesis -nada de listas dentro de un punto. No uses jerga técnica ni menciones "
+    "cómo obtenés la información. Cerrá con una sola pregunta corta sobre en qué le gustaría "
+    "enfocarse hoy, sin repetir el menú. Toda la respuesta tiene que entrar cómoda en una pantalla "
+    "sin scrollear mucho -priorizá que sea corta por sobre completa."
     # El bloque ```vera-suggestions``` con las preguntas de ejemplo NO se pide acá -ya es
     # obligatorio en toda respuesta vía SUGERENCIAS DE SEGUIMIENTO en SYSTEM_INSTRUCTION_TEMPLATE
     # (vi_agent.py, 2026-09-11), incluida ésta (la primera de la conversación). Pedirlo acá
@@ -716,7 +723,8 @@ def _ensure_greeting(display_name: str, *, debug: bool) -> None:
                 st.button("Cancelar presentación", key="cancel_greeting", on_click=_cancel_active_analysis)
                 raw_greeting = vi_agent.run_tool_loop(
                     st.session_state["chat"],
-                    GREETING_PROMPT.format(client_name=display_name),
+                    GREETING_PROMPT.format(client_name=display_name)
+                    + vi_agent.greeting_vector_search_clause(),
                     max_tool_calls=20,
                     debug=False,
                     session_id=st.session_state["session_id"],
@@ -851,7 +859,17 @@ def _check_shared_password() -> bool:
     no queda en el historial de git de un repo que puede terminar público. Si el secret no está
     configurado, la app queda cerrada por default (fail-closed): mejor un demo roto por olvido de
     configuración que un demo abierto sin que nadie se dé cuenta.
-    """
+
+    CORREGIDO (2026-09-18, bug real: local mostraba "no configurada" con VI_DEMO_PASSWORD sí
+    presente en ".env"): esta es la PRIMERA acción de main(), pero el resto de la app sólo carga
+    el ".env" (vi_agent.load_environment(), dentro de _init_client()) recién después de elegir
+    cliente -mucho más tarde en el flujo. En el primer render, os.getenv("VI_DEMO_PASSWORD") corría
+    contra variables de entorno del proceso, nunca contra lo que hay en ".env". Streamlit Cloud no
+    lo sufre (sus secrets ya son variables de entorno reales desde que arranca el proceso), pero
+    cualquier corrida local sí -por eso hace falta cargar el ".env" acá explícitamente, antes de
+    leer la variable, sin depender de que el usuario ya haya interactuado con la app."""
+    load_dotenv(vi_agent.REPO_ROOT / ".env")
+    load_dotenv(vi_agent.PROJECT_ROOT / ".env", override=True)
     expected = os.getenv("VI_DEMO_PASSWORD")
     if st.session_state.get("shared_password_ok"):
         return True

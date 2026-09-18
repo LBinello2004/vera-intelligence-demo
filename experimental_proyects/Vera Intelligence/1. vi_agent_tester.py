@@ -48,10 +48,12 @@ SEPARATOR = "─" * 60
 
 GREETING_PROMPT = (
     "Presentate brevemente como Vera Intelligence y armá un menú corto (4-5 puntos) de los tipos de "
-    "análisis de negocio en los que podés ayudar a la gerencia de {client_name}, basado en las áreas "
-    "que cubre la información disponible para este cliente. No uses jerga técnica ni menciones cómo "
-    "obtenés la información. Cerrá preguntando en qué análisis o indicador de negocio le gustaría "
-    "enfocarse hoy."
+    "análisis de negocio en los que podés ayudar a la gerencia de {client_name}, basado ÚNICAMENTE en "
+    "las áreas que cubren los campos y criterios reales disponibles para este cliente (nunca una "
+    "categoría de negocio genérica que suene relevante pero que no puedas resolver de verdad con lo "
+    "que tenés disponible -sin ese respaldo real, no la incluyas). No uses jerga técnica ni menciones "
+    "cómo obtenés la información. Cerrá preguntando en qué análisis o indicador de negocio le "
+    "gustaría enfocarse hoy."
 )
 
 
@@ -251,7 +253,8 @@ def run_cli(args: argparse.Namespace) -> None:
     try:
         raw_greeting = vi_agent.run_tool_loop(
             chat,
-            GREETING_PROMPT.format(client_name=vi_agent.CLIENT_CONFIG.display_name),
+            GREETING_PROMPT.format(client_name=vi_agent.CLIENT_CONFIG.display_name)
+            + vi_agent.greeting_vector_search_clause(),
             max_tool_calls=20,
             debug=args.internal_debug,
             session_id=session_id,
