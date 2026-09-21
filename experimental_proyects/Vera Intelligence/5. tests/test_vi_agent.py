@@ -94,7 +94,7 @@ class ViAgentTests(unittest.TestCase):
             ]
         )
         chat.get_history = lambda **_: [SimpleNamespace(parts=[SimpleNamespace(function_response=SimpleNamespace(
-            name="run_readonly_sql", response={"result":{"columns":["tasa"],"rows":[[30]]}}
+            name="run_readonly_sql", response={"result":{"columns":["tasa","n_evaluados"],"rows":[[30,10]]}}
         ))])]
         answer = vi_agent.run_tool_loop(chat, "¿Cuál es la tasa de compra total?")
 
@@ -130,7 +130,7 @@ class ViAgentTests(unittest.TestCase):
             ]
         )
         chat.get_history = lambda **_: [SimpleNamespace(parts=[SimpleNamespace(function_response=SimpleNamespace(
-            name="run_readonly_sql", response={"result":{"columns":["tasa"],"rows":[[30]]}}
+            name="run_readonly_sql", response={"result":{"columns":["tasa","n_evaluados"],"rows":[[30,10]]}}
         ))])]
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "usage.jsonl"
@@ -795,7 +795,7 @@ class StreamingRunToolLoopTests(unittest.TestCase):
             ]
         )
         chat.get_history = lambda **_: [SimpleNamespace(parts=[SimpleNamespace(function_response=SimpleNamespace(
-            name="run_readonly_sql", response={"result":{"columns":["tasa"],"rows":[[30]]}}
+            name="run_readonly_sql", response={"result":{"columns":["tasa","n_evaluados"],"rows":[[30,10]]}}
         ))])]
         deltas: list[str] = []
         invalidated = []
@@ -1094,11 +1094,13 @@ class RunToolLoopNumericEvidenceDebugTests(unittest.TestCase):
         return answer, buffer.getvalue()
 
     def test_flags_a_number_not_present_in_any_sql_result(self) -> None:
+        # MAX_EVIDENCE_REPAIRS=2 (subido de 1, 2026-09-18): intento inicial + 2 reintentos inválidos.
         chat = FakeChat(
             [
                 FakeResponse(
                     "", function_calls=[FakeFunctionCall("run_readonly_sql", {"sql": "SELECT 1"})]
                 ),
+                FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
             ]
@@ -1130,11 +1132,13 @@ class RunToolLoopNumericEvidenceDebugTests(unittest.TestCase):
         self.assertNotIn("números sin respaldo directo", stderr_output)
 
     def test_never_printed_without_debug(self) -> None:
+        # MAX_EVIDENCE_REPAIRS=2 (subido de 1, 2026-09-18): intento inicial + 2 reintentos inválidos.
         chat = FakeChat(
             [
                 FakeResponse(
                     "", function_calls=[FakeFunctionCall("run_readonly_sql", {"sql": "SELECT 1"})]
                 ),
+                FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
             ]
@@ -1236,11 +1240,13 @@ class InteractionOutcomeLoggingTests(unittest.TestCase):
         self.assertIn("resultado_total", events[0]["offending_terms"])
 
     def test_unverified_fallback_is_logged_when_repairs_are_exhausted(self) -> None:
+        # MAX_EVIDENCE_REPAIRS=2 (subido de 1, 2026-09-18): intento inicial + 2 reintentos inválidos.
         chat = FakeChat(
             [
                 FakeResponse(
                     "", function_calls=[FakeFunctionCall("run_readonly_sql", {"sql": "SELECT 1"})]
                 ),
+                FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
                 FakeResponse("La tasa de cierre fue del 999%."),
             ]

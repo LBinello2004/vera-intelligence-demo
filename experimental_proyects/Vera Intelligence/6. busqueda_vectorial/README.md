@@ -1403,4 +1403,83 @@ reactiva, dos mejoras de mantenibilidad/UX sobre lo ya construido en la Iteraci�
   sesgo de confirmación inherente. Antes de generalizar a otro cliente, vale la pena que alguien más
   (sin contexto del diseño interno) escriba unas preguntas y las corra a ciegas.
 
-Última actualización del README: 2026-09-14
+### Iteración 27 — de "citas" a insight: filtro por checklist + analista de conversaciones (2026-09-21)
+
+Pedido explícito de Lucas: que la búsqueda vectorial no sirva sólo para citar sino para tener un
+insight que el SQL no da -pedir coaching de un vendedor y que diga **qué hizo mal en particular**
+(más allá del checklist) y **cómo mejorar siguiendo a compañeros con mejores métricas que resuelven
+esa situación de otra forma-. Restricción: sin tool nueva y sin llamadas LLM adicionales.
+
+Diagnóstico: buscar "conversaciones parecidas a una frase" es el enfoque equivocado para coaching
+(no trae *dónde falló este vendedor* ni *dónde acertó su compañero*), y el juez ya leía todos los
+fragmentos con un LLM barato pero devolvía sólo true/false. Tras ~30 ajustes de prompt seguía
+saliendo genérico.
+
+Cambios (`vector_search.py`, `vi_agent.py`):
+
+- **Filtro por resultado del checklist**: `search_conversations(criterio, resultado)` -JOIN a la
+  vista `*_rendimiento_vendedor` (una fila por conversación, por `recording_id`)-. `employee_name` +
+  `criterio` + `resultado='No'` trae SUS conversaciones donde falló ese criterio; el nombre de un
+  compañero + `resultado='Sí'` trae cómo lo cumple. `criterio` se valida por pertenencia exacta a
+  los campos Sí/No de la fuente de rendimiento del Data Map ACTIVO (`_performance_criteria`), y el
+  `description` de ese campo (qué significa Sí/No) se le pasa al analista.
+- **El juez pasa a analista (misma llamada, mismo modelo `gemini-3.5-flash-lite`)**: además del
+  veredicto devuelve por conversación `notas` {situacion, que_hizo, como_termino} y `patrones` que
+  se repiten. Se mapea por el índice `i` (encontrado en vivo: con 8 fragmentos devolvió 7 y el
+  chequeo de largo tiraba todo). Con filtro de checklist la relevancia no vacía el resultado (se
+  conservan los que tienen notas; si ninguno, todos). Sigue aceptando el formato viejo (array de
+  booleanos) y sigue siendo fail-open.
+- **Prompt**: el bloque de `search_conversations` pasó de ~380 a ~90 líneas, centrado en tres
+  flujos (coaching de un vendedor, varios vendedores, equipo en un período) que se arman **por
+  situación**: "Cuando [situación], este vendedor [hace X]; un compañero con mejor resultado
+  [hace Y] → probar Z".
+
+Costo: prácticamente neutro -el juez ya recibía los ~8 fragmentos completos; sólo crece la salida
+(~100 tokens por conversación). Mismo número de llamadas. La búsqueda con filtro tardó 5-15s en
+mens_fashion_alto/roberts_alto.
+
+Verificado en vivo (mens_fashion_alto): coaching de Ubaldo Ramos, "peores tres vendedores" y
+"qué recomendarías al equipo esta semana" ahora describen conductas concretas por situación
+(ej. "cuando el cliente pregunta el precio, informa precio y promoción y espera; un compañero junta
+las prendas elegidas y propone pasar a caja") en vez de recomendaciones de manual.
+
+**Ronda 2 (mismo día): `comparar_con_mejores`.** El límite (4) de abajo se resolvió en código en vez
+de por prompt: con `criterio` + `resultado='No'` + `comparar_con_mejores=true`, UNA llamada trae
+(a) las conversaciones donde el vendedor falló el criterio y (b) las de los mejores en ese criterio
+(`_top_performers`: agregación chica sobre la vista de rendimiento, base mínima 15, excluye al
+vendedor, respeta período/tienda), y el analista las ve juntas en UNA llamada y devuelve un
+`contraste` por situación (situación / qué hace el vendedor / qué hacen los compañeros). Los
+nombres de los compañeros **nunca llegan al modelo principal** (se reemplazan en código por
+"compañero con mejor resultado"). Menos llamadas que antes (1 por vendedor en vez de 2 búsquedas +
+la que el modelo se salteaba) y el emparejamiento de situaciones lo hace el analista barato con
+ambos lados a la vista, no el modelo caro con texto crudo. Sin `employee_name` sirve para equipo en
+un período. Verificado en vivo: "peores tres vendedores" -3 llamadas, una por persona, cada una con
+su propio criterio- devolvió para los tres un "contraste en piso" con situación, conducta del
+vendedor, conducta del compañero y "qué probar"; el semanal de equipo, una sola llamada.
+Bug preexistente encontrado en el camino (`answer_verification.metric_tokens`): una numeración con
+formato markdown ("### 1. Jorge", "**1.** Jorge") se leía como cifra "1" sin respaldo y agotaba los
+reintentos (fallback genérico) -corregido y con tests.
+
+Límites conocidos: (1) lo observado es una **muestra** de ~8 conversaciones por lado -se presenta
+como "en las conversaciones revisadas", nunca como estadística (LÍMITE DURO sin cambios); (2) la
+transcripción tiene ruido y "Speaker N" no confiable -el analista deduce el rol por contexto; (3)
+clientes cuyos fragmentos son muy ruidosos (ej. farma24_alto en las pruebas) degradan a "sin notas"
+y el resultado es el de antes; (4) [RESUELTO en la ronda 2: la comparación con los mejores ya no depende de que el modelo pida
+otra búsqueda]; (5) el fragmento crudo sigue viajando al modelo principal (posible recorte futuro para
+ahorrar tokens del modelo caro).
+
+Última actualización del README: 2026-09-21
+
+### Iteración 27, ronda 3 (2026-09-21): recorte de costo
+
+- **`incluir_fragmentos` (default `false`)**: el texto crudo (`fragmento_aproximado`, ~1.000 tokens por
+  resultado, ~13 resultados por búsqueda en modo comparación) ya no viaja al modelo principal cuando el
+  resultado trae `notas`; el insight va en las notas. El modelo pasa `true` sólo si se piden
+  citas/textual/ejemplos/audios. Sin notas (fail-open) el fragmento se conserva.
+- **Verificador**: enteros 1-10 usados como cuantificador de prosa ("2 acciones") ya no cuentan como cifra
+  de resultados (medido en `gemini_calls.jsonl`: causa principal de `evidence_repair`, cada uno una llamada
+  completa al modelo principal; ~28% del gasto de la muestra reciente). Siguen exigiendo respaldo
+  cuando cuentan conversaciones, ventas, clientes, etc.
+- **Descartado (medido)**: fusionar en una sola query las conversaciones del vendedor y de los mejores.
+  `query_ms` es de base de datos (mediana 4,7 s), no gasto de Gemini, y una sola query con `LIMIT` deja que
+  un grupo desplace al otro.

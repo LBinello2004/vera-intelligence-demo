@@ -45,7 +45,8 @@ class VerificationTests(unittest.TestCase):
         v=verify_answer("La tasa fue 20%."+self.block(self.claim("20%","percentage",["cumplimientos","n_evaluados"])),self.store)
         self.assertFalse(v.errors)
         self.assertNotIn("vera-evidence",v.answer)
-        self.assertTrue(any("500" in note for note in v.limitations))
+        # Ya no se agrega el aviso "Bases evaluadas observadas: ..." (2026-09-21, pedido explícito).
+        self.assertFalse(any("Bases evaluadas" in note for note in v.limitations))
     def test_bad_calculation_fails_even_if_wrong_number_exists_in_sql(self):
         v=verify_answer("La tasa fue 100%."+self.block(self.claim("100%","percentage",["cumplimientos","n_evaluados"])),self.store)
         self.assertIn("cálculo incorrecto",v.errors)
@@ -97,7 +98,7 @@ class VerificationTests(unittest.TestCase):
         c['text']='33,9%'
         self.assertTrue(verify_answer("Resultado: 33,9%."+self.block(c),s).errors)
     def test_percentage_with_three_decimal_places_is_not_thousands(self):
-        s={};add_result(s,{"columns":["tasa"],"rows":[[12.345]]})
+        s={};add_result(s,{"columns":["tasa","n_evaluados"],"rows":[[12.345,50]]})
         self.assertFalse(verify_answer("La tasa fue 12,345%.",s).errors)
         self.assertTrue(verify_answer("La tasa fue 12,349%.",s).errors)
 
@@ -169,7 +170,7 @@ class VerificationTests(unittest.TestCase):
     def test_unknown_base_produces_visible_limitation(self):
         s={};add_result(s,{"columns":["tasa"],"rows":[[20]]})
         v=verify_answer("La tasa fue 20%.",s)
-        self.assertIn("No se informó",with_limitations(v))
+        self.assertTrue(any("porcentaje sin base" in e for e in v.errors))
     def test_single_observation_is_not_generalized(self):
         s={};add_result(s,{"columns":["tasa","n_evaluados"],"rows":[[100,1]]})
         v=verify_answer("La tasa fue 100%.",s)
@@ -201,9 +202,14 @@ class VerificationTests(unittest.TestCase):
         chat=SimpleNamespace(get_history=lambda **_: [SimpleNamespace(parts=[SimpleNamespace(function_response=SimpleNamespace(name='run_readonly_sql',response={'result':payload}))])])
         self.assertEqual(history_results(chat),self.store)
     def test_limitations_are_before_interface_blocks(self):
-        v=verify_answer('La tasa fue 20%.\n```vera-suggestions ["Continuar"]```',self.store)
+        sin_base={};add_result(sin_base,{"columns":["tasa","n_evaluados"],"rows":[[100,1]]})
+        v=verify_answer('La tasa fue 100%.\n```vera-suggestions ["Continuar"]```',sin_base)
         a=with_limitations(v)
-        self.assertLess(a.index('Bases evaluadas'),a.index('```vera-suggestions'))
+        self.assertLess(a.index('una sola observación'),a.index('```vera-suggestions'))
+
+    def test_bases_of_cited_rows_are_never_appended_as_a_notice(self):
+        v=verify_answer("La tasa fue 20%.",self.store)
+        self.assertNotIn('Bases evaluadas',with_limitations(v))
 
     def test_base_cannot_be_negative_or_fractional(self):
         for base in [-1,2.5]:
@@ -229,6 +235,33 @@ class VerificationTests(unittest.TestCase):
     def test_evaluation_scale_is_not_an_observed_metric(self):
         self.assertFalse(verify_answer("Hubo 500 conversaciones; usamos una escala de 1 a 5.",self.store).errors)
 
+class OrdinalMarkerTests(unittest.TestCase):
+    """Una numeración de lista/encabezado no es una cifra de resultados (falso positivo encontrado
+    en vivo el 2026-09-21: "### 1. Jorge" agotaba los reintentos de evidencia)."""
+
+    def tokens(self, text):
+        from answer_verification import metric_tokens
+        return list(metric_tokens(text))
+
+    def test_markdown_ordinal_markers_are_not_figures(self):
+        for text in (
+            "1. Jorge texto",
+            "1) Jorge texto",
+            "### 1. Jorge Javier\ntexto",
+            "**1. Jorge** texto",
+            "* **1.** Jorge",
+            "- 1. Jorge",
+            "> 2. Ubaldo",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.tokens(text), [])
+
+    def test_real_figures_are_still_detected(self):
+        self.assertEqual(self.tokens("Cumple el 45.9% de los casos"), ["45.9%"])
+        self.assertEqual(self.tokens("### Resultado 45.9 puntos"), ["45.9"])
+        self.assertEqual(self.tokens("Hubo 999 conversaciones."), ["999"])
+
+
 class AgentVerificationTests(unittest.TestCase):
     def fake_chat(self, answers):
         responses=iter(answers)
@@ -245,11 +278,13 @@ class AgentVerificationTests(unittest.TestCase):
         payload=chat.send_message.call_args_list[1].args[0][0].function_response.response
         self.assertIn('verification',payload)
     def test_repeated_invalid_number_has_bounded_fallback(self):
+        # MAX_EVIDENCE_REPAIRS=2 (subido de 1, 2026-09-18): intento inicial + 2 reintentos, los 3
+        # inválidos, antes de caer al fallback.
         tool=SimpleNamespace(name='run_readonly_sql',args={'sql':'SELECT prueba'})
-        chat=self.fake_chat([self.response(tools=[tool]),self.response('Hubo 999 conversaciones.'),self.response('Hubo 999 conversaciones.')])
+        chat=self.fake_chat([self.response(tools=[tool]),self.response('Hubo 999 conversaciones.'),self.response('Hubo 999 conversaciones.'),self.response('Hubo 999 conversaciones.')])
         with patch.dict(vi_agent.TOOL_FUNCTIONS,{'run_readonly_sql':lambda **_:json.dumps({'columns':['total'],'rows':[[500]]})}):
             self.assertEqual(vi_agent.run_tool_loop(chat,'Contá'),FALLBACK)
-        self.assertEqual(chat.send_message.call_count,3)
+        self.assertEqual(chat.send_message.call_count,4)
     def test_unverified_streamed_number_is_never_published(self):
         tool=SimpleNamespace(name='run_readonly_sql',args={'sql':'SELECT prueba'})
         turns=iter([[self.response(tools=[tool])],[self.response('Hubo 999 conversaciones.\n')],[self.response('Hubo 500 conversaciones.\n')]])
@@ -259,3 +294,47 @@ class AgentVerificationTests(unittest.TestCase):
             answer=vi_agent.run_tool_loop(chat,'Contá',on_text_delta=deltas.append)
         self.assertNotIn('999',''.join(deltas));self.assertIn('500',''.join(deltas))
         self.assertEqual(answer,'Hubo 500 conversaciones.')
+
+
+class SmallIntegerQuantifierTests(unittest.TestCase):
+    def test_small_integers_as_prose_quantifiers_are_not_metrics(self):
+        from answer_verification import metric_tokens
+        text = "Probá 2 acciones concretas y dejá 1 cosa clara en el cierre."
+        self.assertEqual(list(metric_tokens(text)), [])
+
+    def test_small_integers_counting_business_entities_still_need_backing(self):
+        from answer_verification import metric_tokens
+        self.assertEqual(list(metric_tokens("Hubo 3 ventas y 2 clientes.")), ["3", "2"])
+
+    def test_percentages_and_larger_numbers_still_checked(self):
+        from answer_verification import metric_tokens
+        self.assertEqual(list(metric_tokens("Cumple 5% y 25 casos.")), ["5%", "25"])
+
+
+class BaseStatedInProseTests(unittest.TestCase):
+    def _verify(self, answer, rows):
+        store = {}
+        add_result(store, {"rows": rows})
+        return verify_answer(answer, store)
+
+    def test_base_declared_in_prose_and_present_in_sql_is_not_flagged(self):
+        v = self._verify("Cumple 13.9% (115 conversaciones evaluadas).", [{"tasa_cierre": 13.9, "n": 115}])
+        self.assertFalse(any("No se informó" in x for x in v.limitations))
+
+    def test_no_base_anywhere_still_warns(self):
+        v = self._verify("Cumple 13.9% en el período.", [{"tasa_cierre": 13.9}])
+        self.assertTrue(any("porcentaje sin base" in e for e in v.errors))
+
+
+class BaseFromSqlRowTests(unittest.TestCase):
+    def test_count_column_with_other_name_becomes_the_base_without_error(self):
+        s = {}
+        add_result(s, {"columns": ["tasa_cierre", "total_conversaciones"], "rows": [[13.9, 115]]})
+        v = verify_answer("El cierre es 13.9%.", s)
+        self.assertFalse(v.errors)
+        self.assertIn("115 conversaciones", with_limitations(v))
+
+    def test_no_count_column_still_errors(self):
+        s = {}
+        add_result(s, {"columns": ["tasa_cierre"], "rows": [[13.9]]})
+        self.assertTrue(any("porcentaje sin base" in e for e in verify_answer("El cierre es 13.9%.", s).errors))

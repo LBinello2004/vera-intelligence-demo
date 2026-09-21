@@ -176,7 +176,12 @@ def metric_tokens(text):
     text = re.sub(r'escala (?:de|del) \d+(?:[.,]\d+)? (?:a|al) \d+(?:[.,]\d+)?', ' ', text, flags=re.I)
     for m in NUMBER.finditer(text):
         before, after = text[max(0, m.start()-35):m.start()], text[m.end():m.end()+35]
-        if re.search(r"(?:^|\n)\s*$", before) and re.match(r"[.)]\s", after):
+        # Marcador de lista ordenada, también con formato markdown (2026-09-21, encontrado en vivo:
+        # "### 1. Jorge", "**1. Jorge**", "* **1.** Jorge" o "- 1. Jorge" se leían como una cifra
+        # "1" sin respaldo y agotaban los reintentos -la respuesta de coaching de 3 vendedores
+        # terminó en el mensaje genérico de "no pude verificar"). El prefijo admite espacios y
+        # marcas de encabezado/cita/viñeta/negrita, y el sufijo un cierre de negrita.
+        if re.search(r"(?:^|\n)[\s#>*_\-]*$", before) and re.match(r"[.)]\*{0,2}\s", after):
             continue
         if re.search(r"(?:top|paso|tienda|sucursal|farma|últimos|ultimos)\s*$", before, re.I) or re.match(r"\s*(?:días|dias|semanas|meses|años|años|preguntas|criterios|puntos de mejora|minutos|minuto|horas|hora)\b", after, re.I):
             # minutos/minuto/horas/hora (2026-09-15, bug real: la duración de una dinámica de
@@ -186,6 +191,19 @@ def metric_tokens(text):
             # recomendación de coaching con un ejemplo real personalizado entraba en un ciclo de
             # evidence_repair por un falso positivo, y la reescritura de corrección solía perder el
             # ejemplo personalizado en el camino (ver "8. README.md" > personalización).
+            continue
+        # Enteros chicos (1-10) usados como cuantificador de prosa ("2 momentos", "1 cosa", "3
+        # acciones") no son cifras de resultados -medido 2026-09-21: eran la causa de la mayoría de
+        # los evidence_repair recientes (cada uno, una llamada completa al modelo principal). Se
+        # siguen exigiendo si cuentan una entidad de negocio (conversaciones, ventas, clientes...).
+        if (
+            re.fullmatch(r"(?:10|[1-9])", m.group())
+            and not re.match(r"\s*%", after)
+            and not re.match(
+                r"\s+(?:conversaciones?|ventas?|compras?|registros?|evaluaciones?|observaciones?|clientes?|tiendas?|productos?|unidades?|puntos?|casos?|vendedores?|veces|de cada)\b",
+                after, re.I,
+            )
+        ):
             continue
         if re.match(r"\s*de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b", after, re.I):
             continue
@@ -371,12 +389,51 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
     prose = OTHER_FENCES.sub('', cleaned)
     if '%' in prose or re.search(r"puntuaci[oó]n|promedio|cumplimiento", prose, re.I):
         positive = sorted(set(base for base in bases if base > 0))
+        # Una base que la prosa declara ("115 conversaciones evaluadas") y que coincide con una celda
+        # real de SQL también la informa, aunque la columna no se llame base_* (2026-09-21, visto en
+        # vivo: coaching con las bases dichas en el texto igual terminaba con "No se informó la
+        # cantidad de observaciones evaluadas").
         if not positive:
-            verdict.limitations.append('No se informó la cantidad de observaciones evaluadas; no se puede determinar la solidez de estos indicadores.')
-        else:
-            disclosed = all(any(number(raw, prose=True) == base for raw in cited if '%' not in raw) for base in positive)
-            if not disclosed:
-                verdict.limitations.append('Bases evaluadas observadas: ' + ', '.join(str(b) for b in positive[:5]) + (' y otras bases' if len(positive) > 5 else '') + '.')
+            for m in re.finditer(r"(\d[\d.,]*)\s+(?:conversaciones|observaciones|ventas|registros|evaluaciones)\b", prose, re.I):
+                try:
+                    if any(matches(m.group(1), value) and value > 0 for value in direct):
+                        positive.append(number(m.group(1)))
+                except (ValueError, ArithmeticError):
+                    pass
+        if not positive:
+            # Sin reintento (2026-09-21): si la fila de la tasa citada trae en otra columna una
+            # cantidad entera positiva con nombre de conteo (evaluad*, total, cantidad, n_*,
+            # conversaciones...), esa es la base -se informa acá, en código, en vez de gastar una
+            # llamada completa al modelo principal para que la agregue.
+            for payload in active_store.values():
+                for row in rows_of(payload):
+                    if not any(
+                        isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
+                        and re.search(r"tasa|porcentaje|percent|pct|rate", col, re.I)
+                        and any(matches(raw, number(cell)) for raw in cited if "%" in raw)
+                        for col, cell in row.items()
+                    ):
+                        continue
+                    for col, cell in row.items():
+                        if (
+                            isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
+                            and re.search(r"evaluad|total|cantidad|conversaciones|observaciones|(?:^|_)n(?:$|_)|count", col, re.I)
+                            and not re.search(r"tasa|porcentaje|percent|pct|rate", col, re.I)
+                            and cell > 0 and cell == int(cell)
+                        ):
+                            positive.append(number(cell))
+                            verdict.limitations.append(f"Base evaluada de los indicadores citados: {int(cell)} conversaciones.")
+                            break
+        if not positive:
+            if any("%" in raw and any(matches(raw, value) for value in percentages) for raw in cited):
+                # Un porcentaje sin su base no se publica (pedido explícito 2026-09-21): el error
+                # dispara una corrección que debe informar la cantidad evaluada o quitar la cifra.
+                verdict.errors.append('porcentaje sin base evaluada: informá junto a cada porcentaje la cantidad de conversaciones evaluadas (columna de base del SQL) o no presentes ese porcentaje')
+            else:
+                verdict.limitations.append('No se informó la cantidad de observaciones evaluadas; no se puede determinar la solidez de estos indicadores.')
+        # Se quitó (2026-09-21, pedido explícito) el aviso 'Bases evaluadas observadas: 9, 826, ...':
+        # una lista de números sueltos al pie de la respuesta que no le decía nada útil a gerencia.
+        # Sigue avisándose cuando NO hay ninguna base informada (rama de arriba).
     unavailable = re.search(r"no (?:se puede|hay evaluación|hay evaluacion|se evalu|fue evalu)|sin evaluación|sin evaluacion|no disponible|no permite", prose, re.I)
     metric_cells = [(column, value) for payload in active_store.values() for row in rows_of(payload) for column, value in row.items() if METRIC.search(column) and not BASIS.search(column)]
     null_metrics = bool(metric_cells) and all(value is None for _, value in metric_cells)

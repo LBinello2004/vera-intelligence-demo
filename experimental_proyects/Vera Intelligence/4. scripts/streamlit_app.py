@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 import uuid
@@ -295,7 +296,21 @@ _TOOL_PROGRESS_LABELS = {
 }
 
 
-def _tool_progress_label(tool_name: str) -> str:
+def _tool_progress_label(tool_name: str, args: dict | None = None) -> str:
+    """Texto de progreso por tool. Para la búsqueda de conversaciones, si los argumentos dicen qué se
+    está leyendo (un vendedor, el equipo, la comparación con quienes mejor cumplen) el texto lo
+    dice -una espera de ~10-20 s con un mensaje genérico parece una falla (2026-09-21)."""
+    if tool_name == "search_conversations" and isinstance(args, dict):
+        employee = args.get("employee_name")
+        who = (
+            f"las conversaciones de {employee.strip()}"
+            if isinstance(employee, str) and employee.strip()
+            else "conversaciones del equipo"
+        )
+        text = f"Leyendo {who}"
+        if args.get("comparar_con_mejores") is True:
+            text += " y las de compañeros con mejor resultado"
+        return text + "... (suele tardar entre 10 y 20 segundos)"
     return _TOOL_PROGRESS_LABELS.get(tool_name, "Analizando...")
 
 
@@ -430,6 +445,23 @@ def _render_debug_trace(tool_calls: list[dict]) -> None:
             st.code(text, language="json")
 
 
+# Las conversaciones se CITAN (texto entre comillas, caso puntual, botón "🔊 Escuchar") sólo cuando la
+# pregunta pide ejemplos, citas, audios o casos reales (pedido explícito, 2026-09-21). En el resto de
+# las respuestas -coaching, diagnósticos- las conversaciones informan el consejo pero no se muestran
+# como citas. Misma lista de señales que el prompt de search_conversations (vi_agent.py).
+_EXAMPLE_REQUEST_RE = re.compile(
+    r"ejemplo|\bcit[aeo]s?\b|\bcitame|textual|\baudios?\b|escuch|grabaci|casos? real(?:es)?\b|"
+    r"en qu[eé] conversaci|qu[eé] (?:dijo|dicen?|le dijo)|c[oó]mo (?:lo )?(?:dijo|dice)|"
+    r"qui[eé]n (?:dijo|dice|lo dijo)|mostr[aá]me\b.*\bconversaci",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_examples(question: str | None) -> bool:
+    """¿La pregunta del usuario pide ejemplos/citas/audios de conversaciones? Lógica pura, testeable."""
+    return bool(question and _EXAMPLE_REQUEST_RE.search(question))
+
+
 def _extract_citable_conversations(tool_calls: list[dict]) -> list[dict]:
     """Lógica pura (sin `st`, testeable directo): de todas las llamadas a search_conversations de
     esta respuesta, arma la lista de conversaciones reales distintas que se pueden ofrecer para
@@ -515,6 +547,7 @@ def _render_message(
     *,
     debug: bool = False,
     message_key: str | None = None,
+    show_audio: bool = True,
 ) -> None:
     if content:
         st.markdown(content)
@@ -524,7 +557,7 @@ def _render_message(
         _render_tool_summary(tool_calls)
         if debug:
             _render_debug_trace(tool_calls)
-        if message_key:
+        if message_key and show_audio:
             _render_audio_players(tool_calls, message_key)
 
 
@@ -730,7 +763,7 @@ def _ensure_greeting(display_name: str, *, debug: bool) -> None:
                     session_id=st.session_state["session_id"],
                     tool_calls_log=tool_calls_log,
                     analysis_control=control,
-                    on_tool_call=lambda name, _args: status.update(label=_tool_progress_label(name)),
+                    on_tool_call=lambda name, _args: status.update(label=_tool_progress_label(name, _args)),
                 )
                 status.update(label="Listo", state="complete")
             greeting, charts = vi_agent.extract_chart_blocks(raw_greeting)
@@ -982,6 +1015,7 @@ def main() -> None:
 
     _ensure_greeting(chosen_display_name, debug=debug)
 
+    previous_question: str | None = None
     for message in st.session_state["messages"]:
         avatar = "✨" if message["role"] == "assistant" else "🧑‍💼"
         with st.chat_message(message["role"], avatar=avatar):
@@ -991,9 +1025,12 @@ def main() -> None:
                 message.get("tool_calls"),
                 debug=debug,
                 message_key=message.get("message_id"),
+                show_audio=_asks_for_examples(previous_question),
             )
             if message["role"] == "assistant" and "message_id" in message:
                 _render_feedback_buttons(message)
+        if message["role"] == "user":
+            previous_question = message["content"]
 
     messages = st.session_state["messages"]
     if messages and messages[-1]["role"] == "assistant":
@@ -1047,7 +1084,7 @@ def main() -> None:
                             session_id=st.session_state["session_id"],
                             tool_calls_log=tool_calls_log,
                             on_tool_call=lambda name, _args: status.update(
-                                label=_tool_progress_label(name)
+                                label=_tool_progress_label(name, _args)
                             ),
                             on_text_delta=_on_text_delta,
                             on_stream_invalidated=_on_stream_invalidated,
@@ -1102,7 +1139,10 @@ def main() -> None:
                 # (2026-09-14): si se generara un id distinto en cada lugar, un click en "Escuchar"
                 # justo después de responder se "perdería" en el próximo rerun de Streamlit.
                 message_id = uuid.uuid4().hex
-                _render_message(answer, charts, tool_calls_log, debug=debug, message_key=message_id)
+                _render_message(
+                    answer, charts, tool_calls_log, debug=debug, message_key=message_id,
+                    show_audio=_asks_for_examples(question),
+                )
         with _ui_run_scope(ui_run_id):
             st.session_state["messages"].append(
                 {

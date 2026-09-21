@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import unittest
@@ -334,6 +335,39 @@ class RenderToolSummaryTests(unittest.TestCase):
         self.assertIn("0.0s", caption_text)
 
 
+class AsksForExamplesTests(unittest.TestCase):
+    """Las conversaciones se citan (y se ofrece escucharlas) sólo si la pregunta pide ejemplos,
+    citas, audios o casos reales -pedido explícito, 2026-09-21."""
+
+    def test_detects_requests_for_examples_quotes_and_audio(self) -> None:
+        for question in (
+            "Dame un ejemplo de cómo maneja objeciones",
+            "¿Tenés algún caso real de venta cruzada?",
+            "Quiero escuchar el audio de esa conversación",
+            "Citame lo que dijo el vendedor",
+            "¿Qué dijo el cliente cuando no compró?",
+            "¿Quién lo dijo?",
+            "¿En qué conversación pasó?",
+            "Mostrame conversaciones donde piden confección a medida",
+            "Pasame las grabaciones",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(streamlit_app._asks_for_examples(question))
+
+    def test_ignores_ordinary_analysis_and_coaching_questions(self) -> None:
+        for question in (
+            "¿Qué le recomendarías al equipo para mejorar esta semana?",
+            "Dame coaching para Ubaldo Ramos",
+            "Dame información y consejos sobre los peores tres vendedores",
+            "¿Cómo viene la tasa de cierre este mes?",
+            "¿Qué impacto tiene la confección a medida al rescatar ventas?",
+            "",
+            None,
+        ):
+            with self.subTest(question=question):
+                self.assertFalse(streamlit_app._asks_for_examples(question))
+
+
 class ExtractCitableConversationsTests(unittest.TestCase):
     """`_extract_citable_conversations` (2026-09-14, ver "Escuchar audio de conversaciones") es la
     parte pura de `_render_audio_players` -sin llamadas a `st`, a propósito, para poder testear la
@@ -559,5 +593,64 @@ class GreetingCacheFingerprintTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 
+class SharedPasswordGateTests(unittest.TestCase):
+    """`_check_shared_password` (2026-09-17, pedido explícito: la app quedó con link público sin
+    ningún registro de quién entra) -no es login individual, sólo una traba mínima contra
+    reenvíos accidentales del link. La contraseña real nunca vive en el código, sólo en el
+    secret VI_DEMO_PASSWORD."""
+
+    def setUp(self):
+        _fake_streamlit.session_state = {}
+        _fake_streamlit.text_input.reset_mock(return_value=True, side_effect=True)
+        _fake_streamlit.button.reset_mock(return_value=True, side_effect=True)
+        self.env_patch = patch.dict(os.environ, {}, clear=False)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+        self.addCleanup(_fake_streamlit.session_state.clear)
+
+    def test_fails_closed_without_a_configured_secret(self) -> None:
+        os.environ.pop("VI_DEMO_PASSWORD", None)
+        self.assertFalse(streamlit_app._check_shared_password())
+
+    def test_wrong_password_does_not_grant_access(self) -> None:
+        os.environ["VI_DEMO_PASSWORD"] = "446655"
+        _fake_streamlit.text_input.return_value = "otra-cosa"
+        _fake_streamlit.button.return_value = True
+        self.assertFalse(streamlit_app._check_shared_password())
+        self.assertNotIn("shared_password_ok", _fake_streamlit.session_state)
+
+    def test_correct_password_grants_access_and_marks_session(self) -> None:
+        os.environ["VI_DEMO_PASSWORD"] = "446655"
+        _fake_streamlit.text_input.return_value = "446655"
+        _fake_streamlit.button.return_value = True
+        streamlit_app._check_shared_password()
+        self.assertTrue(_fake_streamlit.session_state.get("shared_password_ok"))
+
+    def test_already_unlocked_session_skips_the_prompt(self) -> None:
+        os.environ["VI_DEMO_PASSWORD"] = "446655"
+        _fake_streamlit.session_state["shared_password_ok"] = True
+        _fake_streamlit.text_input.return_value = ""
+        _fake_streamlit.button.return_value = False
+        self.assertTrue(streamlit_app._check_shared_password())
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class SearchProgressLabelTests(unittest.TestCase):
+    def test_label_names_the_seller_and_the_comparison(self) -> None:
+        label = streamlit_app._tool_progress_label(
+            "search_conversations", {"employee_name": "Ubaldo Ramos", "comparar_con_mejores": True}
+        )
+        self.assertIn("Ubaldo Ramos", label)
+        self.assertIn("compañeros con mejor resultado", label)
+
+    def test_label_without_seller_talks_about_the_team(self) -> None:
+        label = streamlit_app._tool_progress_label("search_conversations", {"query": "x"})
+        self.assertIn("equipo", label)
+
+    def test_other_tools_ignore_args(self) -> None:
+        self.assertEqual(
+            streamlit_app._tool_progress_label("run_readonly_sql", {"query": "select 1"}), "Consultando datos..."
+        )

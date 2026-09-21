@@ -262,9 +262,17 @@ class SearchSqlIsolationTests(unittest.TestCase):
     def test_search_method_source_filters_by_seller_id_parameter(self) -> None:
         import inspect
 
-        source = inspect.getsource(vector_search.VectorSearchRepository.search)
-        self.assertIn("WHERE r.seller_id = %s", source)
-        self.assertIn("self.client.tenant", source)
+        # El SQL de recuperación vive en `_retrieve` (extraído de `search()` el 2026-09-21 para
+        # correrlo por grupo: el vendedor y los mejores del criterio). `_top_performers` también
+        # consulta datos del cliente y debe filtrar por tenant.
+        for method in (
+            vector_search.VectorSearchRepository._retrieve,
+            vector_search.VectorSearchRepository._top_performers,
+        ):
+            source = inspect.getsource(method)
+            self.assertIn("self.client.tenant", source)
+        retrieve_source = inspect.getsource(vector_search.VectorSearchRepository._retrieve)
+        self.assertIn("WHERE r.seller_id = %s", retrieve_source)
 
 
 class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
@@ -923,6 +931,386 @@ class SearchAppliesJudgeFilteringTests(_RedirectsUsageLogTestCase):
     def test_empty_results_short_circuit_still_returns_empty_list(self) -> None:
         payload = self._run_search_with_judge([], lambda q, r, **kw: [])
         self.assertEqual(payload["resultados"], [])
+
+
+class AnalystNotesTests(unittest.TestCase):
+    """El juez pasó a "analista" (2026-09-21): en la misma llamada devuelve notas observables por
+    conversación y patrones, además del veredicto -ver el comentario de _JUDGE_PROMPT_TEMPLATE."""
+
+    def _judge(self, response_text: str, resultados: list[dict], **kwargs):
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
+            veredictos = vector_search._judge_relevance(
+                "cierre", resultados, model="m", api_key="k", **kwargs
+            )
+        return veredictos, mock_client
+
+    def test_annotates_relevant_results_with_notes_and_returns_patterns(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}, {"fragmento_aproximado": "b"}]
+        payload = json.dumps(
+            {
+                "resultados": [
+                    {"i": 0, "relevante": True, "situacion": "Cliente pregunta el precio",
+                     "que_hizo": "Informó la promoción sin invitar a caja", "como_termino": "Siguió mirando"},
+                    {"i": 1, "relevante": False, "situacion": "", "que_hizo": "", "como_termino": ""},
+                ],
+                "patrones": ["Informa promociones sin proponer avanzar"],
+            }
+        )
+        analysis: dict = {}
+        veredictos, _ = self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(veredictos, [True, False])
+        self.assertEqual(resultados[0]["notas"]["que_hizo"], "Informó la promoción sin invitar a caja")
+        self.assertNotIn("notas", resultados[1])
+        self.assertEqual(analysis["patrones"], ["Informa promociones sin proponer avanzar"])
+
+    def test_maps_by_index_when_the_model_skips_an_item(self) -> None:
+        # Encontrado en vivo: con 8 fragmentos devolvió 7 elementos y el chequeo de largo exacto
+        # tiraba TODO el análisis. Un fragmento sin elemento propio se conserva sin notas.
+        resultados = [{"fragmento_aproximado": x} for x in "abc"]
+        payload = json.dumps(
+            {"resultados": [
+                {"i": 0, "relevante": False},
+                {"i": 2, "relevante": True, "que_hizo": "Propuso pasar a caja"},
+            ], "patrones": []}
+        )
+        veredictos, _ = self._judge(payload, resultados)
+        self.assertEqual(veredictos, [False, True, True])
+        self.assertNotIn("notas", resultados[1])
+        self.assertEqual(resultados[2]["notas"]["que_hizo"], "Propuso pasar a caja")
+
+    def test_positional_format_without_indices_still_requires_exact_length(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}, {"fragmento_aproximado": "b"}]
+        payload = json.dumps({"resultados": [{"relevante": True}], "patrones": []})
+        veredictos, _ = self._judge(payload, resultados)
+        self.assertEqual(veredictos, [True, True])  # fail-open
+        self.assertNotIn("notas", resultados[0])
+
+    def test_legacy_boolean_array_is_still_accepted(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}, {"fragmento_aproximado": "b"}]
+        veredictos, _ = self._judge("[false, true]", resultados)
+        self.assertEqual(veredictos, [False, True])
+
+    def test_notes_are_cleaned_and_bounded(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "  x   y  ",
+                             "que_hizo": "z" * 1000, "como_termino": 5}],
+             "patrones": ["p1", "p2", "p3", "p4", ""]}
+        )
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        notas = resultados[0]["notas"]
+        self.assertEqual(notas["situacion"], "x y")
+        self.assertEqual(len(notas["que_hizo"]), vector_search._NOTE_MAX_CHARS)
+        self.assertEqual(notas["como_termino"], "")
+        self.assertEqual(analysis["patrones"], ["p1", "p2", "p3"])
+
+    def test_label_context_reaches_the_prompt(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}]
+        _, mock_client = self._judge(
+            "[true]", resultados, label_context="el criterio «cierre» quedó en «No»"
+        )
+        prompt = mock_client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("el criterio «cierre» quedó en «No»", prompt)
+
+    def test_label_mode_keeps_only_results_with_notes_when_some_have_them(self) -> None:
+        # Con filtro de checklist el grupo ya lo define el dato estructurado: la relevancia del
+        # analista no vacía el resultado; se conservan las conversaciones con notas.
+        resultados = [{"fragmento_aproximado": x} for x in "abc"]
+        payload = json.dumps({"resultados": [
+            {"i": 0, "relevante": False},
+            {"i": 1, "relevante": True, "que_hizo": "Informó el precio y esperó"},
+            {"i": 2, "relevante": False},
+        ], "patrones": []})
+        veredictos, _ = self._judge(payload, resultados, label_context="el criterio «x» quedó en «No»")
+        self.assertEqual(veredictos, [False, True, False])
+
+    def test_label_mode_keeps_everything_when_no_result_has_notes(self) -> None:
+        resultados = [{"fragmento_aproximado": x} for x in "ab"]
+        payload = json.dumps({"resultados": [
+            {"i": 0, "relevante": False}, {"i": 1, "relevante": False},
+        ], "patrones": []})
+        veredictos, _ = self._judge(payload, resultados, label_context="el criterio «x» quedó en «No»")
+        self.assertEqual(veredictos, [True, True])
+
+    def test_without_label_mode_the_analyst_relevance_still_filters(self) -> None:
+        resultados = [{"fragmento_aproximado": x} for x in "ab"]
+        payload = json.dumps({"resultados": [
+            {"i": 0, "relevante": False}, {"i": 1, "relevante": False},
+        ], "patrones": []})
+        veredictos, _ = self._judge(payload, resultados)
+        self.assertEqual(veredictos, [False, False])
+
+    def test_no_label_block_without_label_context(self) -> None:
+        _, mock_client = self._judge("[true]", [{"fragmento_aproximado": "a"}])
+        prompt = mock_client.models.generate_content.call_args.kwargs["contents"]
+        self.assertNotIn("Contexto del checklist", prompt)
+
+
+class ChecklistFilterTests(_RedirectsUsageLogTestCase):
+    """Filtro por resultado del checklist (criterio + resultado) en search(): sirve para comparar
+    conversaciones donde un vendedor FALLÓ un criterio contra donde un compañero lo CUMPLIÓ."""
+
+    def _search(self, rows: list[tuple] | None = None, judge=_all_relevant, **kwargs):
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor(rows or [])
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=judge
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("cliente valida la prenda", **kwargs))
+        return payload, cursor
+
+    def test_criteria_come_from_the_data_map_with_descriptions(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        source = vector_search._find_performance_source(client)
+        self.assertTrue(source.name.endswith("_rendimiento_vendedor"))
+        criteria = vector_search._performance_criteria(str(client.data_map_path), source.name)
+        self.assertIn("vendedorrealizocierrecompra", criteria)
+        self.assertTrue(criteria["vendedorrealizocierrecompra"])
+        self.assertNotIn("employee_full_name", criteria)
+
+    def test_filter_adds_join_where_and_params_in_order(self) -> None:
+        _, cursor = self._search(
+            criterio="vendedorrealizocierrecompra", resultado="no", employee_name="Ubaldo Ramos"
+        )
+        sql, params = cursor.executed[-1]
+        self.assertIn(" perf ON perf.recording_id = ce.recording_id", sql)
+        self.assertIn('AND perf."vendedorrealizocierrecompra" = %s', sql)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertIn("No", params)  # 'no' se normaliza a 'No', siempre como parámetro
+        self.assertNotIn("vendedorrealizocierrecompra", "".join(str(p) for p in params))
+
+    def test_result_carries_checklist_label(self) -> None:
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.2)]
+        payload, _ = self._search(rows, criterio="vendedorrealizocierrecompra", resultado="Sí")
+        self.assertEqual(payload["resultados"][0]["checklist"], {"vendedorrealizocierrecompra": "Sí"})
+
+    def test_label_context_is_passed_to_the_analyst_with_data_map_meaning(self) -> None:
+        seen = {}
+
+        def judge(query, resultados, **kwargs):
+            seen.update(kwargs)
+            return [True] * len(resultados)
+
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.2)]
+        self._search(rows, judge=judge, criterio="vendedorrealizocierrecompra", resultado="No")
+        self.assertIn("vendedorrealizocierrecompra", seen["label_context"])
+        self.assertIn("«No»", seen["label_context"])
+        self.assertIn("Significado según el Data Map", seen["label_context"])
+
+    def test_patterns_are_returned_only_when_there_are_relevant_results(self) -> None:
+        def judge(query, resultados, analysis_out=None, **kwargs):
+            if analysis_out is not None:
+                analysis_out["patrones"] = ["Informa precio sin proponer avanzar"]
+            return [True] * len(resultados)
+
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.2)]
+        with_rows, _ = self._search(rows, judge=judge)
+        self.assertEqual(with_rows["patrones"], ["Informa precio sin proponer avanzar"])
+        without_rows, _ = self._search([], judge=judge)
+        self.assertNotIn("patrones", without_rows)
+
+    def test_invalid_criterio_is_rejected_and_lists_the_valid_ones(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._search(criterio="employee_full_name; DROP TABLE x", resultado="No")
+        self.assertIn("vendedorrealizocierrecompra", str(caught.exception))
+
+    def test_criterio_and_resultado_must_come_together(self) -> None:
+        with self.assertRaises(ValueError):
+            self._search(criterio="vendedorrealizocierrecompra")
+        with self.assertRaises(ValueError):
+            self._search(resultado="No")
+        with self.assertRaises(ValueError):
+            self._search(criterio="vendedorrealizocierrecompra", resultado="quizás")
+
+    def test_empty_dict_optional_values_are_ignored(self) -> None:
+        # Gemini a veces manda {} en vez de omitir un opcional (ver _as_optional_str).
+        payload, cursor = self._search(criterio={}, resultado={})
+        self.assertNotIn(" perf ON ", cursor.executed[-1][0])
+        self.assertEqual(payload["resultados"], [])
+
+    def test_without_the_filter_nothing_changes_in_the_sql(self) -> None:
+        _, cursor = self._search()
+        self.assertNotIn(" perf ON ", cursor.executed[-1][0])
+
+
+class CompareWithBestTests(_RedirectsUsageLogTestCase):
+    """`comparar_con_mejores` (2026-09-21): en UNA llamada trae las conversaciones donde el vendedor
+    falló el criterio y las de los mejores del criterio, con UN análisis que las contrasta."""
+
+    ROWS = [("rid1", 0, "Tienda A", "Ubaldo Ramos", None, "hola", "conv1", None, 0.2)]
+
+    def _search(self, peers=("Laura Soto",), judge=None, **kwargs):
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor(self.ROWS)
+        connection = _FakeConnection(cursor)
+        calls = []
+
+        def default_judge(query, resultados, **kw):
+            calls.append(([r.get("grupo") for r in resultados], kw))
+            if kw.get("analysis_out") is not None:
+                kw["analysis_out"]["contraste"] = [
+                    {"situacion": "Cliente valida la prenda", "vendedor": "espera", "companeros": "propone caja"}
+                ]
+            return [True] * len(resultados)
+
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=judge or default_judge
+        ), patch.object(
+            vector_search.VectorSearchRepository, "_top_performers", return_value=list(peers)
+        ) as top, patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("cliente valida la prenda", **kwargs))
+        return payload, calls, cursor, top
+
+    def _compare(self, **overrides):
+        args = dict(
+            criterio="vendedorrealizocierrecompra", resultado="No",
+            employee_name="Ubaldo Ramos", comparar_con_mejores=True,
+        )
+        args.update(overrides)
+        return self._search(**args)
+
+    def test_returns_both_groups_and_the_contrast(self) -> None:
+        payload, _, _, _ = self._compare()
+        self.assertEqual(len(payload["resultados"]), 1)
+        self.assertEqual(len(payload["companeros"]), 1)
+        self.assertEqual(payload["contraste"][0]["companeros"], "propone caja")
+
+    def test_raw_fragments_are_dropped_when_notes_exist_unless_requested(self) -> None:
+        def judge(query, resultados, **kw):
+            for r in resultados:
+                r["notas"] = {"situacion": "s", "que_hizo": "q", "como_termino": "c"}
+            return [True] * len(resultados)
+
+        payload, _, _, _ = self._compare(judge=judge)
+        for item in payload["resultados"] + payload["companeros"]:
+            self.assertNotIn("fragmento_aproximado", item)
+            self.assertIn("notas", item)
+        payload, _, _, _ = self._compare(judge=judge, incluir_fragmentos=True)
+        for item in payload["resultados"] + payload["companeros"]:
+            self.assertIn("fragmento_aproximado", item)
+
+    def test_fragments_are_kept_when_a_result_has_no_notes(self) -> None:
+        payload, _, _, _ = self._compare()
+        self.assertIn("fragmento_aproximado", payload["resultados"][0])
+
+    def test_peer_names_never_reach_the_model(self) -> None:
+        payload, _, _, _ = self._compare()
+        self.assertEqual(payload["companeros"][0]["vendedor"], "compañero con mejor resultado")
+        self.assertNotIn("Laura Soto", json.dumps(payload, ensure_ascii=False))
+        for item in payload["resultados"] + payload["companeros"]:
+            self.assertNotIn("grupo", item)
+
+    def test_groups_carry_their_own_checklist_label(self) -> None:
+        payload, _, _, _ = self._compare()
+        self.assertEqual(payload["resultados"][0]["checklist"], {"vendedorrealizocierrecompra": "No"})
+        self.assertEqual(payload["companeros"][0]["checklist"], {"vendedorrealizocierrecompra": "Sí"})
+
+    def test_a_single_analyst_call_sees_both_groups(self) -> None:
+        _, calls, _, _ = self._compare()
+        self.assertEqual(len(calls), 1)
+        grupos, kwargs = calls[0]
+        self.assertEqual(set(grupos), {"vendedor", "companeros"})
+        self.assertTrue(kwargs["compare"])
+        self.assertIn("GRUPO «vendedor»", kwargs["label_context"])
+        self.assertIn("GRUPO «companeros»", kwargs["label_context"])
+
+    def test_peers_are_chosen_excluding_the_coached_seller(self) -> None:
+        _, _, _, top = self._compare()
+        kwargs = top.call_args.kwargs
+        self.assertEqual(kwargs["exclude_employee"], "Ubaldo Ramos")
+        self.assertEqual(kwargs["criterio"], "vendedorrealizocierrecompra")
+
+    def test_peer_query_uses_exact_names_and_the_yes_value(self) -> None:
+        _, _, cursor, _ = self._compare()
+        peer_sql, peer_params = cursor.executed[-1]
+        self.assertIn("r.employee_full_name = ANY(%s)", peer_sql)
+        self.assertIn(["Laura Soto"], peer_params)
+        self.assertIn("Sí", peer_params)
+
+    def test_without_peers_only_the_seller_group_is_returned(self) -> None:
+        payload, _, _, _ = self._search(
+            peers=(), criterio="vendedorrealizocierrecompra", resultado="No",
+            employee_name="Ubaldo Ramos", comparar_con_mejores=True,
+        )
+        self.assertEqual(len(payload["resultados"]), 1)
+        self.assertEqual(payload["companeros"], [])
+
+    def test_requires_criterio_and_resultado_no(self) -> None:
+        for bad in (
+            dict(comparar_con_mejores=True),
+            dict(comparar_con_mejores=True, criterio="vendedorrealizocierrecompra", resultado="Sí"),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self._search(**bad)
+
+    def test_team_mode_without_employee_name_is_allowed(self) -> None:
+        payload, _, _, top = self._compare(employee_name=None)
+        self.assertIsNone(top.call_args.kwargs["exclude_employee"])
+        self.assertIn("companeros", payload)
+
+    def test_normal_search_has_no_peer_keys(self) -> None:
+        payload, _, _, top = self._search(criterio="vendedorrealizocierrecompra", resultado="No")
+        self.assertNotIn("companeros", payload)
+        self.assertNotIn("contraste", payload)
+        top.assert_not_called()
+
+
+class TopPerformersTests(unittest.TestCase):
+    def _repo(self):
+        return vector_search.VectorSearchRepository(load_client_config("mens_fashion_alto"))
+
+    def _call(self, repo, rows=None, cursor_error=None, **overrides):
+        source = vector_search._find_performance_source(repo.client)
+        cursor = _FakeCursor(rows or [])
+        if cursor_error is not None:
+            cursor.execute = MagicMock(side_effect=cursor_error)
+        connection = _FakeConnection(cursor)
+        connection.closed = False
+        connection.rollback = MagicMock()
+        args = dict(
+            criterio="vendedorrealizocierrecompra", performance_source=source, date_from=None,
+            date_to=None, store_name=None, exclude_employee="Ubaldo Ramos",
+        )
+        args.update(overrides)
+        with patch.object(vector_search, "_get_reusable_connection", return_value=connection):
+            return repo._top_performers(**args), cursor, connection
+
+    def test_returns_names_and_scopes_the_query_by_tenant_period_and_exclusion(self) -> None:
+        repo = self._repo()
+        names, cursor, _ = self._call(
+            repo, rows=[("Laura Soto",), ("Luis Arturo",)], date_from="2026-09-14", store_name="Tezontle"
+        )
+        self.assertEqual(names, ["Laura Soto", "Luis Arturo"])
+        sql, params = cursor.executed[-1]
+        self.assertIn('perf."vendedorrealizocierrecompra" = %s', sql)
+        self.assertIn("NOT ILIKE %s", sql)
+        self.assertIn(repo.client.tenant, params)
+        self.assertIn("2026-09-14", params)
+        self.assertIn("%Tezontle%", params)
+        self.assertIn("%Ubaldo Ramos%", params)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertEqual(tuple(params[-2:]), (vector_search._PEER_MIN_BASE, vector_search._PEER_COUNT))
+
+    def test_fails_open_and_rolls_back_on_error(self) -> None:
+        names, _, connection = self._call(self._repo(), cursor_error=RuntimeError("boom"))
+        self.assertEqual(names, [])
+        connection.rollback.assert_called_once()
 
 
 class VectorSearchConfigParsingTests(unittest.TestCase):
