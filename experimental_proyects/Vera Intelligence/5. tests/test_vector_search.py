@@ -1333,3 +1333,12 @@ class VectorSearchConfigParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompareWithoutCriterioErrorTests(unittest.TestCase):
+    def test_error_lists_the_allowed_criteria_so_the_model_can_retry(self) -> None:
+        repo = vector_search.VectorSearchRepository(load_client_config("mens_fashion_alto"))
+        with self.assertRaises(ValueError) as ctx:
+            repo.search("x", comparar_con_mejores=True, criterio={}, resultado={}, employee_name={})
+        self.assertIn("vendedorrealizocierrecompra", str(ctx.exception))
+        self.assertIn("resultado='No'", str(ctx.exception))

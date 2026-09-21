@@ -807,12 +807,12 @@ def run_readonly_sql(sql: str) -> str:
 def search_conversations(
     query: str,
     top_k: int = 5,
-    store_name: str | None = None,
-    employee_name: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    criterio: str | None = None,
-    resultado: str | None = None,
+    store_name: str = "",
+    employee_name: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    criterio: str = "",
+    resultado: str = "",
     comparar_con_mejores: bool = False,
     incluir_fragmentos: bool = False,
 ) -> str:

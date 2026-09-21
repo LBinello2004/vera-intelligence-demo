@@ -224,7 +224,7 @@ Un sistema de búsqueda por similitud encontró los siguientes fragmentos. Para 
    - "situacion": el momento puntual de la conversación (máx. 15 palabras).
    - "que_hizo": qué hizo -o dejó de hacer- el VENDEDOR en ese momento y con qué palabras/gestos concretos (máx. 30 palabras). El rótulo "Speaker 0/1" no es confiable: deducí quién es el vendedor por el contexto (quien ofrece, muestra, cobra).
    - "como_termino": cómo respondió el cliente o cómo terminó ese momento (máx. 12 palabras).
-Reglas: no inferir intenciones ni motivos internos; no usar números, porcentajes ni conteos; describí acciones, no juicios genéricos ("fue reactivo").
+Reglas: no inferir intenciones ni motivos internos; no usar números, porcentajes ni conteos; describí acciones, no juicios genéricos ("fue reactivo"). Cada fragmento es sólo un tramo de la conversación, con ruido: nunca afirmes que el vendedor "no hizo" o "no ofreció" algo -escribí "no se ve en el fragmento" o "no aparece en este tramo"-, y no agregues adjetivos ni tono ("negativo", "confuso", "desinteresado") que el texto no muestre. Si el texto contradice la etiqueta del checklist (el vendedor sí hizo lo esperado), describí eso tal cual.
 
 Además, "patrones": 0 a 3 conductas concretas del vendedor que se REPITEN en 2 o más de los fragmentos relevantes (cada una en una frase, en términos cualitativos, sin números). Si no hay repetición real, lista vacía.
 {compare_block}
@@ -250,7 +250,7 @@ _COMPARE_BLOCK = (
     "criterio) y «companeros» (conversaciones de compañeros con mejor resultado en ese criterio, "
     "donde SÍ lo cumplieron). Además de las notas, armá \"contraste\": hasta 3 pares que comparen, "
     "ante la MISMA situación (o el paso adyacente del proceso de venta), qué hace el vendedor y qué "
-    "hacen los compañeros -sólo si ambos lados muestran ese momento; sin inventar, sin números-. "
+    "hacen los compañeros -sólo si ambos lados muestran ese momento; sin inventar, sin números-; una ausencia se dice «no se ve en los fragmentos», nunca «no hace»-. "
     "Cada lado del par describe una conducta vista en 2 o más fragmentos de SU grupo; si un detalle "
     "aparece en un solo fragmento (una frase, un dato, un gesto puntual), o lo omitís o lo marcás al "
     "empezar con «(en una sola conversación)» -nunca lo presentes como conducta habitual-. "
@@ -1282,7 +1282,21 @@ class VectorSearchRepository:
             if significado:
                 label_context += f". Significado según el Data Map: {significado}"
         elif comparar_con_mejores:
-            raise ValueError("comparar_con_mejores requiere criterio y resultado='No'.")
+            # 2026-09-21 (visto en vivo, farma24_alto): el modelo mandó criterio/resultado vacíos y
+            # con el mensaje anterior repitió la misma llamada 3 veces sin saber qué valor poner -el
+            # error ahora dice exactamente qué completar, con la lista de criterios permitidos.
+            source = _find_performance_source(self.client)
+            allowed_now = (
+                sorted(_performance_criteria(str(self.client.data_map_path), source.name))
+                if source is not None
+                else []
+            )
+            raise ValueError(
+                "comparar_con_mejores requiere criterio (el nombre EXACTO de una columna del checklist, "
+                "la del criterio más débil del vendedor) y resultado='No'. Criterios permitidos: "
+                + (", ".join(allowed_now) or "(ninguno: este cliente no lo soporta, buscá sin comparar_con_mejores)")
+                + ". Volvé a llamar con esos dos parámetros completos."
+            )
 
         check_analysis()
         api_key = os.getenv("VERA_AI_API_KEY")
