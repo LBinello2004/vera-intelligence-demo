@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -223,6 +224,7 @@ Un sistema de búsqueda por similitud encontró los siguientes fragmentos. Para 
 2. NOTAS (sólo si es relevante), en español, concretas y observables, sin inventar nada que el texto no muestre:
    - "situacion": el momento puntual de la conversación (máx. 15 palabras).
    - "que_hizo": qué hizo -o dejó de hacer- el VENDEDOR en ese momento y con qué palabras/gestos concretos (máx. 30 palabras). El rótulo "Speaker 0/1" no es confiable: deducí quién es el vendedor por el contexto (quien ofrece, muestra, cobra).
+   - "evidencia": copiá TEXTUAL (palabra por palabra, sin resumir ni corregir) un tramo de 3 a 20 palabras SEGUIDAS del fragmento que respalde "que_hizo" -se verifica por código contra el fragmento real; si "que_hizo" no se apoya en ningún tramo textual concreto, dejá "que_hizo" Y "evidencia" vacíos en vez de inventar una cita.
    - "como_termino": cómo respondió el cliente o cómo terminó ese momento (máx. 12 palabras).
 Reglas: no inferir intenciones ni motivos internos; no usar números, porcentajes ni conteos; describí acciones, no juicios genéricos ("fue reactivo"). Cada fragmento es sólo un tramo de la conversación, con ruido: nunca afirmes que el vendedor "no hizo" o "no ofreció" algo -escribí "no se ve en el fragmento" o "no aparece en este tramo"-, y no agregues adjetivos ni tono ("negativo", "confuso", "desinteresado") que el texto no muestre. Si el texto contradice la etiqueta del checklist (el vendedor sí hizo lo esperado), describí eso tal cual.
 
@@ -238,7 +240,7 @@ _OUTPUT_SPEC_BASE = (
     'Devolvé SOLO un objeto JSON con exactamente esta forma, con UN elemento por cada uno de los {n} '
     'fragmentos (i = el número del fragmento, desde 0; no saltees ninguno), sin texto adicional:\n'
     '{{"resultados": [{{"i": 0, "relevante": true, "situacion": "...", "que_hizo": "...", '
-    '"como_termino": "..."}}, ...], "patrones": ["..."]{contraste_field}}}'
+    '"evidencia": "...", "como_termino": "..."}}, ...], "patrones": ["..."]{contraste_field}}}'
 )
 
 # Modo comparación (2026-09-21): en UNA sola llamada el analista ve las conversaciones donde el
@@ -254,7 +256,12 @@ _COMPARE_BLOCK = (
     "Cada lado del par describe una conducta vista en 2 o más fragmentos de SU grupo; si un detalle "
     "aparece en un solo fragmento (una frase, un dato, un gesto puntual), o lo omitís o lo marcás al "
     "empezar con «(en una sola conversación)» -nunca lo presentes como conducta habitual-. "
-    "Cada par: {\"situacion\": \"...\", \"vendedor\": \"...\", \"companeros\": \"...\"}.\n"
+    "Además de \"vendedor\"/\"companeros\", agregá \"evidencia_vendedor\" y \"evidencia_companeros\": "
+    "una cita TEXTUAL de 3 a 20 palabras SEGUIDAS, copiada de UN fragmento de ESE grupo, que respalde "
+    "lo que describís de ese lado -se verifica por código; si no hay una cita real que lo respalde, "
+    "dejá ese lado del par (texto Y evidencia) vacío en vez de inventar una cita. "
+    "Cada par: {\"situacion\": \"...\", \"vendedor\": \"...\", \"evidencia_vendedor\": \"...\", "
+    "\"companeros\": \"...\", \"evidencia_companeros\": \"...\"}.\n"
 )
 
 # Verificado por SQL directo el 2026-09-10 contra analytics_v2.conversation_embeddings: es el
@@ -325,6 +332,76 @@ def _clean_note(value: object) -> str:
         return ""
     text = " ".join(value.split())[:_NOTE_MAX_CHARS]
     return _sanitize_offensive_language(text) or ""
+
+
+# Verificación mecánica de "que_hizo" contra el fragmento (2026-09-22, ver auditoría manual de
+# notas de Ubaldo Ramos en la sesión anterior: de 8 notas revisadas a mano contra la transcripción
+# cruda, 2 bien respaldadas, 3 parciales, 1 contradicha por el propio fragmento y 2 no verificables
+# -casi la mitad con algún problema real). La regla de prompt "no inventes, no afirmes una ausencia"
+# (2026-09-21) reduce el problema pero sigue dependiendo de que el modelo se autocorrija -no hay
+# nada que impida que igual redacte una afirmación no respaldada. Acá se agrega lo que "LAS COMILLAS
+# SON EXCLUSIVAS DE UNA CITA REAL" nunca tuvo para la respuesta final tampoco (sólo prompt, nunca
+# verificado en código): una cita textual corta y OBLIGATORIA por nota, chequeada por código contra
+# el fragmento real -si no aparece, se descarta el campo en vez de mostrarlo. Sólo se aplica a
+# "que_hizo" (no a "situacion"/"como_termino"): es el único campo con una sola fuente de verdad
+# tratable mecánicamente (un fragmento) -"contraste" sintetiza across varios fragmentos de un grupo
+# y no tiene una única cita que lo respalde, sigue mitigado sólo por prompt.
+#
+# BUG REAL encontrado el 2026-09-22, mismo día del lanzamiento (verificado en vivo contra
+# mens_fashion_alto/Ubaldo Ramos, ver "6. busqueda_vectorial/README.md" > Iteración 28): la primera
+# versión rechazaba citas que SÍ estaban textuales en el fragmento, por dos motivos.
+# (1) `_MIN_EVIDENCE_WORDS = 4` descartaba citas cortas pero igual de específicas y poco propensas a
+# coincidencia trivial (ej. "Número telefónico, Juan?", 3 palabras, literal en el fragmento) -bajado
+# a 3.
+# (2) El SRT parte una misma frase de UN hablante en varios subtítulos consecutivos ("Speaker 0:
+# ¿Quiere meses? Speaker 0: Alcanza tres meses.") -una cita real que cruza esa costura artificial
+# (un `Speaker N:` de más en el medio, no un cambio real de hablante) fallaba la comparación
+# literal. `_collapse_repeated_speaker_turns` colapsa SÓLO turnos consecutivos del MISMO número de
+# hablante antes de comparar -turnos de hablantes distintos se preservan tal cual, así que la
+# verificación sigue sin poder "armar" una cita mezclando lo que dijeron dos personas distintas.
+_MIN_EVIDENCE_WORDS = 3
+
+_SPEAKER_LABEL = re.compile(r"Speaker\s+(\d+):\s*")
+
+
+def _collapse_repeated_speaker_turns(fragmento: str) -> str:
+    """Une turnos consecutivos del MISMO hablante que el SRT partió en subtítulos distintos, para
+    que una cita real que cruza esa costura no falle la verificación por un `Speaker N:` de más en
+    el medio. Turnos de hablantes DISTINTOS nunca se mezclan -ver comentario junto a
+    `_MIN_EVIDENCE_WORDS`."""
+    parts = _SPEAKER_LABEL.split(fragmento)
+    if len(parts) < 3:
+        return fragmento
+    turns: list[list[str]] = []
+    for i in range(1, len(parts) - 1, 2):
+        speaker_id, text = parts[i], parts[i + 1].strip()
+        if turns and turns[-1][0] == speaker_id:
+            turns[-1][1] = (turns[-1][1] + " " + text).strip()
+        else:
+            turns.append([speaker_id, text])
+    return (parts[0] + " ".join(f"Speaker {sid}: {text}" for sid, text in turns)).strip()
+
+
+def _normalize_for_match(text: str) -> str:
+    """Minúsculas, sin acentos ni puntuación, espacios colapsados -para comparar una cita del
+    analista contra el fragmento tolerando diferencias triviales de transcripción ASR (acentos
+    inconsistentes, comillas rectas vs curvas), sin tolerar que invente o parafrasee."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^\w\s]", " ", text.lower())
+    return " ".join(text.split())
+
+
+def _evidence_supported(evidencia: object, fragmento: str) -> bool:
+    """True si `evidencia` es una cita textual corta y verificable dentro de `fragmento` -no una
+    paráfrasis. Exige un mínimo de palabras para que una coincidencia trivial ("el cliente", "el
+    vendedor") no cuente como respaldo real."""
+    if not isinstance(evidencia, str) or not fragmento:
+        return False
+    normalized_quote = _normalize_for_match(evidencia)
+    if len(normalized_quote.split()) < _MIN_EVIDENCE_WORDS:
+        return False
+    fragmento_continuo = _collapse_repeated_speaker_turns(fragmento)
+    return normalized_quote in _normalize_for_match(fragmento_continuo)
 
 
 # Filtro por resultado del checklist (2026-09-21, plan "coaching basado en lo que realmente hizo el
@@ -692,7 +769,8 @@ def _judge_relevance(
     output_spec = _OUTPUT_SPEC_BASE.format(
         n=len(resultados),
         contraste_field=(
-            ', "contraste": [{{"situacion": "...", "vendedor": "...", "companeros": "..."}}]'
+            ', "contraste": [{{"situacion": "...", "vendedor": "...", "evidencia_vendedor": "...", '
+            '"companeros": "...", "evidencia_companeros": "..."}}]'
             .replace("{{", "{").replace("}}", "}")
             if compare
             else ""
@@ -769,6 +847,14 @@ def _judge_relevance(
                     clave: _clean_note(item.get(clave))
                     for clave in ("situacion", "que_hizo", "como_termino")
                 }
+                # Verificación mecánica de "que_hizo" (ver _evidence_supported): si el analista no
+                # citó un tramo textual real del fragmento, o citó algo que no está ahí, se descarta
+                # "que_hizo" en vez de mostrar una afirmación sin respaldo -"situacion"/"como_termino"
+                # no se tocan, son observaciones de bajo riesgo (el momento/desenlace, no una
+                # afirmación sobre qué hizo o dejó de hacer el vendedor).
+                fragmento = resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
+                if notas["que_hizo"] and not _evidence_supported(item.get("evidencia"), fragmento):
+                    notas["que_hizo"] = ""
                 if any(notas.values()):
                     resultado["notas"] = notas
         if label_context:
@@ -789,12 +875,30 @@ def _judge_relevance(
                         veredictos[i] = bool(resultados[i].get("notas"))
         if analysis_out is not None and compare:
             raw_contraste = parsed.get("contraste")
+            # Verificación mecánica por lado (2026-09-22, misma idea que "que_hizo" pero aplicada a
+            # "contraste"): acá NO hay un único fragmento fuente -cada lado sintetiza un patrón
+            # entre varios fragmentos de SU grupo-, así que la cita de respaldo se busca contra
+            # CUALQUIERA de los fragmentos de ESE grupo, no contra uno específico.
+            fragmentos_por_grupo: dict[str, list[str]] = {"vendedor": [], "companeros": []}
+            for resultado in resultados:
+                grupo = resultado.get("grupo") or "vendedor"
+                fragmentos_por_grupo.setdefault(grupo, []).append(
+                    resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
+                )
             pares = []
             for par in raw_contraste if isinstance(raw_contraste, list) else []:
                 if not isinstance(par, dict):
                     continue
                 limpio = {k: _clean_note(par.get(k)) for k in ("situacion", "vendedor", "companeros")}
-                if limpio["vendedor"] and limpio["companeros"]:
+                vendedor_respaldado = any(
+                    _evidence_supported(par.get("evidencia_vendedor"), frag)
+                    for frag in fragmentos_por_grupo["vendedor"]
+                )
+                companeros_respaldado = any(
+                    _evidence_supported(par.get("evidencia_companeros"), frag)
+                    for frag in fragmentos_por_grupo["companeros"]
+                )
+                if limpio["vendedor"] and limpio["companeros"] and vendedor_respaldado and companeros_respaldado:
                     pares.append(limpio)
             analysis_out["contraste"] = pares[:3]
         if analysis_out is not None:

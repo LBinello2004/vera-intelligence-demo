@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 import json
 import sys
@@ -1383,6 +1384,20 @@ class VectorSearchToolExposureTests(unittest.TestCase):
         vi_agent.configure_client("agrosuper_bajo")
         with self.assertRaises(RuntimeError):
             vi_agent.search_conversations("cualquier consulta")
+
+    def test_search_conversations_no_longer_exposes_incluir_fragmentos_to_the_model(self) -> None:
+        # Pedido explícito (2026-09-22): nunca mostrarle al usuario una cita textual, ni siquiera
+        # si la pide -el modelo ya no puede pedir el texto crudo de la conversación en absoluto.
+        params = inspect.signature(vi_agent.search_conversations).parameters
+        self.assertNotIn("incluir_fragmentos", params)
+
+    def test_search_conversations_always_calls_the_repository_with_fragments_disabled(self) -> None:
+        vi_agent.configure_client("mens_fashion_alto")
+        fake_repo = MagicMock()
+        fake_repo.search.return_value = "{}"
+        with patch.object(vi_agent, "_VECTOR_SEARCH_REPOSITORY", fake_repo):
+            vi_agent.search_conversations("cualquier consulta")
+        self.assertEqual(fake_repo.search.call_args.kwargs["incluir_fragmentos"], False)
 
 
 class GeminiCachingTests(unittest.TestCase):

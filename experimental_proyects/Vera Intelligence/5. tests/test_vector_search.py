@@ -949,12 +949,17 @@ class AnalystNotesTests(unittest.TestCase):
         return veredictos, mock_client
 
     def test_annotates_relevant_results_with_notes_and_returns_patterns(self) -> None:
-        resultados = [{"fragmento_aproximado": "a"}, {"fragmento_aproximado": "b"}]
+        resultados = [
+            {"fragmento_aproximado": "El cliente pregunta el precio y el vendedor informa la promoción vigente sin invitar a pasar a caja"},
+            {"fragmento_aproximado": "b"},
+        ]
         payload = json.dumps(
             {
                 "resultados": [
                     {"i": 0, "relevante": True, "situacion": "Cliente pregunta el precio",
-                     "que_hizo": "Informó la promoción sin invitar a caja", "como_termino": "Siguió mirando"},
+                     "que_hizo": "Informó la promoción sin invitar a caja",
+                     "evidencia": "informa la promoción vigente sin invitar a pasar a caja",
+                     "como_termino": "Siguió mirando"},
                     {"i": 1, "relevante": False, "situacion": "", "que_hizo": "", "como_termino": ""},
                 ],
                 "patrones": ["Informa promociones sin proponer avanzar"],
@@ -970,11 +975,16 @@ class AnalystNotesTests(unittest.TestCase):
     def test_maps_by_index_when_the_model_skips_an_item(self) -> None:
         # Encontrado en vivo: con 8 fragmentos devolvió 7 elementos y el chequeo de largo exacto
         # tiraba TODO el análisis. Un fragmento sin elemento propio se conserva sin notas.
-        resultados = [{"fragmento_aproximado": x} for x in "abc"]
+        resultados = [
+            {"fragmento_aproximado": "a"},
+            {"fragmento_aproximado": "b"},
+            {"fragmento_aproximado": "El vendedor cobra y propone pasar a caja para cerrar la venta"},
+        ]
         payload = json.dumps(
             {"resultados": [
                 {"i": 0, "relevante": False},
-                {"i": 2, "relevante": True, "que_hizo": "Propuso pasar a caja"},
+                {"i": 2, "relevante": True, "que_hizo": "Propuso pasar a caja",
+                 "evidencia": "propone pasar a caja para cerrar la venta"},
             ], "patrones": []}
         )
         veredictos, _ = self._judge(payload, resultados)
@@ -995,10 +1005,15 @@ class AnalystNotesTests(unittest.TestCase):
         self.assertEqual(veredictos, [False, True])
 
     def test_notes_are_cleaned_and_bounded(self) -> None:
-        resultados = [{"fragmento_aproximado": "a"}]
+        # "evidencia" es una cita de varias palabras que sí aparece en el fragmento (una cita real,
+        # aunque sin sentido de negocio) para que la verificación mecánica no descarte "que_hizo"
+        # antes de probar el acotado de longitud -lo que se prueba acá es _clean_note, no
+        # _evidence_supported.
+        quote = "zz zz zz zz zz"
+        resultados = [{"fragmento_aproximado": quote}]
         payload = json.dumps(
             {"resultados": [{"i": 0, "relevante": True, "situacion": "  x   y  ",
-                             "que_hizo": "z" * 1000, "como_termino": 5}],
+                             "que_hizo": "z" * 1000, "evidencia": quote, "como_termino": 5}],
              "patrones": ["p1", "p2", "p3", "p4", ""]}
         )
         analysis: dict = {}
@@ -1008,6 +1023,67 @@ class AnalystNotesTests(unittest.TestCase):
         self.assertEqual(len(notas["que_hizo"]), vector_search._NOTE_MAX_CHARS)
         self.assertEqual(notas["como_termino"], "")
         self.assertEqual(analysis["patrones"], ["p1", "p2", "p3"])
+
+    def test_que_hizo_discarded_when_evidence_is_not_in_the_fragment(self) -> None:
+        # El caso real que motivó esto (auditoría manual de Ubaldo Ramos, 2026-09-21): el analista
+        # afirma algo plausible pero el fragmento no lo respalda -antes se mostraba igual.
+        resultados = [{"fragmento_aproximado": "El cliente pregunta el precio y se retira sin decir nada más"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente pregunta precio",
+                             "que_hizo": "Ofreció financiación en cuotas sin interés",
+                             "evidencia": "propuso pagar en tres cuotas sin interés",
+                             "como_termino": "El cliente se fue"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        notas = resultados[0]["notas"]
+        self.assertEqual(notas["que_hizo"], "")
+        self.assertEqual(notas["situacion"], "Cliente pregunta precio")
+
+    def test_que_hizo_discarded_when_evidence_is_missing(self) -> None:
+        resultados = [{"fragmento_aproximado": "El vendedor cobra y despide al cliente en la caja"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "que_hizo": "Despidió al cliente amablemente"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        self.assertEqual(resultados[0].get("notas", {}).get("que_hizo", ""), "")
+
+    def test_que_hizo_discarded_when_evidence_is_too_short(self) -> None:
+        # Una cita de pocas palabras (ej. "el cliente") coincidiría casi con cualquier fragmento sin
+        # respaldar de verdad la afirmación -por eso el mínimo de palabras.
+        resultados = [{"fragmento_aproximado": "El vendedor le muestra el producto al cliente y espera"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "que_hizo": "Presionó para cerrar la venta",
+                             "evidencia": "al cliente"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        self.assertEqual(resultados[0].get("notas", {}).get("que_hizo", ""), "")
+
+    def test_que_hizo_kept_when_evidence_matches_despite_accents_and_case(self) -> None:
+        resultados = [{"fragmento_aproximado": "EL VENDEDOR PROPONE llevar también unos calcetines a juego"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "que_hizo": "Sugirió un complemento",
+                             "evidencia": "propone llevar tambien unos calcetines a juego"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        self.assertEqual(resultados[0]["notas"]["que_hizo"], "Sugirió un complemento")
+
+    def test_situacion_and_como_termino_are_not_evidence_checked(self) -> None:
+        # El chequeo mecánico se limita a "que_hizo" (la única afirmación con una fuente única y
+        # tratable por código); "situacion"/"como_termino" siguen dependiendo sólo del prompt.
+        resultados = [{"fragmento_aproximado": "x"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente prueba la prenda",
+                             "como_termino": "Se la lleva"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        notas = resultados[0]["notas"]
+        self.assertEqual(notas["situacion"], "Cliente prueba la prenda")
+        self.assertEqual(notas["como_termino"], "Se la lleva")
 
     def test_label_context_reaches_the_prompt(self) -> None:
         resultados = [{"fragmento_aproximado": "a"}]
@@ -1020,10 +1096,15 @@ class AnalystNotesTests(unittest.TestCase):
     def test_label_mode_keeps_only_results_with_notes_when_some_have_them(self) -> None:
         # Con filtro de checklist el grupo ya lo define el dato estructurado: la relevancia del
         # analista no vacía el resultado; se conservan las conversaciones con notas.
-        resultados = [{"fragmento_aproximado": x} for x in "abc"]
+        resultados = [
+            {"fragmento_aproximado": "a"},
+            {"fragmento_aproximado": "El vendedor informó el precio y esperó sin proponer nada más"},
+            {"fragmento_aproximado": "c"},
+        ]
         payload = json.dumps({"resultados": [
             {"i": 0, "relevante": False},
-            {"i": 1, "relevante": True, "que_hizo": "Informó el precio y esperó"},
+            {"i": 1, "relevante": True, "que_hizo": "Informó el precio y esperó",
+             "evidencia": "informó el precio y esperó sin proponer nada más"},
             {"i": 2, "relevante": False},
         ], "patrones": []})
         veredictos, _ = self._judge(payload, resultados, label_context="el criterio «x» quedó en «No»")
@@ -1049,6 +1130,110 @@ class AnalystNotesTests(unittest.TestCase):
         _, mock_client = self._judge("[true]", [{"fragmento_aproximado": "a"}])
         prompt = mock_client.models.generate_content.call_args.kwargs["contents"]
         self.assertNotIn("Contexto del checklist", prompt)
+
+
+class ContrasteEvidenceTests(unittest.TestCase):
+    """Verificación mecánica de "contraste" (2026-09-22, misma idea que "que_hizo" pero por
+    lado -acá no hay UN fragmento fuente, cada lado sintetiza un patrón entre varios fragmentos de
+    SU grupo, así que la cita de respaldo se busca contra CUALQUIERA de los fragmentos de ese
+    grupo)."""
+
+    def _judge(self, response_text: str, resultados: list[dict], **kwargs):
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
+            vector_search._judge_relevance(
+                "cierre", resultados, model="m", api_key="k", compare=True, **kwargs
+            )
+
+    def _resultados(self) -> list[dict]:
+        return [
+            {"grupo": "vendedor", "fragmento_aproximado": "El vendedor informa el precio y espera sin proponer nada más"},
+            {"grupo": "vendedor", "fragmento_aproximado": "El cliente pregunta el precio y se retira sin decir nada"},
+            {"grupo": "companeros", "fragmento_aproximado": "El vendedor pregunta el número telefónico y agenda el seguimiento"},
+            {"grupo": "companeros", "fragmento_aproximado": "El vendedor propone pasar a caja y cierra la venta"},
+        ]
+
+    @staticmethod
+    def _sin_notas(n: int) -> list[dict]:
+        # El chequeo de largo exacto (sin índices "i") exige un elemento por cada resultado -acá
+        # sólo interesa "contraste", así que se marcan como no relevantes (sin notas) los 4.
+        return [{"relevante": False} for _ in range(n)]
+
+    def test_pair_kept_when_both_sides_have_verified_evidence(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Informa el precio y espera",
+             "evidencia_vendedor": "informa el precio y espera sin proponer nada más",
+             "companeros": "Propone pasar a caja",
+             "evidencia_companeros": "propone pasar a caja y cierra la venta"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(len(analysis["contraste"]), 1)
+        self.assertEqual(analysis["contraste"][0]["vendedor"], "Informa el precio y espera")
+
+    def test_evidence_matches_any_fragment_in_the_group_not_only_the_first(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Se retira sin comprar",
+             "evidencia_vendedor": "se retira sin decir nada",
+             "companeros": "Pregunta el teléfono para seguimiento",
+             "evidencia_companeros": "pregunta el número telefónico y agenda el seguimiento"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(len(analysis["contraste"]), 1)
+
+    def test_pair_discarded_when_vendedor_side_has_no_real_evidence(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Ofrece financiación en cuotas",
+             "evidencia_vendedor": "ofrece financiacion en tres cuotas",
+             "companeros": "Propone pasar a caja",
+             "evidencia_companeros": "propone pasar a caja y cierra la venta"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["contraste"], [])
+
+    def test_pair_discarded_when_companeros_side_has_no_real_evidence(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Informa el precio y espera",
+             "evidencia_vendedor": "informa el precio y espera sin proponer nada más",
+             "companeros": "Ofrece un descuento inmediato",
+             "evidencia_companeros": "ofrece un descuento del veinte por ciento"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["contraste"], [])
+
+    def test_pair_discarded_when_evidence_fields_are_missing(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Informa el precio y espera",
+             "companeros": "Propone pasar a caja"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["contraste"], [])
+
+    def test_evidence_from_the_wrong_group_does_not_count(self) -> None:
+        # Una cita real del grupo "companeros" no debe poder respaldar el lado "vendedor" -cada
+        # lado se verifica sólo contra los fragmentos de SU propio grupo.
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(4), "patrones": [], "contraste": [
+            {"situacion": "Cliente pregunta el precio", "vendedor": "Informa el precio y espera",
+             "evidencia_vendedor": "propone pasar a caja y cierra la venta",
+             "companeros": "Propone pasar a caja",
+             "evidencia_companeros": "propone pasar a caja y cierra la venta"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["contraste"], [])
 
 
 class ChecklistFilterTests(_RedirectsUsageLogTestCase):
@@ -1342,3 +1527,77 @@ class CompareWithoutCriterioErrorTests(unittest.TestCase):
             repo.search("x", comparar_con_mejores=True, criterio={}, resultado={}, employee_name={})
         self.assertIn("vendedorrealizocierrecompra", str(ctx.exception))
         self.assertIn("resultado='No'", str(ctx.exception))
+
+
+class EvidenceSupportedTests(unittest.TestCase):
+    """Unidad de _evidence_supported/_normalize_for_match -ver el comentario junto a _clean_note
+    para el motivo (auditoría manual de notas de Ubaldo Ramos, 2026-09-21)."""
+
+    def test_exact_verbatim_quote_is_supported(self) -> None:
+        self.assertTrue(vector_search._evidence_supported(
+            "propone llevar unos calcetines a juego",
+            "el vendedor propone llevar unos calcetines a juego con el traje",
+        ))
+
+    def test_paraphrase_is_not_supported(self) -> None:
+        self.assertFalse(vector_search._evidence_supported(
+            "sugiere un complemento para el traje",
+            "el vendedor propone llevar unos calcetines a juego con el traje",
+        ))
+
+    def test_case_and_accent_insensitive(self) -> None:
+        self.assertTrue(vector_search._evidence_supported(
+            "PROPONE llevar únos calcetínes",
+            "el vendedor propone llevar unos calcetines a juego",
+        ))
+
+    def test_below_minimum_word_count_is_never_supported_even_if_verbatim(self) -> None:
+        self.assertFalse(vector_search._evidence_supported(
+            "al cliente",
+            "el vendedor le muestra el producto al cliente y espera",
+        ))
+
+    def test_non_string_or_empty_fragment_is_not_supported(self) -> None:
+        self.assertFalse(vector_search._evidence_supported(None, "el vendedor propone algo largo"))
+        self.assertFalse(vector_search._evidence_supported(123, "el vendedor propone algo largo"))
+        self.assertFalse(vector_search._evidence_supported("propone algo largo y concreto", ""))
+
+    def test_normalize_for_match_strips_punctuation_and_collapses_spaces(self) -> None:
+        self.assertEqual(
+            vector_search._normalize_for_match("¡Hola,   señor!  ¿Cómo   está?"),
+            "hola senor como esta",
+        )
+
+    def test_three_word_quote_is_supported(self) -> None:
+        # Caso real (2026-09-22, Ubaldo Ramos): "Número telefónico, Juan?" está literal en el
+        # fragmento pero tiene sólo 3 palabras -el mínimo original (4) lo rechazaba sin motivo.
+        self.assertTrue(vector_search._evidence_supported(
+            "Número telefónico, Juan?",
+            "Speaker 0: ¿Ya han comprado con nosotros? Speaker 0: ¿Número telefónico, Juan? Speaker 0: 55-47-83-17-81.",
+        ))
+
+    def test_quote_spanning_srt_split_of_the_same_speaker_is_supported(self) -> None:
+        # Caso real (2026-09-22): el SRT parte una misma frase de UN hablante en dos subtítulos
+        # consecutivos -la cita real que cruza esa costura no debe fallar por el "Speaker 0:" de más.
+        fragmento = "Speaker 0: Serían cinco mil con un saldo. Speaker 0: ¿Quiere meses? Speaker 0: Alcanza tres meses. Speaker 0: ¿Vale?"
+        self.assertTrue(vector_search._evidence_supported("Quiere meses? Alcanza tres meses.", fragmento))
+
+    def test_does_not_merge_text_across_different_speakers(self) -> None:
+        # El colapso de turnos repetidos NUNCA debe mezclar lo que dijeron DOS personas distintas
+        # como si fuera una sola cita continua.
+        fragmento = "Speaker 0: Le cuesta cinco pesos. Speaker 1: Sí, dámelo."
+        self.assertFalse(vector_search._evidence_supported("cinco pesos si damelo", fragmento))
+
+    def test_collapse_repeated_speaker_turns_helper(self) -> None:
+        self.assertEqual(
+            vector_search._collapse_repeated_speaker_turns(
+                "Speaker 0: ¿Quiere meses? Speaker 0: Alcanza tres meses. Speaker 1: ¿Sí?"
+            ),
+            "Speaker 0: ¿Quiere meses? Alcanza tres meses. Speaker 1: ¿Sí?",
+        )
+
+    def test_collapse_leaves_fragment_without_speaker_labels_untouched(self) -> None:
+        self.assertEqual(
+            vector_search._collapse_repeated_speaker_turns("texto sin etiquetas de hablante"),
+            "texto sin etiquetas de hablante",
+        )

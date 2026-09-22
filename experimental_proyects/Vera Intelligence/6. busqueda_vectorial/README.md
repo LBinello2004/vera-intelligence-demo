@@ -1483,3 +1483,137 @@ ahorrar tokens del modelo caro).
 - **Descartado (medido)**: fusionar en una sola query las conversaciones del vendedor y de los mejores.
   `query_ms` es de base de datos (mediana 4,7 s), no gasto de Gemini, y una sola query con `LIMIT` deja que
   un grupo desplace al otro.
+
+### Iteración 28 (2026-09-22): "que_hizo" verificado por código contra el fragmento, no sólo por prompt
+
+Pedido explícito de Lucas ("tenemos que solucionar las notas cualitativas de coaching para que sean
+confiables y no digan nada que no es"), a raíz de una auditoría manual de esta misma sesión: de 8
+notas de Ubaldo Ramos revisadas a mano contra la transcripción cruda, 2 bien respaldadas, 3
+parciales, 1 contradicha por el propio fragmento y 2 no verificables -casi la mitad con algún
+problema real. La regla de prompt de la Iteración 27 ("no afirmes una ausencia, decí «no se ve en
+el fragmento»") ayuda pero sigue dependiendo de que el modelo se autocorrija; nada impedía que
+igual redactara una afirmación plausible pero no respaldada.
+
+- **Nuevo campo obligatorio `evidencia`** en la respuesta del analista: una cita textual de 4 a 20
+  palabras del fragmento que respalde `que_hizo`. Se verifica **en código** (`_evidence_supported`,
+  `vector_search.py`) -normalizada por mayúsculas/acentos/puntuación para tolerar ruido de
+  transcripción trivial, pero exige que sea una subcadena real, no una paráfrasis- y con un mínimo
+  de 4 palabras para que una coincidencia trivial ("el cliente") no cuente como respaldo. Si no
+  verifica (o no viene), se descarta `que_hizo` -nunca se muestra una afirmación sin cita real. Sin
+  llamada extra: mismo prompt, misma cantidad de tokens de salida (la cita ya estaba implícita en el
+  razonamiento del modelo), sólo un chequeo de código antes de anotar el resultado.
+- **Alcance deliberadamente acotado a `que_hizo`**: es la única nota con una sola fuente de verdad
+  tratable por código (un fragmento). `situacion`/`como_termino` (bajo riesgo, describen el momento o
+  el desenlace, no una acción específica del vendedor) y `contraste` (sintetiza patrones entre varios
+  fragmentos de un grupo, no tiene una cita única que lo respalde) siguen mitigados sólo por prompt.
+- **Verificado en vivo contra `mens_fashion_alto`** (Ubaldo Ramos, mismo caso de la auditoría
+  original): de 6 conversaciones del vendedor, sólo **2 de 6** conservaron `que_hizo` con evidencia
+  verificada (las otras 4 quedaron con `situacion`/`como_termino` pero sin la afirmación de qué hizo
+  el vendedor); de los 4 compañeros, **1 de 4**. Es una caída fuerte frente a "10 de 10 con nota"
+  antes de este cambio -mide directamente cuánto de lo que antes se mostraba como diagnóstico no
+  tenía en realidad una cita real detrás en este cliente (transcripciones muy ruidosas, mucho
+  "Speaker 0/Speaker 0" sin turnos claros). **Trade-off explícito, no un bug**: se prioriza no
+  inventar por sobre la densidad de la nota -para un cliente con transcripciones más limpias la
+  proporción verificada debería ser mayor (no medido todavía; próximo paso si hace falta
+  cuantificarlo por cliente). 6 tests nuevos (`EvidenceSupportedTests`) + 4 tests existentes
+  actualizados en `test_vector_search.py`; 485/485 en verde.
+- **Medición de reintentos post-fix de la Iteración 27** (pedido explícito, "corré lo de retry
+  reason"): el log de producción (`gemini_calls.jsonl`) no tenía actividad real posterior al último
+  commit de los fixes de esa ronda -sólo datos de mientras se desarrollaban. Se generaron 5
+  interacciones reales nuevas (coaching e indicadores, mens_fashion/farma24/roberts): 1 de 5
+  (Ubaldo Ramos, coaching) igual disparó "conclusión de certeza sin evidencia suficiente" pese a la
+  regla de lenguaje de la Iteración 27 -la regla de prompt reduce pero no elimina el problema; costo
+  de esa interacción con reintento: US$0,057 vs. US$0,01-0,04 de las otras 4.
+
+- **Hallazgo aparte, resuelto el mismo día**: `interaction_outcomes.jsonl` estaba contaminado de
+  nuevo con eventos de test -literal `session_id="session-test"` encontrado en el archivo real
+  (de `test_vi_agent.py`, un test que no pasa `interaction_outcome_recorder` explícito y depende
+  del fixture de sesión de `conftest.py`)-, pese al fixture de aislamiento del 2026-09-15. **Causa
+  raíz confirmada**: ese fixture es `autouse` de PYTEST -si un archivo de test se ejecuta
+  directamente (`python "5. tests/test_vi_agent.py"`, sin pasar por pytest), pytest nunca corre y el
+  fixture jamás se activa, así que `configure_client()` sigue apuntando al archivo real. Pasó de
+  verdad en algún punto de esta sesión. `gemini_calls.jsonl` no tenía el mismo problema (los tests
+  que escriben ahí sí pasan un `UsageRecorder` explícito a un path temporal en cada caso).
+  **Arreglado con una salvaguarda independiente de pytest** (`vi_agent.py`): si el archivo que
+  Python ejecuta como programa principal (`sys.argv[0]`) vive en `5. tests/`, `USAGE_LOG_PATH`/
+  `INTERACTION_LOG_PATH` apuntan a un directorio temporal desde el arranque del módulo, sin
+  depender de ningún fixture -cubre pytest, `unittest.main()` directo, y el botón "Run" de un IDE
+  por igual. Verificado en vivo: `python "5. tests/test_vi_agent.py"` (110 tests, sin pytest) corrió
+  limpio y el log real no registró ninguna línea nueva. Limpieza del archivo real: 19 líneas con la
+  firma literal de test removidas (backup en
+  `interaction_outcomes.jsonl.bak_before_cleanup_2026-09-22`); las ~800 sesiones de un solo evento
+  del 2026-09-21 con IDs aleatorios (probablemente una corrida de gate/evaluación real, no
+  confirmado con certeza) se dejaron intactas a propósito -sin poder probar que son ruido, borrarlas
+  arriesgaba destruir señal real. 490/490 tests en verde (485 de la ronda anterior + los de la
+  verificación de evidencia + éste, sin tests nuevos dedicados a la salvaguarda -se verificó
+  ejecutando la suite real, no con un test unitario del guard en sí).
+
+- **Segundo hallazgo del mismo chequeo, también corregido**: la primera versión de la verificación
+  de `evidencia` (ítem anterior) rechazaba citas que SÍ estaban en el fragmento -ver
+  `_MIN_EVIDENCE_WORDS` y `_collapse_repeated_speaker_turns` en `vector_search.py` para el detalle
+  completo. Con el fix, una corrida en vivo sobre el mismo caso de Ubaldo Ramos pasó de 3/10 a 7/10
+  notas "qué hizo" verificadas -los 3 casos que siguen sin verificar son ruido real de la
+  transcripción (una diarización que le asigna erróneamente varios números seguidos a hablantes
+  distintos) o el analista parafraseando un número en palabras en vez de citarlo tal cual aparece
+  (ej. "tres mil quinientos" vs. "$3.500" en el fragmento) -correctamente rechazados, no son citas
+  textuales.
+
+### Iteración 29 (2026-09-22): nunca mostrarle al usuario una cita textual, ni pedida explícitamente
+
+Pedido explícito de Lucas: "no quiero que se le muestren al usuario citas textuales de la
+transcripción" -alcance confirmado como TOTAL, incluyendo cuando la pregunta pide expresamente un
+ejemplo/cita/audio (antes esa era la única excepción permitida, ver Iteración 27).
+
+- **`incluir_fragmentos` ya no es controlable por el modelo**: se sacó del `search_conversations`
+  expuesto a Gemini en `vi_agent.py` (la tool ya no lo recibe como parámetro) y la llamada interna a
+  `VectorSearchRepository.search` fuerza `incluir_fragmentos=False` siempre. El texto crudo de la
+  transcripción NUNCA llega al contexto del modelo principal -no es sólo una regla de prompt, el
+  dato ni siquiera está disponible para copiar. `VectorSearchRepository.search` conserva el
+  parámetro para uso interno/depuración (los scripts de auditoría de esta sesión lo siguen usando).
+- **Prompt**: se reemplazó "CITAR SÓLO CUANDO SE PIDE" por "NUNCA CITES TEXTUAL" (sin excepción) -si
+  piden la cita exacta, la respuesta explica que no se muestran transcripciones y ofrece el resumen
+  del caso en su lugar.
+- **Segunda capa, en código** (`response_policy.py`, no sólo prompt): `client_answer_violations`
+  detecta cualquier tramo entre comillas (rectas o «») de 4 o más palabras y lo trata como "cita
+  textual de una conversación" -mismo mecanismo de reintento (`client_safe_rewrite`) que ya existe
+  para fugas técnicas e identificadores internos. Umbral de 4+ palabras para no disparar con una
+  frase de negocio corta ("tres por dos"). Sin esto, la única defensa sería que el modelo respete el
+  prompt -con la fuente de datos ya cortada (punto anterior) el riesgo residual es bajo, pero esta
+  capa cubre el caso de que igual redacte algo entre comillas sin haber leído nada real.
+- **BUG REAL encontrado en la verificación en vivo, corregido antes de terminar**: los bloques
+  ```vera-suggestions``` (chips de preguntas de seguimiento) son un array JSON de strings entre
+  comillas dobles -sin excluirlos, CUALQUIER respuesta con sugerencias de 4+ palabras hubiera
+  disparado el bloqueo, forzando una reescritura en casi todas las respuestas sin ninguna cita real
+  de por medio. Corregido sacando todo bloque ```...``` (mismo patrón `OTHER_FENCES` que ya usa
+  `answer_verification.py`) antes de buscar comillas.
+- **Verificado en vivo contra `farma24_alto`**: "mostrame ejemplos textuales... con la cita exacta"
+  -la primera corrida (antes del fix de `vera-suggestions`) mostró el bloqueo disparando por error
+  sobre las sugerencias; la segunda, después del fix, devolvió coaching por patrones sin ninguna
+  cita y el chequeo de comillas dio `[]`. 497/497 tests en verde (7 nuevos en
+  `test_response_policy.py`, 2 en `test_vi_agent.py`).
+### Iteración 30 (2026-09-22): "contraste" verificado por lado, contra cualquier fragmento de su grupo
+
+Extensión aprobada por Lucas del mecanismo de la Iteración 28 al par "así falla el vendedor" / "así
+lo hacen los mejores" -quedó fuera de alcance esa vez porque `contraste` sintetiza un patrón entre
+VARIOS fragmentos de un grupo, no de uno solo como `que_hizo`.
+
+- **Dos campos nuevos por par**: `evidencia_vendedor` y `evidencia_companeros`, cada uno una cita
+  textual de 3 a 20 palabras que respalde ese lado del contraste. Verificación mecánica en
+  `_judge_relevance` (`vector_search.py`): en vez de comparar contra UN fragmento, cada lado se
+  verifica contra **cualquiera** de los fragmentos de SU propio grupo (`fragmentos_por_grupo`,
+  agrupado por la clave `grupo` que ya trae cada resultado) -reusa `_evidence_supported` tal cual,
+  sin llamada extra a Gemini. Si un lado no verifica, se descarta el PAR completo (un contraste con
+  un solo lado respaldado no compara nada).
+- Una cita real del grupo equivocado (ej. una del lado "companeros" puesta como
+  `evidencia_vendedor`) no cuenta -cada lado se valida sólo contra los fragmentos de su propio
+  grupo, nunca contra el del otro lado, para que no se pueda usar el comportamiento real de un
+  compañero como si respaldara una afirmación sobre el vendedor.
+- 6 tests nuevos (`ContrasteEvidenceTests`) cubriendo: par respaldado en ambos lados, cita que
+  matchea un fragmento que no es el primero del grupo, descarte por falta de evidencia en cada lado
+  por separado, ausencia total de los campos de evidencia, y evidencia real pero del grupo
+  equivocado. 503/503 tests en verde.
+- **Verificado en vivo contra `mens_fashion_alto`/Ubaldo Ramos**: de 2 pares de contraste que el
+  analista proponía antes de este cambio (sin verificar), quedó **1 de 1** con evidencia real en
+  ambos lados -el otro no llegó a proponerse esta vez (no hay forma de saber si el analista antes lo
+  hubiera inventado sin evidencia real; lo que sí se confirma es que el que quedó tiene una cita
+  textual real por cada lado).

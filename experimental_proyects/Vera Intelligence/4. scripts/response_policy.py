@@ -85,6 +85,33 @@ _PHYSICAL_IDENTIFIER = re.compile(
     re.IGNORECASE,
 )
 
+# Cita textual de una conversación (2026-09-22, pedido explícito: nunca mostrarle al usuario una
+# frase textual de una transcripción, ni siquiera si la pide -antes se permitía con pedido
+# explícito, ver "6. busqueda_vectorial/README.md" > Iteración 28). `search_conversations` ya no
+# manda el texto crudo al modelo (`incluir_fragmentos` forzado a false en vi_agent.py), así que el
+# modelo no tiene de dónde copiar una cita real -esto es la segunda capa, por si igual redacta algo
+# entre comillas que aparente ser una cita (fabricada o no). Umbral de 4+ palabras dentro de las
+# comillas: una frase de negocio corta ("tres por dos", un nombre de promoción) no dispara esto;
+# reconstruir lo que dijo alguien sí.
+#
+# BUG REAL encontrado en vivo (2026-09-22, mismo día): los bloques ```vera-suggestions``` (chips de
+# preguntas de seguimiento, ver streamlit_app.py) son un array JSON de strings entre comillas
+# dobles -cada sugerencia de 4+ palabras disparaba esto como si fuera una cita de conversación, lo
+# que hubiera forzado una reescritura en CADA respuesta con sugerencias, sin ninguna cita real de
+# por medio. `_FENCED_BLOCK` (mismo patrón que `OTHER_FENCES` en answer_verification.py) saca todo
+# bloque ```...``` antes de buscar comillas -ningún bloque vera-* debería tener diálogo citado.
+_FENCED_BLOCK = re.compile(r"```.*?```", re.S)
+_QUOTED_CONVERSATION_SPAN = re.compile(r"[«\"“]([^»\"”]+)[»\"”]")
+
+
+def _quoted_conversation_spans(answer: str) -> list[str]:
+    prose = _FENCED_BLOCK.sub("", answer)
+    return [
+        match.group(0)
+        for match in _QUOTED_CONVERSATION_SPAN.finditer(prose)
+        if len(match.group(1).split()) >= 4
+    ]
+
 _BUSINESS_TERMS = re.compile(
     r"\b(?:"
     r"conversacion(?:es)?|interaccion(?:es)?|compra(?:s)?|venta(?:s)?|"
@@ -124,6 +151,8 @@ def client_answer_violations(
         violations.append("identificadores internos")
     if _PHYSICAL_IDENTIFIER.search(answer):
         violations.append("nombres físicos de datos")
+    if _quoted_conversation_spans(answer):
+        violations.append("cita textual de una conversación")
     lowered_answer = answer.lower()
     if any(
         re.search(rf"(?<![\w]){re.escape(identifier.lower())}(?![\w])", lowered_answer)
@@ -151,6 +180,7 @@ def violation_terms(
     terms.update(m.group(0) for m in _SNAKE_CASE.finditer(answer))
     terms.update(m.group(0) for m in _PHYSICAL_IDENTIFIER.finditer(answer))
     terms.update(m.group(0) for m in _ANSWER_LEAK_TERMS.finditer(answer))
+    terms.update(_quoted_conversation_spans(answer))
     lowered_answer = answer.lower()
     for identifier in internal_identifiers:
         if re.search(rf"(?<![\w]){re.escape(identifier.lower())}(?![\w])", lowered_answer):

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -74,7 +75,28 @@ MAX_CLIENT_REWRITES = 4
 MAX_EVIDENCE_REPAIRS = 2
 MAX_ROWS = 200
 
-USAGE_LOG_PATH = PROJECT_ROOT / ".runtime" / "usage" / "gemini_calls.jsonl"
+# Salvaguarda contra contaminar los logs REALES con corridas de test (2026-09-22, ver el
+# "hallazgo aparte" de la Iteración 28 en "6. busqueda_vectorial/README.md"): el fixture de
+# aislamiento de "5. tests/conftest.py" (2026-09-15) sólo protege corridas vía pytest -si algo
+# ejecuta un archivo de test suelto directamente (`python "5. tests/test_vi_agent.py"`), pytest
+# nunca corre, el fixture `autouse` de sesión jamás se activa, y `configure_client()` sigue
+# apuntando estos logs al archivo real. Pasó de verdad en esta sesión: un `session_id` literal de
+# test (`"session-test"`) apareció en `interaction_outcomes.jsonl` de producción pese al fixture.
+# Detectar "el archivo que Python está ejecutando como programa principal vive en 5. tests/" es
+# independiente de CÓMO se lo invoque (pytest, unittest, botón Run del IDE) y no depende de que
+# cada test recuerde pasar un recorder explícito -red de seguridad, no reemplaza el fixture de
+# pytest (que sigue siendo la protección primaria y la única que cubre invocar pytest desde OTRO
+# directorio, donde `sys.argv[0]` no es un archivo de test).
+_RUNNING_A_TEST_FILE_DIRECTLY = bool(sys.argv) and Path(sys.argv[0]).resolve().parent.name == "5. tests"
+if _RUNNING_A_TEST_FILE_DIRECTLY:
+    _TEST_LOG_DIR = Path(tempfile.mkdtemp(prefix="vi_agent_standalone_test_logs_"))
+else:
+    _TEST_LOG_DIR = None
+
+USAGE_LOG_PATH = (
+    _TEST_LOG_DIR / "gemini_calls.jsonl" if _TEST_LOG_DIR
+    else PROJECT_ROOT / ".runtime" / "usage" / "gemini_calls.jsonl"
+)
 # interaction_outcomes.jsonl (2026-09-15, pedido explícito: "medí los reintentos" + "cualquier
 # logging extra que pudiera servir de evidencia, si no tiene costo") -complementa a
 # gemini_calls.jsonl: ese log es por LLAMADA a Gemini (con retry_reason desde este mismo cambio,
@@ -86,7 +108,10 @@ USAGE_LOG_PATH = PROJECT_ROOT / ".runtime" / "usage" / "gemini_calls.jsonl"
 # calculaba gratis (sin llamadas a Gemini) pero sólo se imprimía a stderr bajo debug=True. Todo
 # esto es evidencia de confiabilidad -tal como profundizamos hoy con search_conversations- para el
 # resto del agente, y cuesta cero (sólo escritura local, mismo mecanismo que UsageRecorder).
-INTERACTION_LOG_PATH = PROJECT_ROOT / ".runtime" / "usage" / "interaction_outcomes.jsonl"
+INTERACTION_LOG_PATH = (
+    _TEST_LOG_DIR / "interaction_outcomes.jsonl" if _TEST_LOG_DIR
+    else PROJECT_ROOT / ".runtime" / "usage" / "interaction_outcomes.jsonl"
+)
 
 # Prompt caching de Gemini (2026-09-11) -ver "8. README.md" > "Potencial de mejora" > "Prompt
 # caching de Gemini no está en uso". El system_instruction (con el Data Map completo) es largo y
@@ -429,9 +454,9 @@ def _build_extra_tools_section() -> str:
     if CLIENT_CONFIG.vector_search:
         items.append(
             "search_conversations(query, top_k, store_name, employee_name, date_from, date_to, "
-            "criterio, resultado, comparar_con_mejores, incluir_fragmentos): lee conversaciones reales y devuelve, por cada una, NOTAS "
+            "criterio, resultado, comparar_con_mejores): lee conversaciones reales y devuelve, por cada una, NOTAS "
             "observables de lo que pasó ('notas': situacion / que_hizo / como_termino), 'patrones' "
-            "que se repiten entre las leídas (el texto crudo sólo con incluir_fragmentos=true). Es la única fuente de "
+            "que se repiten entre las leídas -nunca texto crudo de la conversación (ver NUNCA CITES TEXTUAL). Es la única fuente de "
             "lo que el SQL NO tiene: CÓMO lo hizo alguien, en qué situación y con qué resultado -el "
             "checklist sólo dice cuánto cumple, no cómo falla ni cómo acierta-. NUNCA para un "
             "número, conteo, porcentaje, tasa o ranking (LÍMITE DURO: la distancia semántica no "
@@ -498,30 +523,24 @@ def _build_extra_tools_section() -> str:
             f"valores que ya viste en SQL), en el vocabulario de {CLIENT_CONFIG.display_name} -los "
             "ejemplos de moda de este texto son sólo de estructura- y no como paráfrasis abstracta "
             "del criterio. Máximo una reformulación más amplia si no trae nada.\n"
-            "  - LEER LOS RESULTADOS: 'notas' y 'patrones' son la sustancia del consejo; "
-            "'fragmento_aproximado' sólo viene si pediste incluir_fragmentos=true -hacelo únicamente "
-            "cuando la pregunta pide citas, textual, ejemplos o audios (es texto crudo con ruido "
-            "y 'Speaker N' no confiable, y mucho más caro; si lo necesitás, incluir_fragmentos=true "
-            "desde la PRIMERA llamada). Lo observado es una MUESTRA de las conversaciones "
-            "leídas: presentalo como 'en las conversaciones revisadas se ve que...', nunca como "
-            "estadística: sin cifras ni porcentajes sacados de acá, frecuencia en términos "
-            "cualitativos. En coaching individual verificá que 'vendedor' del resultado sea la "
-            "persona coacheada. El consejo tiene que salir de las notas -si podría haberse escrito "
-            "igual sin haber leído las conversaciones, no aprovechaste la tool-. Sin resultados "
-            "relevantes: decilo, no inventes un caso.\n"
-            "  - CITAR SÓLO CUANDO SE PIDE (pedido explícito, 2026-09-21): las conversaciones son "
-            "materia prima del INSIGHT, no un adorno citable. Sólo si la pregunta pide ejemplos, "
-            "citas, textual, audios, casos reales, 'quién lo dijo' o 'en qué conversación' citás "
-            "conversaciones concretas (comillas, tienda/fecha/vendedor del caso, y ahí la interfaz "
-            "ofrece escucharlas). En coaching, diagnósticos, recomendaciones y el resto, usá lo que "
-            "las notas muestran para armar el consejo, pero NO cites casos puntuales (sin "
-            "'en una conversación del 12/8 en la tienda X', sin frases entre comillas, sin invitar "
-            "a escuchar audios): describí la conducta en general ('cuando el cliente pregunta el "
-            "precio, informa la promoción y espera').\n"
-            "  - COMILLAS (INTEGRIDAD): sólo van entre comillas textos literales de un "
-            "fragmento_aproximado real, y sólo cuando se piden citas; un guion o frase que VOS "
-            "sugerís para el futuro va SIN comillas (en prosa o infinitivo); resumen_verificado, "
-            "las notas y cualquier campo de SQL son síntesis, nunca palabras textuales de nadie.\n"
+            "  - LEER LOS RESULTADOS: 'notas' y 'patrones' son la sustancia del consejo. Lo "
+            "observado es una MUESTRA de las conversaciones leídas: presentalo como 'en las "
+            "conversaciones revisadas se ve que...', nunca como estadística: sin cifras ni "
+            "porcentajes sacados de acá, frecuencia en términos cualitativos. En coaching "
+            "individual verificá que 'vendedor' del resultado sea la persona coacheada. El "
+            "consejo tiene que salir de las notas -si podría haberse escrito igual sin haber "
+            "leído las conversaciones, no aprovechaste la tool-. Sin resultados relevantes: "
+            "decilo, no inventes un caso.\n"
+            "  - NUNCA CITES TEXTUAL (regla sin excepción, 2026-09-22: antes se permitía si el "
+            "usuario pedía explícitamente un ejemplo/cita/audio -ya no): las conversaciones son "
+            "materia prima del INSIGHT, nunca un texto citable, ni siquiera si te lo piden "
+            "explícitamente. Jamás pongas entre comillas una frase que alguien dijo, ni "
+            "reconstruyas el diálogo de una conversación puntual. Describí la conducta en "
+            "general, en prosa, sin comillas ('cuando el cliente pregunta el precio, informa la "
+            "promoción y espera'), y como mucho mencioná tienda/fecha/vendedor de un caso si se "
+            "piden ejemplos -nunca lo que se dijo textualmente. Si piden explícitamente 'la cita "
+            "exacta' o 'las palabras exactas', explicá que no mostrás transcripciones textuales y "
+            "ofrecé el resumen del caso en su lugar.\n"
             "  - PRIVACIDAD: nunca menciones el nombre del compañero de alto desempeño (ni completo "
             "ni parcial): 'un compañero del equipo con mejor resultado'. Al vendedor coacheado sí lo "
             "nombrás (es de quien se habla); su tienda/fecha de un caso puntual, sólo si se piden "
@@ -814,14 +833,10 @@ def search_conversations(
     criterio: str = "",
     resultado: str = "",
     comparar_con_mejores: bool = False,
-    incluir_fragmentos: bool = False,
 ) -> str:
     """Busca conversaciones semánticamente similares a `query` para el cliente activo.
 
     Args:
-        incluir_fragmentos: opcional, default false. Poné true SÓLO si la pregunta pide citas,
-            textual, ejemplos concretos o audios: trae además el texto crudo de cada conversación
-            (mucho más caro). Para coaching y recomendaciones dejalo en false: las notas alcanzan.
         criterio: opcional, SIEMPRE junto con `resultado` -nombre de una columna del checklist de
             rendimiento del Data Map (ej. la del cierre de compra). Con `resultado` filtra por el
             resultado automático del checklist en vez de sólo por parecido: sirve para coaching
@@ -844,11 +859,12 @@ def search_conversations(
         date_to: fecha máxima (YYYY-MM-DD, inclusive) -omitir para no filtrar por fin.
 
     Returns:
-        JSON interno con ``resultados``: fragmentos aproximados de conversaciones reales, con
-        tienda, vendedor, fecha, distancia semántica, distancia relativa al mejor resultado de
-        esta misma búsqueda y una señal ``posible_instruccion_incrustada`` (ver SEGURIDAD ANTE
-        CONTENIDO EXTERNO en SYSTEM_INSTRUCTION_TEMPLATE), para citar como evidencia de
-        negocio.
+        JSON interno con ``resultados``: notas observables de conversaciones reales (situación,
+        qué hizo el vendedor, cómo terminó), con tienda, vendedor, fecha, distancia semántica,
+        distancia relativa al mejor resultado de esta misma búsqueda y una señal
+        ``posible_instruccion_incrustada`` (ver SEGURIDAD ANTE CONTENIDO EXTERNO en
+        SYSTEM_INSTRUCTION_TEMPLATE), para usar como insumo del diagnóstico -nunca para citar
+        textual (ver NUNCA CITES TEXTUAL).
 
     Raises:
         RuntimeError: si el cliente activo no tiene búsqueda vectorial habilitada en su
@@ -868,7 +884,13 @@ def search_conversations(
         criterio=criterio,
         resultado=resultado,
         comparar_con_mejores=bool(comparar_con_mejores) if isinstance(comparar_con_mejores, bool) else False,
-        incluir_fragmentos=incluir_fragmentos is True,
+        # incluir_fragmentos ya no es controlable por el modelo (2026-09-22, pedido explícito: nunca
+        # mostrar citas textuales al usuario, ni siquiera si las pide). Forzado en False: el texto
+        # crudo de la transcripción nunca llega al modelo principal, así que no puede copiarlo -no
+        # es sólo una regla de prompt, es que el dato ni siquiera está disponible para citar. El
+        # parámetro sigue existiendo en VectorSearchRepository.search para uso interno/depuración
+        # (ver "6. busqueda_vectorial/README.md"), sólo se le quitó el control al modelo.
+        incluir_fragmentos=False,
     )
 
 

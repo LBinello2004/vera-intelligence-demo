@@ -65,6 +65,46 @@ class ResponsePolicyTests(unittest.TestCase):
         )
         self.assertIn("identificadores internos", violations)
 
+    def test_detects_a_long_quoted_conversation_span(self) -> None:
+        # Pedido explícito (2026-09-22): nunca mostrarle al usuario una cita textual de una
+        # conversación, ni siquiera si la pide. search_conversations ya no manda el texto crudo al
+        # modelo (incluir_fragmentos forzado a false), esto es la segunda capa por si igual redacta
+        # algo entre comillas que aparente ser una cita.
+        violations = client_answer_violations(
+            'El vendedor le dijo "no tenemos stock pero te lo puedo pedir para mañana".'
+        )
+        self.assertIn("cita textual de una conversación", violations)
+
+    def test_short_quoted_business_term_is_not_flagged_as_a_quote(self) -> None:
+        # Una frase de negocio corta entre comillas (nombre de promo, término del checklist) no es
+        # una reconstrucción de diálogo -el umbral es de 4+ palabras dentro de las comillas.
+        self.assertEqual(
+            client_answer_violations('La promoción "tres por dos" sigue vigente este mes.'),
+            [],
+        )
+
+    def test_curly_quotes_are_also_detected(self) -> None:
+        violations = client_answer_violations(
+            "El cliente preguntó «cuánto cuesta el traje completo con corbata incluida»."
+        )
+        self.assertIn("cita textual de una conversación", violations)
+
+    def test_vera_suggestions_block_is_not_flagged_as_a_quoted_conversation(self) -> None:
+        # Bug real encontrado en vivo (2026-09-22): las sugerencias de seguimiento son un array
+        # JSON entre comillas dobles -no deben dispararse como si fueran una cita de conversación.
+        answer = (
+            "Resumen del mes.\n\n"
+            '```vera-suggestions\n["Ver el desempeño de Daniela Quevedo en complementarios", '
+            '"Analizar la tasa de venta cruzada por sucursal"]\n```'
+        )
+        self.assertEqual(client_answer_violations(answer), [])
+
+    def test_violation_terms_includes_the_full_quoted_span(self) -> None:
+        terms = violation_terms(
+            'El vendedor le dijo "no tenemos stock pero te lo puedo pedir para mañana".'
+        )
+        self.assertIn('"no tenemos stock pero te lo puedo pedir para mañana"', terms)
+
     def test_violation_terms_extracts_exact_snake_case_tokens(self) -> None:
         terms = violation_terms(
             "El motivo principal fue precio_presupuesto, seguido de consulta_decisor."
