@@ -1747,6 +1747,125 @@ interacción porque el cache de contexto de Gemini sólo cubre el system_instruc
   diagnósticas ("¿cuál es la tasa de cierre de Ubaldo?") correctamente no disparan el rulebook, sólo
   `run_readonly_sql`. La salvaguarda ya existente en el prompt ("No lo hagas de forma especulativa")
   funciona como está diseñada. Sin cambios.
+- **Decisión confirmada en vivo (2026-09-22)**: el panel de audio muestra "compañero con mejor
+  resultado" para los compañeros, nunca su nombre real -el anonimizado pasa en `search()`
+  (`vector_search.py`, línea ~1487) ANTES de que el resultado se divida entre lo que ve el modelo y
+  lo que arma el panel, así que el nombre real nunca estuvo disponible para el panel tampoco (pese a
+  que una sesión anterior había asumido que sí, "no me molesta que quede visible ahí"). Se le mostró
+  este comportamiento real a Lucas en vivo (captura del panel con "compañero con mejor resultado" en
+  4 filas) y **confirmó explícitamente que prefiere dejarlo así, anonimizado también en el panel**
+  -no implementar la alternativa (nombre real sólo en el panel, separado del JSON que ve el modelo)
+  sin que lo vuelva a pedir.
+### Iteración 36 (2026-09-22, mismo día): search_conversations pasa a ser una fuente central, no sólo de coaching
+
+Pedido explícito de Lucas: *"Quiero que se utilice mucho más la búsqueda vectorial... que realmente
+siempre que se pueda traiga información que no se puede obtener por medio de SQL"*. Antes de tocar
+nada se planeó con `EnterPlanMode` (cambio de alcance grande, toca la lógica central de cuándo se
+usa la tool) y se confirmó con Lucas qué categorías nuevas dispararla, dado que expandir el uso sube
+el costo por interacción -un trade-off consciente después de toda la sesión enfocada en bajarlo.
+
+- **Cambio, sólo prompt** (`vi_agent.py`, `SYSTEM_INSTRUCTION_TEMPLATE`), sin tocar
+  `vector_search.py`/`response_policy.py`/`answer_verification.py` -el LÍMITE DURO contra números,
+  la verificación de `que_hizo`/`contraste` y el bloqueo de citas ya cubren cualquier riesgo nuevo:
+  - "CUÁNDO" reescrito: ya no excluye preguntas agregadas/comparativas -el número/ranking sigue
+    saliendo 100% de SQL, pero si la pregunta pide o se beneficia del "por qué" cualitativo, se
+    agrega UNA búsqueda anclada en el segmento más débil que el número señaló.
+  - Nueva entrada "POR QUÉ / CAUSA RAÍZ": tendencias, "a qué se debe X", y rankings/top-N con
+    "por qué" -una sola búsqueda sobre el extremo (última tienda, criterio que más cayó), nunca una
+    por cada fila de un ranking.
+  - "OTROS USOS" pasó a "EXPLORACIÓN ABIERTA DE NEGOCIO": de bucket oportunista ("si se le ocurre")
+    a default explícito para cualquier pregunta de negocio sin vendedor/criterio puntual (objeciones,
+    quejas, patrones de clientes).
+  - Extendida la excepción de densidad (línea ~282) para que el contenido de "por qué" y de
+    exploración abierta tampoco se recorte como prosa.
+- **Verificado en vivo contra `mens_fashion_alto`**, los 3 casos del plan:
+  1. "¿Por qué bajó la tasa de cierre de compra este mes?" -SQL mostró que en realidad SUBIÓ
+     (45,01% vs. 37,47% el mes anterior); el modelo lo reportó honestamente (no forzó una narrativa
+     falsa) y agregó una búsqueda sobre las ventas perdidas del mes para explicar las causas reales
+     (quiebre de inventario 42,5%, falta de cierre activo 34,8%).
+  2. "¿Qué objeciones de precio se repiten más?" -pregunta abierta sin vendedor puntual: disparó la
+     búsqueda por default, con patrones reales agrupados.
+  3. "¿Cuáles son las 3 tiendas con peor desempeño en cierre y por qué?" -el ranking salió 100% de
+     SQL (Patio Sendero Saltillo 16,4%, Bolívar 18,4%, Misiones Juárez 22,1%, cada uno con su base) y
+     se agregó UNA sola búsqueda sobre la peor tienda, no una por cada una.
+  En los 3 casos: el número/ranking nunca vino de la búsqueda, nunca más de una llamada por
+  respuesta, sin ninguna cita textual.
+- **Costo real medido**: las 3 interacciones costaron en total US$0,10 (~US$0,033 promedio cada
+  una) -en línea con lo que ya cuesta el coaching, y ~US$0,01-0,015 más que el equivalente puramente
+  SQL (el costo de agregar una búsqueda). El salto por pregunta es chico; el impacto real es que
+  ahora se aplica a muchas más preguntas que antes.
+- 521/521 tests en verde -ninguno roto porque ningún test tenía asserts fijados al texto exacto de
+  "CUÁNDO"/"OTROS USOS" (verificado antes de armar el plan). No hay forma de testear esto con mocks
+  -es comportamiento del modelo real, se verifica en vivo, no con unit tests.
+
+### Iteración 37 (2026-09-22, mismo día): notas y patrones menos genéricos
+
+Pedido explícito de Lucas tras validar la Iteración 36: *"que sea cada vez menos genérico lo que se "
+dice en cuanto a lo asociado a la búsqueda vectorial"*. Riesgo real identificado: una nota o un
+patrón podía limitarse a reformular el CRITERIO buscado con otras palabras (ej. "no propone el "
+cierre" para una búsqueda sobre `vendedorrealizocierrecompra`) -eso no aporta nada que el checklist
+no dijera ya, aunque pasara la verificación de evidencia (la cita puede respaldar una frase genérica
+tanto como una específica).
+
+- **`_JUDGE_PROMPT_TEMPLATE`** (`vector_search.py`): "que_hizo", "patrones" y ambos lados de
+  "contraste" ahora prohíben explícitamente reformular el criterio ("no cierra"/"sí cierra") y
+  exigen el detalle concreto del fragmento (qué producto, qué dijo, sobre qué monto) -si no hay ese
+  detalle, mejor lista/campo vacío que contenido sin sustancia.
+- **`vi_agent.py`** (coaching por situación y BÚSQUEDA DE PATRONES): mismo refuerzo del lado del
+  modelo principal al ensamblar la respuesta final -no reemplazar una nota sin `que_hizo` (ya
+  descartada por falta de evidencia) con una frase genérica propia.
+- **Verificado en vivo, mismo caso de Ubaldo Ramos**: notas pasaron de descripciones ya concretas a
+  MÁS específicas todavía -"detalla el precio de un traje gris medio hecho a la medida", "explica que
+  el pantalón y el saco se cobran por separado con un descuento aplicado"- y el contraste dejó de
+  ser "no cierra" vs. "sí cierra" para pasar a "calcula el monto final... pero despide sin proponer "
+  el pago" vs. "solicita el número telefónico, ofrece la bolsa y cobra indicando el total". Efecto
+  secundario positivo, no buscado: la tasa de verificación de `que_hizo` subió a **10/10 (100%)** en
+  esa corrida -notas más específicas resultan más fáciles de anclar en una cita real, calidad y
+  confiabilidad se refuerzan mutuamente. 521/521 tests en verde (cambio de prompt, sin tests nuevos
+  -mismo motivo que la Iteración 36: comportamiento del modelo real, se verifica en vivo).
+
+### Iteración 38 (2026-09-22, mismo día): "patrones" verificado -el último campo del analista sin chequeo mecánico
+
+Pedido explícito de Lucas: "sigamos mejorando el uso de búsqueda vectorial como fuente de
+información cualitativa". A diferencia de `que_hizo` (Iteración 28) y `contraste` (Iteración 30),
+`patrones` seguía siendo puramente atestiguado por el modelo -afirma una REPETICIÓN ("esto pasa en 2
+o más conversaciones") sin que nada verificara que esas dos conversaciones existieran de verdad.
+
+- **Cambio**: cada patrón pasa a ser un objeto `{"patron", "evidencia_1", "evidencia_2"}` -dos
+  citas textuales, cada una verificada contra un fragmento DISTINTO de los que trajo la búsqueda
+  (`vector_search.py`, misma función `_evidence_supported` ya usada para `que_hizo`/`contraste`). Si
+  ambas citas no verifican en dos fragmentos diferentes, el patrón se descarta -dos citas reales
+  pero de LA MISMA conversación tampoco alcanzan, no demuestran repetición.
+- **Verificado en vivo en los dos sentidos**: una búsqueda abierta con pocos resultados (4) hizo que
+  el propio modelo devolviera `patrones: []` -no inventó nada al no encontrar repetición real,
+  confirmando que el filtro no está descartando patrones legítimos por error-; el caso de Ubaldo
+  Ramos (`comparar_con_mejores`) sí produjo un patrón verificado con detalle concreto: "menciona los
+  precios y promociones vigentes pero se despide sin preguntar si el cliente se lo va a llevar".
+- 7 tests nuevos (`PatronesEvidenceTests`) + 2 tests existentes actualizados al nuevo formato.
+  526/526 tests en verde.
+- **Balance del día**: con esto, los tres campos que arma el analista sobre múltiples fragmentos
+  (`que_hizo`, `contraste`, `patrones`) tienen verificación mecánica completa -ninguno depende sólo
+  de que el modelo diga la verdad, todos exigen una cita real y verificable por código.
+
+### Iteración 39 (2026-09-22, mismo día): "como_termino" también verificado
+
+Pedido explícito de Lucas: seguir mejorando la confiabilidad de la búsqueda vectorial como fuente
+cualitativa. Quedaba una asimetría real: `como_termino` afirma un desenlace (qué hizo o dijo el
+CLIENTE) tan verificable como `que_hizo` afirma una acción del vendedor, pero nunca se chequeaba
+-quedaba en el mismo lugar que `situacion` ("bajo riesgo") aunque el riesgo real fuera comparable al
+de `que_hizo`.
+
+- **Cambio**: nuevo campo `evidencia_como_termino` (misma mecánica que `evidencia` para `que_hizo`)
+  -si no verifica contra el fragmento real, se descarta `como_termino` en vez de mostrar un
+  desenlace inventado. `situacion` queda como el único campo sin chequeo -es el único que de verdad
+  sigue siendo de bajo riesgo (el momento puntual, no una afirmación de acción o desenlace).
+- **Verificado en vivo, mismo caso de Ubaldo Ramos**: 5/6 `como_termino` del vendedor y 3/4 de
+  compañeros verificados -filtra de verdad (2 descartados), y los que sobreviven son concretos
+  ("El cliente rechaza el producto", "Se procesa el pago y finaliza la atención").
+- 3 tests actualizados/nuevos. 528/528 tests en verde.
+- **Balance acumulado del día**: `que_hizo`, `como_termino`, `contraste` y `patrones` -los cuatro
+  campos que el analista arma sobre texto libre- tienen ahora verificación mecánica completa.
+
 - **Bajar `top_k`/`PEER_TOP_K` -probado y NO adoptado**: comparación en vivo, mismo caso real
   (top_k=8/PEER_TOP_K=4 actual vs. 5/3 reducido): `que_hizo` verificado se mantuvo (10/12 vs. 7/8),
   pero **`contraste` verificado pasó de 1 par a 0** -con menos candidatos no alcanzó material para
@@ -1762,3 +1881,40 @@ interacción porque el cache de contexto de Gemini sólo cubre el system_instruc
   redondeo también en el log interno de calidad de búsqueda, que lee el mismo dict. Bytes de menos
   en CADA resultado de CADA búsqueda, sin tocar nada que el modelo o el log realmente usen. 1 test
   nuevo. 516/516 tests en verde.
+
+### Iteración 40 (2026-09-22, mismo día): fuga de fragmentos crudos cuando el analista falla por completo
+
+Pedido explícito de Lucas: seguir iterando sobre la confiabilidad de la búsqueda vectorial. Releyendo
+con cuidado la interacción entre dos cambios ya viejos -el `except Exception` de `_judge_relevance`
+(diseño "fail-open": si el analista falla por cualquier motivo, devuelve `[True]*len(resultados)` sin
+`notas` en ningún item) y el `incluir_fragmentos=False` que `vi_agent.py` fuerza siempre desde la
+Iteración 29- apareció un hueco real: el recorte final de `search()` que borra
+`fragmento_aproximado`/`resumen_verificado` sólo corría `if item.get("notas")`. Cuando el analista
+fallaba entero (timeout, JSON malformado, error de API), **ningún item tenía `notas`**, así que el
+recorte no se ejecutaba nunca y los fragmentos crudos de la transcripción llegaban intactos al modelo
+principal -exactamente lo que "NUNCA CITES TEXTUAL" (Iteración 29/33) prometía que era imposible
+ahora que `incluir_fragmentos` ya no es controlable desde el modelo.
+
+- **Cambio**: el recorte de `fragmento_aproximado`/`resumen_verificado` en `search()` pasa a ser
+  incondicional -corre siempre que `incluir_fragmentos=False`, tenga o no `notas` el item. El
+  fail-open de `_judge_relevance` sigue existiendo (sigue siendo preferible mostrar resultados sin
+  notas a no mostrar nada), pero ya no puede filtrar texto crudo como efecto secundario.
+- **6 tests existentes tenían el bug codificado como comportamiento esperado** -corregidos: 3 en
+  `ConversationIdAndVerifiedSummaryTests` y 1 en `DateFilterSanitizationAndLoggingTests` separaban la
+  extracción de datos de DB probando con `incluir_fragmentos=True` explícito (comportamiento correcto
+  y distinto del recorte final), y 2 en `CompareWithBestTests` se invirtieron/renombraron para reflejar
+  el recorte incondicional.
+- **1 test nuevo crítico** (`test_fragments_are_stripped_even_when_the_judge_call_fails_entirely`):
+  no mockea `_judge_relevance` -fuerza la excepción real parcheando el cliente de embeddings para que
+  falle, y confirma que aun así no queda ningún fragmento crudo en el payload. Este es el test que
+  habría fallado con el código viejo y que cierra el hueco real, no uno hipotético.
+- 530/530 tests en verde (182 subtests).
+- **Verificado en vivo**: búsqueda normal (sin forzar el fallo) contra `mens_fashion_alto` sigue
+  devolviendo el mismo payload liviano que en la Iteración 34 -`notas` presente con `que_hizo`/
+  `como_termino` verificados en la mayoría de los items, sin fragmentos crudos ni antes ni después
+  del fix. Sin regresión en el caso normal.
+- **Por qué importa**: era el único camino, ya identificado desde que se implementó Iteración 29,
+  por el que una falla externa (no un bug de lógica, sino un error real de la API o un JSON
+  inesperado del analista) podía romper la garantía de "nunca cita textual" sin que ningún test lo
+  detectara -los tests existentes probaban el camino feliz del analista, nunca su falla total
+  combinada con `incluir_fragmentos=False` fijo.

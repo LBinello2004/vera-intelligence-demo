@@ -465,7 +465,7 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
     umbral en la misma ronda (rechazado por falta de separación limpia en la distribución real de
     distancias)."""
 
-    def _run_search(self, client_id: str, rows: list[tuple]) -> tuple[dict, _FakeCursor]:
+    def _run_search(self, client_id: str, rows: list[tuple], **kwargs) -> tuple[dict, _FakeCursor]:
         client = load_client_config(client_id)
         repo = vector_search.VectorSearchRepository(client)
         cursor = _FakeCursor(rows)
@@ -478,7 +478,7 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         ), patch.object(
             vector_search, "_judge_relevance", side_effect=_all_relevant
         ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
-            result = repo.search("consulta de prueba")
+            result = repo.search("consulta de prueba", **kwargs)
         return json.loads(result), cursor
 
     def test_find_descriptivos_source_for_full_schema_client(self) -> None:
@@ -507,11 +507,17 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         )
         self.assertIsNone(vector_search._find_descriptivos_source(client))
 
+    # Las 3 pruebas de abajo verifican la EXTRACCIÓN de resumen_verificado desde el JOIN de SQL, no
+    # su presencia en el payload final -eso es una preocupación aparte (ver
+    # FragmentsAlwaysStrippedTests) desde que el pop de fragmento_aproximado/resumen_verificado se
+    # volvió incondicional. Pasan incluir_fragmentos=True para poder seguir viendo el valor crudo
+    # que salió de la fila de Postgres.
+
     def test_query_joins_descriptivos_source_when_available(self) -> None:
         rows = [
             ("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", "un resumen", 0.20),
         ]
-        payload, cursor = self._run_search("mens_fashion_alto", rows)
+        payload, cursor = self._run_search("mens_fashion_alto", rows, incluir_fragmentos=True)
         sql, _params = cursor.executed[-1]
         self.assertIn("insights_descriptivos_generales", sql)
         self.assertIn("resumen_ejecutivo_conversacion", sql)
@@ -526,7 +532,7 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         rows = [
             ("rid1", 0, "Sucursal A", "Vendedor A", None, "hola", "conv1", "un resumen", 0.20),
         ]
-        payload, cursor = self._run_search("farma24_alto", rows)
+        payload, cursor = self._run_search("farma24_alto", rows, incluir_fragmentos=True)
         sql, _params = cursor.executed[-1]
         self.assertIn("descriptivos_generales_tipo_interaccion_detalle AS resumen_ejecutivo_conversacion", sql)
         self.assertNotIn("di.resumen_ejecutivo_conversacion ", sql)
@@ -536,7 +542,7 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         rows = [
             ("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.20),
         ]
-        payload, cursor = self._run_search("salomon_alto", rows)
+        payload, cursor = self._run_search("salomon_alto", rows, incluir_fragmentos=True)
         sql, _params = cursor.executed[-1]
         self.assertNotIn("insights_descriptivos_generales", sql)
         self.assertIsNone(payload["resultados"][0]["resumen_verificado"])
@@ -666,7 +672,7 @@ class DateFilterSanitizationAndLoggingTests(_RedirectsUsageLogTestCase):
                 "hola pendejo como estas puta madre", "conv1", None, 0.20,
             ),
         ]
-        payload, _ = self._run_search(rows)
+        payload, _ = self._run_search(rows, incluir_fragmentos=True)
         fragmento = payload["resultados"][0]["fragmento_aproximado"]
         self.assertNotIn("pendejo", fragmento.lower())
         self.assertNotIn("puta", fragmento.lower())
@@ -986,7 +992,7 @@ class AnalystNotesTests(unittest.TestCase):
     def test_annotates_relevant_results_with_notes_and_returns_patterns(self) -> None:
         resultados = [
             {"fragmento_aproximado": "El cliente pregunta el precio y el vendedor informa la promoción vigente sin invitar a pasar a caja"},
-            {"fragmento_aproximado": "b"},
+            {"fragmento_aproximado": "El vendedor menciona el descuento del mes pero se queda esperando sin proponer nada más"},
         ]
         payload = json.dumps(
             {
@@ -997,7 +1003,11 @@ class AnalystNotesTests(unittest.TestCase):
                      "como_termino": "Siguió mirando"},
                     {"i": 1, "relevante": False, "situacion": "", "que_hizo": "", "como_termino": ""},
                 ],
-                "patrones": ["Informa promociones sin proponer avanzar"],
+                "patrones": [
+                    {"patron": "Informa promociones sin proponer avanzar",
+                     "evidencia_1": "informa la promoción vigente sin invitar a pasar a caja",
+                     "evidencia_2": "menciona el descuento del mes pero se queda esperando sin proponer nada más"},
+                ],
             }
         )
         analysis: dict = {}
@@ -1045,11 +1055,17 @@ class AnalystNotesTests(unittest.TestCase):
         # antes de probar el acotado de longitud -lo que se prueba acá es _clean_note, no
         # _evidence_supported.
         quote = "zz zz zz zz zz"
-        resultados = [{"fragmento_aproximado": quote}]
+        quote_2 = "yy yy yy yy yy"
+        resultados = [
+            {"fragmento_aproximado": quote},
+            {"fragmento_aproximado": quote_2},
+        ]
+        patron = {"patron": "p1", "evidencia_1": quote, "evidencia_2": quote_2}
         payload = json.dumps(
             {"resultados": [{"i": 0, "relevante": True, "situacion": "  x   y  ",
                              "que_hizo": "z" * 1000, "evidencia": quote, "como_termino": 5}],
-             "patrones": ["p1", "p2", "p3", "p4", ""]}
+             "patrones": [patron, {**patron, "patron": "p2"}, {**patron, "patron": "p3"},
+                          {**patron, "patron": "p4"}, {**patron, "patron": ""}]}
         )
         analysis: dict = {}
         self._judge(payload, resultados, analysis_out=analysis)
@@ -1106,19 +1122,42 @@ class AnalystNotesTests(unittest.TestCase):
         self._judge(payload, resultados)
         self.assertEqual(resultados[0]["notas"]["que_hizo"], "Sugirió un complemento")
 
-    def test_situacion_and_como_termino_are_not_evidence_checked(self) -> None:
-        # El chequeo mecánico se limita a "que_hizo" (la única afirmación con una fuente única y
-        # tratable por código); "situacion"/"como_termino" siguen dependiendo sólo del prompt.
+    def test_situacion_is_not_evidence_checked(self) -> None:
+        # "situacion" sigue siendo el único campo de bajo riesgo real (el momento puntual, no una
+        # afirmación de acción o desenlace) -no exige evidencia.
         resultados = [{"fragmento_aproximado": "x"}]
         payload = json.dumps(
-            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente prueba la prenda",
-                             "como_termino": "Se la lleva"}],
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente prueba la prenda"}],
              "patrones": []}
         )
         self._judge(payload, resultados)
         notas = resultados[0]["notas"]
         self.assertEqual(notas["situacion"], "Cliente prueba la prenda")
-        self.assertEqual(notas["como_termino"], "Se la lleva")
+
+    def test_como_termino_kept_when_evidence_verifies(self) -> None:
+        # 2026-09-22: "como_termino" pasó a exigir evidencia, mismo criterio que "que_hizo" -afirma
+        # un desenlace (qué hizo/dijo el cliente) tan verificable como una acción del vendedor.
+        resultados = [{"fragmento_aproximado": "El cliente prueba la prenda y decide llevársela puesta"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente prueba la prenda",
+                             "como_termino": "Se la lleva puesta",
+                             "evidencia_como_termino": "decide llevársela puesta"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        notas = resultados[0]["notas"]
+        self.assertEqual(notas["como_termino"], "Se la lleva puesta")
+
+    def test_como_termino_discarded_when_evidence_is_missing_or_unreal(self) -> None:
+        resultados = [{"fragmento_aproximado": "El cliente prueba la prenda y sigue mirando otras opciones"}]
+        payload = json.dumps(
+            {"resultados": [{"i": 0, "relevante": True, "situacion": "Cliente prueba la prenda",
+                             "como_termino": "Se la lleva puesta"}],
+             "patrones": []}
+        )
+        self._judge(payload, resultados)
+        notas = resultados[0]["notas"]
+        self.assertEqual(notas["como_termino"], "")
 
     def test_label_context_reaches_the_prompt(self) -> None:
         resultados = [{"fragmento_aproximado": "a"}]
@@ -1165,6 +1204,82 @@ class AnalystNotesTests(unittest.TestCase):
         _, mock_client = self._judge("[true]", [{"fragmento_aproximado": "a"}])
         prompt = mock_client.models.generate_content.call_args.kwargs["contents"]
         self.assertNotIn("Contexto del checklist", prompt)
+
+
+class PatronesEvidenceTests(unittest.TestCase):
+    """Verificación mecánica de "patrones" (2026-09-22, último campo del analista sin verificar):
+    un patrón afirma una REPETICIÓN, así que exige dos citas reales en DOS fragmentos distintos, no
+    sólo una cita cualquiera -a diferencia de "que_hizo" (un fragmento) o "contraste" (cualquiera de
+    UN grupo)."""
+
+    def _judge(self, response_text: str, resultados: list[dict], **kwargs):
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
+            vector_search._judge_relevance("cierre", resultados, model="m", api_key="k", **kwargs)
+
+    def _resultados(self) -> list[dict]:
+        return [
+            {"fragmento_aproximado": "El vendedor menciona el precio y se queda esperando sin proponer avanzar"},
+            {"fragmento_aproximado": "El vendedor informa la promoción y no invita a pasar a caja"},
+        ]
+
+    @staticmethod
+    def _sin_notas(n: int) -> list[dict]:
+        # El chequeo de largo exacto (sin índices "i") exige un elemento por cada resultado -acá
+        # sólo interesa "patrones", así que se marcan como no relevantes (sin notas) los n.
+        return [{"relevante": False} for _ in range(n)]
+
+    def test_pattern_kept_when_both_quotes_verify_in_different_fragments(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(2), "patrones": [
+            {"patron": "Informa pero no propone avanzar",
+             "evidencia_1": "menciona el precio y se queda esperando sin proponer avanzar",
+             "evidencia_2": "informa la promoción y no invita a pasar a caja"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["patrones"], ["Informa pero no propone avanzar"])
+
+    def test_pattern_discarded_when_both_quotes_come_from_the_same_fragment(self) -> None:
+        # Dos citas reales pero de LA MISMA conversación no demuestran una repetición real.
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(2), "patrones": [
+            {"patron": "Informa pero no propone avanzar",
+             "evidencia_1": "menciona el precio y se queda esperando sin proponer avanzar",
+             "evidencia_2": "el vendedor menciona el precio y se queda esperando"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["patrones"], [])
+
+    def test_pattern_discarded_when_one_quote_is_not_real(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(2), "patrones": [
+            {"patron": "Informa pero no propone avanzar",
+             "evidencia_1": "menciona el precio y se queda esperando sin proponer avanzar",
+             "evidencia_2": "ofrece financiacion en tres cuotas sin interes"},
+        ]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["patrones"], [])
+
+    def test_pattern_discarded_when_evidence_fields_are_missing(self) -> None:
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(2), "patrones": [{"patron": "Informa pero no propone avanzar"}]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["patrones"], [])
+
+    def test_legacy_plain_string_pattern_is_discarded_not_crashed(self) -> None:
+        # Formato viejo (lista de strings, sin evidencia) -fail closed, no debe romper el parseo.
+        resultados = self._resultados()
+        payload = json.dumps({"resultados": self._sin_notas(2), "patrones": ["Informa pero no propone avanzar"]})
+        analysis: dict = {}
+        self._judge(payload, resultados, analysis_out=analysis)
+        self.assertEqual(analysis["patrones"], [])
 
 
 class ContrasteEvidenceTests(unittest.TestCase):
@@ -1425,8 +1540,19 @@ class CompareWithBestTests(_RedirectsUsageLogTestCase):
         for item in payload["resultados"] + payload["companeros"]:
             self.assertIn("fragmento_aproximado", item)
 
-    def test_fragments_are_kept_when_a_result_has_no_notes(self) -> None:
+    def test_fragments_are_stripped_even_when_a_result_has_no_notes(self) -> None:
+        # BUG REAL corregido (2026-09-22, mismo día): antes el pop sólo corría "si hay notas" -un
+        # resultado sin notas (o el juez fallando por completo, fail-open) dejaba pasar el
+        # fragmento crudo hasta el modelo principal pese a incluir_fragmentos=False, justo lo que
+        # "NUNCA CITES TEXTUAL" (vi_agent.py) existe para evitar. Ahora es incondicional.
         payload, _, _, _ = self._compare()
+        self.assertNotIn("fragmento_aproximado", payload["resultados"][0])
+
+    def test_fragments_are_kept_without_notes_when_incluir_fragmentos_is_true(self) -> None:
+        # El uso interno/depuración (incluir_fragmentos=True) sigue funcionando igual -el bug de
+        # arriba sólo existía para incluir_fragmentos=False, que es el único caso que el modelo
+        # puede pedir en producción.
+        payload, _, _, _ = self._compare(incluir_fragmentos=True)
         self.assertIn("fragmento_aproximado", payload["resultados"][0])
 
     def test_resumen_verificado_is_also_dropped_when_notes_exist_unless_requested(self) -> None:
@@ -1446,9 +1572,34 @@ class CompareWithBestTests(_RedirectsUsageLogTestCase):
         for item in payload["resultados"] + payload["companeros"]:
             self.assertIn("resumen_verificado", item)
 
-    def test_resumen_verificado_is_kept_when_a_result_has_no_notes(self) -> None:
+    def test_resumen_verificado_is_stripped_even_when_a_result_has_no_notes(self) -> None:
+        # Mismo bug/corrección que test_fragments_are_stripped_even_when_a_result_has_no_notes.
         payload, _, _, _ = self._compare()
-        self.assertIn("resumen_verificado", payload["resultados"][0])
+        self.assertNotIn("resumen_verificado", payload["resultados"][0])
+
+    def test_fragments_are_stripped_even_when_the_judge_call_fails_entirely(self) -> None:
+        # BUG REAL corregido (2026-09-22): esto es el escenario más importante -no un doble mockeado
+        # de _judge_relevance (como el resto de esta clase), sino la función REAL golpeando su
+        # propio except fail-open (ver el docstring de _judge_relevance) porque la llamada al modelo
+        # barato falló (timeout, 5xx, JSON malformado). En ese camino TODOS los resultados quedan
+        # sin "notas" -antes de esta corrección, el fragmento crudo de TODAS las conversaciones se
+        # colaba hasta el modelo principal ante cualquier error transitorio del analista.
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor(self.ROWS)
+        connection = _FakeConnection(cursor)
+        failing_client = MagicMock()
+        failing_client.models.generate_content.side_effect = RuntimeError("el analista no respondió")
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_get_reusable_embed_client", return_value=failing_client
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("cliente valida la prenda"))
+        self.assertNotIn("fragmento_aproximado", payload["resultados"][0])
+        self.assertNotIn("resumen_verificado", payload["resultados"][0])
 
     def test_peer_names_never_reach_the_model(self) -> None:
         payload, _, _, _ = self._compare()

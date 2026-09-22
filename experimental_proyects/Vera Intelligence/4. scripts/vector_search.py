@@ -226,9 +226,11 @@ Un sistema de búsqueda por similitud encontró los siguientes fragmentos. Para 
    - "que_hizo": qué hizo -o dejó de hacer- el VENDEDOR en ese momento y con qué palabras/gestos concretos (máx. 30 palabras). El rótulo "Speaker 0/1" no es confiable: deducí quién es el vendedor por el contexto (quien ofrece, muestra, cobra).
    - "evidencia": copiá TEXTUAL (palabra por palabra, sin resumir ni corregir) un tramo de 3 a 20 palabras SEGUIDAS del fragmento que respalde "que_hizo" -se verifica por código contra el fragmento real; si "que_hizo" no se apoya en ningún tramo textual concreto, dejá "que_hizo" Y "evidencia" vacíos en vez de inventar una cita.
    - "como_termino": cómo respondió el cliente o cómo terminó ese momento (máx. 12 palabras).
+   - "evidencia_como_termino": copiá TEXTUAL un tramo de 3 a 20 palabras SEGUIDAS del fragmento que respalde "como_termino" -mismo criterio que "evidencia" para "que_hizo": se verifica por código; si "como_termino" no se apoya en un tramo textual concreto, dejá "como_termino" Y "evidencia_como_termino" vacíos en vez de inventar un desenlace que el fragmento no muestra.
 Reglas: no inferir intenciones ni motivos internos; no usar números, porcentajes ni conteos; describí acciones, no juicios genéricos ("fue reactivo"). Cada fragmento es sólo un tramo de la conversación, con ruido: nunca afirmes que el vendedor "no hizo" o "no ofreció" algo -escribí "no se ve en el fragmento" o "no aparece en este tramo"-, y no agregues adjetivos ni tono ("negativo", "confuso", "desinteresado") que el texto no muestre. Si el texto contradice la etiqueta del checklist (el vendedor sí hizo lo esperado), describí eso tal cual.
+PROHIBIDO EN "que_hizo": reformular el nombre del criterio buscado con otras palabras (ej. si se busca "cierre de compra", "no concreta el cierre" o "no cierra la venta" es SÓLO el criterio dicho distinto -no aporta nada que el checklist no tuviera ya). Cada "que_hizo" tiene que nombrar la ACCIÓN o PRODUCTO concreto del fragmento: qué dijo exactamente, qué mostró, qué preguntó, sobre qué prenda/producto/monto -algo que sólo se sabe habiendo leído ESE fragmento puntual, no cualquier fragmento sobre el mismo criterio.
 
-Además, "patrones": 0 a 3 conductas concretas del vendedor que se REPITEN en 2 o más de los fragmentos relevantes (cada una en una frase, en términos cualitativos, sin números). Si no hay repetición real, lista vacía.
+Además, "patrones": 0 a 3 conductas concretas del vendedor que se REPITEN en 2 o más de los fragmentos relevantes (cada una en una frase, en términos cualitativos, sin números). Mismo estándar que "que_hizo": un patrón no puede ser el criterio reformulado ("no ofrece complementos", "no indaga la ocasión de uso") -tiene que nombrar QUÉ hace en cambio o CÓMO se repite el detalle concreto (ej. "menciona el precio y las cuotas pero nunca pregunta si el cliente se lo va a llevar", no "no propone el cierre"). Cada patrón es un objeto {{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}: "evidencia_1" y "evidencia_2" son citas TEXTUALES de 3 a 20 palabras SEGUIDAS, cada una copiada de un fragmento DISTINTO de los dos (o más) que muestran esa repetición -se verifica por código que ambas existan, cada una en un fragmento diferente; si no hay dos fragmentos distintos que respalden la repetición, es preferible una lista vacía a un patrón sin sustancia real. Si no hay repetición real, lista vacía.
 {compare_block}
 Fragmentos (numerados desde 0):
 {fragments_block}
@@ -240,7 +242,8 @@ _OUTPUT_SPEC_BASE = (
     'Devolvé SOLO un objeto JSON con exactamente esta forma, con UN elemento por cada uno de los {n} '
     'fragmentos (i = el número del fragmento, desde 0; no saltees ninguno), sin texto adicional:\n'
     '{{"resultados": [{{"i": 0, "relevante": true, "situacion": "...", "que_hizo": "...", '
-    '"evidencia": "...", "como_termino": "..."}}, ...], "patrones": ["..."]{contraste_field}}}'
+    '"evidencia": "...", "como_termino": "...", "evidencia_como_termino": "..."}}, ...], '
+    '"patrones": [{{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}]{contraste_field}}}'
 )
 
 # Modo comparación (2026-09-21): en UNA sola llamada el analista ve las conversaciones donde el
@@ -256,6 +259,12 @@ _COMPARE_BLOCK = (
     "Cada lado del par describe una conducta vista en 2 o más fragmentos de SU grupo; si un detalle "
     "aparece en un solo fragmento (una frase, un dato, un gesto puntual), o lo omitís o lo marcás al "
     "empezar con «(en una sola conversación)» -nunca lo presentes como conducta habitual-. "
+    "MISMO ESTÁNDAR anti-genérico que las notas: el lado \"vendedor\" no puede ser el criterio "
+    "reformulado ('no ofrece complementos') y el lado \"companeros\" no puede ser su opuesto vacío "
+    "('sí ofrece complementos') -cada lado tiene que nombrar la acción concreta y distinta que se ve "
+    "en ESOS fragmentos (qué dice, qué muestra, sobre qué producto), no la ausencia/presencia del "
+    "criterio en otras palabras. Si no hay un detalle así de concreto para un lado, dejá el par "
+    "entero vacío en vez de un contraste sin contenido real. "
     "Además de \"vendedor\"/\"companeros\", agregá \"evidencia_vendedor\" y \"evidencia_companeros\": "
     "una cita TEXTUAL de 3 a 20 palabras SEGUIDAS, copiada de UN fragmento de ESE grupo, que respalde "
     "lo que describís de ese lado -se verifica por código; si no hay una cita real que lo respalde, "
@@ -868,14 +877,20 @@ def _judge_relevance(
                     clave: _clean_note(item.get(clave))
                     for clave in ("situacion", "que_hizo", "como_termino")
                 }
-                # Verificación mecánica de "que_hizo" (ver _evidence_supported): si el analista no
-                # citó un tramo textual real del fragmento, o citó algo que no está ahí, se descarta
-                # "que_hizo" en vez de mostrar una afirmación sin respaldo -"situacion"/"como_termino"
-                # no se tocan, son observaciones de bajo riesgo (el momento/desenlace, no una
-                # afirmación sobre qué hizo o dejó de hacer el vendedor).
+                # Verificación mecánica de "que_hizo" y "como_termino" (ver _evidence_supported): si
+                # el analista no citó un tramo textual real del fragmento, o citó algo que no está
+                # ahí, se descarta el campo en vez de mostrar una afirmación sin respaldo.
+                # "situacion" no se toca -es el único campo de bajo riesgo real que queda (el
+                # momento puntual, no una afirmación sobre una acción o un desenlace concreto)-;
+                # "como_termino" se sumó acá (2026-09-22, mismo estándar que "que_hizo" desde el
+                # principio: afirma un desenlace -qué hizo o dijo el CLIENTE- tan verificable como
+                # "que_hizo" afirma una acción del vendedor, mismo riesgo real de "no se ve en el
+                # fragmento" tratado como hecho).
                 fragmento = resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
                 if notas["que_hizo"] and not _evidence_supported(item.get("evidencia"), fragmento):
                     notas["que_hizo"] = ""
+                if notas["como_termino"] and not _evidence_supported(item.get("evidencia_como_termino"), fragmento):
+                    notas["como_termino"] = ""
                 if any(notas.values()):
                     resultado["notas"] = notas
         if label_context:
@@ -923,12 +938,38 @@ def _judge_relevance(
                     pares.append(limpio)
             analysis_out["contraste"] = pares[:3]
         if analysis_out is not None:
+            # Verificación mecánica de "patrones" (2026-09-22, mismo día, último campo sin verificar
+            # de los que arma el analista): a diferencia de "que_hizo" (un fragmento) o "contraste"
+            # (cualquiera de UN grupo), un patrón afirma una REPETICIÓN -así que exige dos citas
+            # reales en DOS fragmentos DISTINTOS, no sólo una cita cualquiera. Sin esto, "patrones"
+            # era el único campo puramente atestiguado por el modelo ("esto se repite, confiá en
+            # mí") sin ningún chequeo de código detrás.
+            fragmentos_todos = [
+                resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
+                for resultado in resultados
+            ]
             raw_patrones = parsed.get("patrones")
-            analysis_out["patrones"] = [
-                nota
-                for nota in (_clean_note(p) for p in (raw_patrones if isinstance(raw_patrones, list) else []))
-                if nota
-            ][:3]
+            patrones_verificados = []
+            for item in raw_patrones if isinstance(raw_patrones, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                patron = _clean_note(item.get("patron"))
+                if not patron:
+                    continue
+                indice_1 = next(
+                    (i for i, frag in enumerate(fragmentos_todos) if _evidence_supported(item.get("evidencia_1"), frag)),
+                    None,
+                )
+                indice_2 = next(
+                    (
+                        i for i, frag in enumerate(fragmentos_todos)
+                        if i != indice_1 and _evidence_supported(item.get("evidencia_2"), frag)
+                    ),
+                    None,
+                )
+                if indice_1 is not None and indice_2 is not None:
+                    patrones_verificados.append(patron)
+            analysis_out["patrones"] = patrones_verificados[:3]
         return veredictos
     except Exception:  # noqa: BLE001 -fail-open, ver docstring.
         logger.warning(
@@ -1554,12 +1595,23 @@ class VectorSearchRepository:
             # de existir: el modelo principal no lo lee para nada (no aparece en ningún lado de
             # SYSTEM_INSTRUCTION_TEMPLATE), sólo el analista lo usa puertas adentro como fallback
             # de "fragmento_aproximado" para clientes de schema delgado -eso ya pasó antes de esta
-            # línea. Mismo criterio que "fragmento_aproximado": se descarta cuando ya hay "notas"
-            # (el insight viaja ahí), midiendo en vivo contra mens_fashion_alto/Ubaldo Ramos ~10.2KB
-            # de "search_conversations" por búsqueda en modo comparación -este campo era una parte
-            # real de eso, sin ningún uso corriente del lado del modelo principal.
+            # línea.
+            #
+            # BUG REAL encontrado el mismo día, releyendo esta función después de blindar
+            # "NUNCA CITES TEXTUAL": el pop sólo corría "if item.get('notas')" -pensado para la
+            # época en que incluir_fragmentos SÍ podía ser true (dejar el fragmento como fallback
+            # útil si el analista no dejó notas). Pero desde que vi_agent.py fuerza
+            # incluir_fragmentos=False SIEMPRE (el modelo ya no puede pedir texto crudo en
+            # absoluto), un resultado sin "notas" -ya sea porque `_judge_relevance` falló por
+            # completo (except de más arriba, fail-open: TODOS los resultados quedan sin notas y
+            # sin filtrar) o porque un ítem puntual no tuvo ningún campo verificable- se colaba con
+            # el fragmento crudo INTACTO hasta el modelo principal, exactamente lo que "NUNCA CITES
+            # TEXTUAL" existe para evitar. Cualquier timeout o error transitorio del juez barato
+            # (una llamada de por sí, con su propio fail-open) hubiera abierto esta puerta en
+            # producción sin que nadie lo notara. Corregido: el descarte ahora es incondicional
+            # -nunca depende de si hay notas o no- porque incluir_fragmentos=False ya no es "el
+            # modelo no lo pidió esta vez", es una garantía estructural permanente.
             for item in [*payload["resultados"], *payload.get("companeros", [])]:
-                if item.get("notas"):
-                    item.pop("fragmento_aproximado", None)
-                    item.pop("resumen_verificado", None)
+                item.pop("fragmento_aproximado", None)
+                item.pop("resumen_verificado", None)
         return json.dumps(payload, ensure_ascii=False, default=str)
