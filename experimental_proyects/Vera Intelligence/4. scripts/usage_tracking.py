@@ -91,6 +91,52 @@ class UsageRecorder:
         self._append(event)
         return event
 
+    def record_estimated(
+        self,
+        *,
+        client_id: str,
+        model: str,
+        session_id: str,
+        interaction_id: str,
+        call_index: int,
+        call_kind: str,
+        prompt_token_count: int,
+    ) -> dict[str, Any]:
+        """Registra una llamada cuyo proveedor NO devuelve `usage_metadata` -encontrado en vivo
+        (2026-09-22, investigando cómo bajar costos): `client.models.embed_content()` (usado por
+        `_embed_query` en vector_search.py, una llamada real en CADA búsqueda) no expone ningún
+        conteo de tokens en la respuesta (`usage_metadata`/`statistics`/`metadata` vienen todos
+        `None`, confirmado contra una llamada real) -a diferencia de `generate_content`, cuyo costo
+        sí se registraba desde el principio. Resultado: el costo real de los embeddings quedaba
+        totalmente invisible en `gemini_calls.jsonl` y en `usage_report.py`, mismo patrón que el bug
+        ya corregido de `tool_use_prompt_token_count` para RAG (ver `estimate_cost_usd`).
+
+        Sin conteo real disponible, se estima client-side (aproximación por palabras, mismo
+        criterio que `_TOKENS_PER_WORD` en vector_search.py -no es el tokenizador real, es una
+        cota razonable) y se marca `is_estimated=true` para que ningún reporte lo mezcle con un
+        conteo exacto como si tuviera la misma certeza. `candidates_token_count=0` porque un
+        embedding no tiene tokens de salida facturables -sólo el precio de entrada aplica."""
+        event = {
+            "schema_version": 1,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "client_id": client_id,
+            "model": model,
+            "session_id": session_id,
+            "interaction_id": interaction_id,
+            "call_index": call_index,
+            "call_kind": call_kind,
+            "attempts": 1,
+            "prompt_token_count": prompt_token_count,
+            "candidates_token_count": 0,
+            "thoughts_token_count": 0,
+            "cached_content_token_count": 0,
+            "tool_use_prompt_token_count": 0,
+            "total_token_count": prompt_token_count,
+            "is_estimated": True,
+        }
+        self._append(event)
+        return event
+
     def _append(self, event: dict[str, Any]) -> None:
         _append_jsonl(self.path, event)
 
@@ -185,6 +231,12 @@ MODEL_PRICING_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
     "gemini-3.7-flash": (0.75, 3.75),
     "gemini-3.5-flash-lite": (0.30, 2.50),
     "gemini-3.1-flash-lite": (0.25, 1.50),
+    # gemini-embedding-001 (2026-09-22): US$0,15/M de entrada, sin costo de salida -precio de
+    # fuente de terceros (futureagi.com, getmaxim.ai, embeddingcost.com), NO verificado contra
+    # ai.google.dev/gemini-api/docs/pricing -esa página ya no lista este nombre exacto de modelo
+    # (muestra "gemini-embedding-2" en su lugar, a US$0,20/M). Mismo estado "no oficial" que otros
+    # precios de este diccionario cuando la fuente primaria no lo confirma directamente.
+    "gemini-embedding-001": (0.15, 0.0),
 }
 
 # Tarifa de tokens cacheados como fracción del precio de ENTRADA normal. CORREGIDO (2026-09-17):

@@ -419,6 +419,58 @@ class ExtractCitableConversationsTests(unittest.TestCase):
         tool_calls = [{"name": "search_conversations", "error": None}]
         self.assertEqual(streamlit_app._extract_citable_conversations(tool_calls), [])
 
+    def test_includes_companeros_group_from_comparar_con_mejores(self) -> None:
+        # Bug real (2026-09-22): en modo comparar_con_mejores sólo se leía "resultados" -las
+        # conversaciones de compañeros con mejor resultado nunca ofrecían botón de audio.
+        tool_calls = [{
+            "name": "search_conversations",
+            "error": None,
+            "result": json.dumps({
+                "resultados": [{"conversation_id": "c1", "vendedor": "Ubaldo Ramos"}],
+                "companeros": [{"conversation_id": "c2", "vendedor": "Un Compañero"}],
+                "aviso": "...",
+            }),
+        }]
+        result = streamlit_app._extract_citable_conversations(tool_calls)
+        self.assertEqual([r["conversation_id"] for r in result], ["c1", "c2"])
+
+    def test_deduplicates_across_resultados_and_companeros(self) -> None:
+        tool_calls = [{
+            "name": "search_conversations",
+            "error": None,
+            "result": json.dumps({
+                "resultados": [{"conversation_id": "c1"}],
+                "companeros": [{"conversation_id": "c1"}, {"conversation_id": "c2"}],
+            }),
+        }]
+        result = streamlit_app._extract_citable_conversations(tool_calls)
+        self.assertEqual([r["conversation_id"] for r in result], ["c1", "c2"])
+
+
+class FormatConversationDateTests(unittest.TestCase):
+    """_format_conversation_date (2026-09-22): la fecha ISO cruda de search_conversations pasa a
+    formato legible en el panel de audio -bug real reportado por Lucas, se mostraba tal cual con
+    microsegundos y offset UTC."""
+
+    def test_formats_iso_datetime_with_microseconds_and_offset(self) -> None:
+        self.assertEqual(
+            streamlit_app._format_conversation_date("2026-07-25T20:53:37.809000+00:00"),
+            "25/07/2026 20:53",
+        )
+
+    def test_formats_iso_datetime_without_microseconds(self) -> None:
+        self.assertEqual(
+            streamlit_app._format_conversation_date("2026-07-25T20:53:37+00:00"),
+            "25/07/2026 20:53",
+        )
+
+    def test_unparseable_value_is_returned_unchanged(self) -> None:
+        self.assertEqual(streamlit_app._format_conversation_date("no es una fecha"), "no es una fecha")
+
+    def test_empty_or_missing_value_returns_empty_string(self) -> None:
+        self.assertEqual(streamlit_app._format_conversation_date(""), "")
+        self.assertEqual(streamlit_app._format_conversation_date(None), "")
+
 
 class ConversationAsMarkdownTests(unittest.TestCase):
     def test_renders_speakers_and_content_in_order(self) -> None:

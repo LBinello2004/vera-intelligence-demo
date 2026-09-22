@@ -39,7 +39,17 @@ YEAR_CONTEXT_BEFORE = re.compile(
     re.I,
 )
 METRIC = re.compile(r"tasa|porcentaje|promedio|puntuaci[oó]n|score|cumplimiento|evaluad|denominador", re.I)
-CONFIDENT = re.compile(r"sin duda|definitiv[oa]|estadísticamente significativ|estadisticamente significativ|muestra representativa|muestra suficiente|garantiza|demuestra concluyentemente", re.I)
+# "definitiv[oa]" se sacó de acá (2026-09-22, encontrado investigando un reintento real de
+# evidence_repair en vivo contra mens_fashion_alto/Ubaldo Ramos, costo extra US$0,057 sobre esa
+# interacción): en retail "cierre definitivo"/"decisión definitiva" es vocabulario normal del
+# proceso de venta, no una afirmación de certeza estadística -mismo patrón de falso positivo que
+# "tecnología" en response_policy.py (ver ese comentario). Verificado con casos realistas antes de
+# sacarlo: "Falta avanzar hacia una decisión definitiva del cliente" y "lograr un cierre definitivo
+# cuando el cliente ya validó la prenda" -ambas frases de coaching legítimas, sin ninguna cifra ni
+# certeza estadística de por medio- disparaban el reintento incluso con el chequeo de negación ya
+# aplicado. El resto de la lista (sin duda, estadísticamente significativo, muestra
+# representativa/suficiente, garantiza, demuestra concluyentemente) es menos ambigua y se mantiene.
+CONFIDENT = re.compile(r"sin duda|estadísticamente significativ|estadisticamente significativ|muestra representativa|muestra suficiente|garantiza|demuestra concluyentemente", re.I)
 FALLBACK = "No pude verificar las cifras con suficiente respaldo. No voy a presentar una conclusión numérica; podés pedir el detalle del indicador para revisarlo."
 
 

@@ -1617,3 +1617,148 @@ VARIOS fragmentos de un grupo, no de uno solo como `que_hizo`.
   ambos lados -el otro no llegó a proponerse esta vez (no hay forma de saber si el analista antes lo
   hubiera inventado sin evidencia real; lo que sí se confirma es que el que quedó tiene una cita
   textual real por cada lado).
+
+### Iteración 31 (2026-09-22): panel de audio -dos bugs reales, retomados tras verificar en vivo el cambio de citas
+
+Verificando en vivo la Iteración 29 en la demo (pregunta con `comparar_con_mejores` real contra
+Mens Fashion) apareció el panel "🔊 Escuchar conversaciones citadas (8)" -pendiente de una sesión
+anterior (screenshot con nombres reales de compañeros, conteo que no coincidía con lo citado en el
+texto, y fecha ISO cruda). Con el modelo ya sin citar texto por default (Iteración 29), el enfoque
+cambia: no tiene sentido "filtrar por lo citado en el texto" cuando el texto casi nunca menciona
+tienda/fecha de un caso puntual -se ataca lo que sigue siendo un bug real.
+
+- **Bug real encontrado en el camino, no buscado**: `_extract_citable_conversations`
+  (`streamlit_app.py`) sólo leía la clave `resultados` del payload de `search_conversations` -en
+  modo `comparar_con_mejores` eso es SÓLO el grupo del vendedor coacheado; el grupo `companeros`
+  (las conversaciones de los compañeros con mejor resultado, con sus nombres reales -confirmado con
+  Lucas que eso queda así a propósito) nunca llegaba al panel. Corregido: ahora lee ambos grupos,
+  deduplicando por `conversation_id` igual que antes.
+- **Título renombrado, no filtrado**: "Escuchar conversaciones citadas" pasó a "Escuchar
+  conversaciones analizadas" -con el modelo sin citar texto por default (Iteración 29), "citadas"
+  describía mal lo que el panel siempre mostró en realidad: las conversaciones que la tool encontró
+  y usó como insumo, se nombren o no por tienda/fecha en el texto. Filtrar por mención textual
+  hubiera dejado el panel vacío en la mayoría de las respuestas de coaching, quitándole el valor de
+  poder escuchar el respaldo real de un análisis aunque no se haya pedido un ejemplo puntual.
+- **Fecha legible**: `_format_conversation_date` convierte el ISO crudo
+  ("2026-07-25T20:53:37.809000+00:00") a "25/07/2026 20:53" -mejor esfuerzo, si no parsea devuelve
+  el valor original sin romper el render.
+- 8 tests nuevos (`ExtractCitableConversationsTests`, `FormatConversationDateTests`). 509/509 tests
+  en verde.
+
+### Iteración 32 (2026-09-22): falso positivo real en `CONFIDENT` -"definitivo/a" no es certeza estadística
+
+Pedido explícito: "¿se pueden bajar los costos todavía?". La medición de reintentos de la
+Iteración 28 había mostrado 1 de 5 interacciones reales (coaching de Ubaldo Ramos) disparando
+"conclusión de certeza sin evidencia suficiente" pese a la regla de lenguaje de la Iteración 27 -sin
+diagnosticar la causa exacta en ese momento. Se investigó sin gastar en una llamada nueva: se probó
+el regex `CONFIDENT` (`answer_verification.py`) contra frases de coaching realistas.
+
+- **Hallazgo**: `definitiv[oa]` disparaba con frases de venta completamente normales -"Falta avanzar
+  hacia una decisión definitiva del cliente" y "lograr un cierre definitivo cuando el cliente ya
+  validó la prenda"-, ninguna con cifras ni certeza estadística de por medio, incluso pasando el
+  chequeo de negación ya existente. Mismo patrón de falso positivo que "tecnología" en
+  `response_policy.py` (ver esa iteración histórica): una palabra de negocio corriente confundida
+  con lenguaje prohibido.
+- **Corregido**: se sacó `definitiv[oa]` de `CONFIDENT`, dejando el resto de la lista (sin duda,
+  estadísticamente significativo, muestra representativa/suficiente, garantiza, demuestra
+  concluyentemente) -términos con mucha menos ambigüedad en este dominio.
+- **Impacto esperado, no remedido en vivo todavía**: cada reintento evitado ahorra una llamada
+  completa al modelo real (~US$0,02-0,03 según lo medido en la Iteración 28) -en clientes de retail
+  donde "cierre" es el criterio de checklist más común (Mens Fashion, Roberts, Boggi, Dalton...),
+  "cierre definitivo"/"decisión definitiva" es vocabulario esperable en casi cualquier coaching
+  sobre ese criterio, así que el ahorro debería notarse en varios clientes, no sólo en el caso
+  puntual encontrado.
+- 4 tests nuevos (`ConfidentLanguageTests` en `test_answer_verification.py`): las dos frases reales
+  que disparaban el falso positivo ya no lo hacen; el resto de `CONFIDENT` sigue detectando lenguaje
+  de certeza genuino. 512/512 tests en verde.
+- **Pendiente de verificar en vivo**: no se corrió de nuevo el caso real de Ubaldo Ramos después de
+  este fix (para no seguir gastando en la misma investigación) -la próxima vez que se mida la tasa
+  de reintentos real (ver Iteración 28), confirmar que bajó.
+
+### Iteración 33 (2026-09-22, mismo día): el bloqueo de citas de la Iteración 29 tenía su propio falso positivo
+
+Siguiendo la misma pregunta ("¿se puede bajar más el costo?"), se auditó el mecanismo agregado ESE
+MISMO DÍA (Iteración 29) por si estaba introduciendo costo nuevo en vez de ahorrarlo -mismo método
+que la Iteración 32 (probar el regex contra frases realistas, sin gastar en una llamada real antes
+de confirmar el problema).
+
+- **Hallazgo**: el umbral de sólo "4+ palabras entre comillas" de `_quoted_conversation_spans`
+  disparaba con frases de negocio legítimas -nombre de sucursal ("Mens Fashion Patio Sendero
+  Saltillo"), de criterio ("vendedor pregunta la ocasión de uso"), de indicador ("tasa de cierre de
+  compra general")-, cada una forzando un `client_safe_rewrite` (una llamada completa al modelo
+  real) sin ninguna cita de conversación de por medio. El mecanismo que se agregó para bajar el
+  riesgo de citas hubiera terminado sumando costo por su cuenta.
+- **Corregido**: `_DIALOGUE_MARKER` exige, ADEMÁS del umbral de palabras, una señal concreta de
+  diálogo reconstruido dentro de la cita -signos de pregunta/exclamación, un pronombre personal
+  (te/le/nos/me/usted/tú/vos/yo) o un verbo de habla reportada (dijo/preguntó/respondió/...). Un
+  sustantivo de negocio no tiene ninguna de las dos cosas; una frase textual real de un cliente o
+  vendedor casi siempre sí.
+- Verificado en vivo (mismo caso de la Iteración 29, farma24_alto/Daniela Perez con pedido
+  explícito de "cita exacta"): sigue sin mostrar ninguna cita, y el chequeo de comillas del texto de
+  negocio real de la respuesta ahora da `[]` limpio. 5 tests nuevos (4 casos de negocio + 1 corregido
+  para seguir exigiendo una marca de diálogo real). 513/513 tests en verde.
+
+### Iteración 34 (2026-09-22, mismo día): "resumen_verificado" es peso muerto desde que no se cita
+
+Siguiendo la búsqueda de más ahorro, se midió en vivo (mens_fashion_alto/Ubaldo Ramos, instrumentando
+`chat.get_history()` turno por turno) qué pesa realmente dentro de una interacción: de los tres tools,
+`get_business_rules` (7.917 bytes, texto estático del rulebook) y `search_conversations` (10.194
+bytes) son los que dominan -y ese contenido se reenvía completo en cada turno siguiente de la misma
+interacción porque el cache de contexto de Gemini sólo cubre el system_instruction, no el historial.
+
+- **Explorado y descartado, no implementado**: mover `get_business_rules` al system_instruction
+  cacheado. Encarecería el prompt cacheado de TODAS las preguntas de todos los clientes (no sólo las
+  de coaching) -sin datos de qué proporción real de preguntas usan ese rulebook, podría empeorar el
+  costo total en vez de mejorarlo. Recortar `search_conversations` a mitad de conversación reescribiendo
+  el historial que gestiona el SDK del chat se descartó por el mismo motivo: alto riesgo de ingeniería
+  (`answer_verification.py` lee ese mismo historial real para verificar cifras) por un ahorro chico
+  (~$0,015-0,02 por interacción con varios turnos, ya con parte explicada por reintentos que se están
+  bajando por otro lado).
+- **Sí implementado, bajo riesgo**: `resumen_verificado` -campo que nació (2026-09-10) como segunda
+  fuente para contrastar contra el fragmento antes de CITARLO- perdió su único motivo de existir del
+  lado del modelo principal desde que nunca se cita texto (Iteración 29). No aparece en ninguna
+  instrucción de `SYSTEM_INSTRUCTION_TEMPLATE` -el modelo principal no lo usa para nada. Se agrega al
+  mismo descarte que ya tenía `fragmento_aproximado`: se saca cuando el resultado ya tiene `notas`
+  (el insight viaja ahí), se conserva con `incluir_fragmentos` (uso interno/depuración) o cuando no
+  hay notas (fail-open, mismo criterio de siempre).
+- **Verificado en vivo, mismo caso de Ubaldo Ramos**: el payload de `search_conversations` bajó de
+  10.194 a **7.346 bytes** (~28%) en esa búsqueda -se reenvía completo en cada turno siguiente de la
+  interacción, así que el ahorro se multiplica por los turnos restantes. 2 tests nuevos
+  (`test_resumen_verificado_is_also_dropped_when_notes_exist_unless_requested`,
+  `test_resumen_verificado_is_kept_when_a_result_has_no_notes`). 515/515 tests en verde.
+
+### Iteración 35 (2026-09-22, mismo día): 4 puntos de la lista de "cómo seguir bajando costos"
+
+- **Costo de embeddings, invisible hasta ahora -corregido**: `_embed_query()` (una llamada real por
+  cada búsqueda) nunca registraba nada en `gemini_calls.jsonl` -mismo patrón de punto ciego que el
+  bug ya corregido de `tool_use_prompt_token_count` para RAG. Confirmado en vivo que
+  `embed_content()` no devuelve ningún `usage_metadata`/`statistics` -a diferencia de
+  `generate_content`. Se agregó `UsageRecorder.record_estimated()` (estima tokens client-side por
+  palabras, marca `is_estimated=true` para no mezclarse con conteos exactos) y el precio de
+  `gemini-embedding-001` (US$0,15/M de entrada, sin salida -fuente de terceros: futureagi.com,
+  getmaxim.ai, embeddingcost.com; la doc oficial actual ya no lista este nombre exacto de modelo).
+  Verificado en vivo: el evento aparece en el log real. Impacto en plata: mínimo (~US$0,0000015 por
+  búsqueda) -el valor es la visibilidad, no el ahorro. 5 tests nuevos.
+- **Desglose real por tool** (`usage_report.py --by-tool` sobre datos de hoy, 53 llamadas): todas
+  son tráfico de prueba propio, no producción -con esa salvedad, `search_conversations` (US$0,098),
+  `search_judge` (US$0,086), `run_readonly_sql` (US$0,073) y `evidence_repair` (US$0,043 en sólo 3
+  llamadas, la más cara por llamada individual) son los rubros más grandes.
+- **Sobre-disparo de `get_business_rules` -verificado en vivo, sin bug**: preguntas puramente
+  diagnósticas ("¿cuál es la tasa de cierre de Ubaldo?") correctamente no disparan el rulebook, sólo
+  `run_readonly_sql`. La salvaguarda ya existente en el prompt ("No lo hagas de forma especulativa")
+  funciona como está diseñada. Sin cambios.
+- **Bajar `top_k`/`PEER_TOP_K` -probado y NO adoptado**: comparación en vivo, mismo caso real
+  (top_k=8/PEER_TOP_K=4 actual vs. 5/3 reducido): `que_hizo` verificado se mantuvo (10/12 vs. 7/8),
+  pero **`contraste` verificado pasó de 1 par a 0** -con menos candidatos no alcanzó material para
+  un contraste con evidencia real de ambos lados. Ahorro medido: US$0,0016 por búsqueda (el
+  analista ya es el modelo barato). Mala relación costo/beneficio -se pierde el corazón del valor de
+  coaching (la comparación vendedor/mejores) por un ahorro mínimo. Valores sin cambios.
+
+- **Hallazgo chico, sin riesgo, el mismo día**: midiendo byte a byte qué campo pesa en el payload
+  (`notas` 2.182 bytes, el resto metadata) apareció `distancia` con precisión completa de punto
+  flotante (`0.22961762271533293`, 20 caracteres) mientras `distancia_relativa_al_mejor_resultado`
+  -el mismo dato, en otra forma- ya iba redondeada a 4 decimales. Redondeado igual -4 decimales
+  sigue siendo mucho más preciso que el rango real de distancias observado (~0.20-0.27); mismo
+  redondeo también en el log interno de calidad de búsqueda, que lee el mismo dict. Bytes de menos
+  en CADA resultado de CADA búsqueda, sin tocar nada que el modelo o el log realmente usen. 1 test
+  nuevo. 516/516 tests en verde.

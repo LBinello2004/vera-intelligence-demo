@@ -1081,6 +1081,15 @@ class EstimateCostTests(unittest.TestCase):
         # 500k prompt fresco + 500k de tool_use = 1M de entrada a $0.75/M = $0.75, no $0.375.
         self.assertAlmostEqual(cost, 0.75, places=6)
 
+    def test_embedding_model_has_no_output_cost(self) -> None:
+        # gemini-embedding-001 (2026-09-22): sólo cobra entrada, sin tokens de salida facturables
+        # -ver el comentario en MODEL_PRICING_PER_MILLION_TOKENS para la fuente del precio.
+        from usage_tracking import estimate_cost_usd
+
+        summary = {"prompt_token_count": 1_000_000, "candidates_token_count": 0, "thoughts_token_count": 0}
+        cost = estimate_cost_usd(summary, model="gemini-embedding-001")
+        self.assertAlmostEqual(cost, 0.15, places=6)
+
 
 class RunToolLoopNumericEvidenceDebugTests(unittest.TestCase):
     """El diagnóstico interno sigue oculto; las cifras inválidas ya se bloquean en producción."""

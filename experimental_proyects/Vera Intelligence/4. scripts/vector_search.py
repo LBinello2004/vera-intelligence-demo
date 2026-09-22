@@ -659,7 +659,13 @@ def _get_reusable_embed_client(api_key: str) -> "genai.Client":
     return _cached_embed_client
 
 
-def _embed_query(query: str, api_key: str) -> list[float]:
+def _embed_query(
+    query: str,
+    api_key: str,
+    *,
+    usage_recorder: "UsageRecorder | None" = None,
+    client_id: str = "",
+) -> list[float]:
     """Genera el vector de una pregunta de usuario con el task_type asimétrico correcto.
 
     Los vectores de analytics_v2.conversation_embeddings se generaron con
@@ -670,7 +676,11 @@ def _embed_query(query: str, api_key: str) -> list[float]:
 
     Reintenta con backoff exponencial ante errores transitorios (429/5xx, cortes de red) -mismo
     criterio que `_send_message_with_retry` en vi_agent.py para las llamadas de chat.
-    """
+
+    usage_recorder/client_id (2026-09-22, ver UsageRecorder.record_estimated): `embed_content` no
+    devuelve ningún conteo de tokens -el costo real de esta llamada era invisible en
+    `gemini_calls.jsonl` hasta ahora. Opcionales (default None/"") para no romper ningún call site
+    ni test existente que no los pase -mismo criterio que `usage_recorder` en `_judge_relevance`."""
     client = _get_reusable_embed_client(api_key)
     last_error: Exception | None = None
     for attempt in range(1, _MAX_EMBED_RETRIES + 1):
@@ -685,6 +695,17 @@ def _embed_query(query: str, api_key: str) -> list[float]:
                 ),
             )
             check_analysis()
+            if usage_recorder is not None:
+                estimated_tokens = max(1, round(len(query.split()) * _TOKENS_PER_WORD))
+                usage_recorder.record_estimated(
+                    client_id=client_id,
+                    model=EMBEDDING_MODEL,
+                    session_id="",
+                    interaction_id=uuid.uuid4().hex,
+                    call_index=1,
+                    call_kind="embed_query",
+                    prompt_token_count=estimated_tokens,
+                )
             return list(response.embeddings[0].values)
         except Exception as exc:  # noqa: BLE001
             status_code = _status_code(exc)
@@ -1152,7 +1173,15 @@ class VectorSearchRepository:
                     "tienda": store_name_,
                     "vendedor": employee,
                     "fecha": _json_safe(started_at),
-                    "distancia": distancia,
+                    # Redondeado a 4 decimales (2026-09-22, investigando cómo bajar costos): antes
+                    # viajaba con precisión completa de punto flotante (ej. "0.22961762271533293",
+                    # 20 caracteres) mientras "distancia_relativa_al_mejor_resultado" ya iba
+                    # redondeada -inconsistente, y esa precisión de más no la usa nadie (el modelo
+                    # sólo necesita la señal direccional, ver el docstring de search()). Mismo
+                    # redondeo también en el log de calidad de búsqueda (_log_search_event lee este
+                    # mismo dict) -4 decimales sigue siendo mucho más preciso que el rango real de
+                    # distancias observado (~0.20-0.27), no pierde nada útil para calibrar un umbral.
+                    "distancia": round(distancia, 4),
                     "distancia_relativa_al_mejor_resultado": round(distancia - mejor_distancia, 4),
                     "resumen_verificado": _sanitize_offensive_language(resumen_verificado),
                     "fragmento_aproximado": _sanitize_offensive_language(fragmento),
@@ -1407,7 +1436,10 @@ class VectorSearchRepository:
         if not api_key:
             raise OperationalUnavailable()
         embed_start = time.perf_counter()
-        vector_literal = _vector_literal(_embed_query(query.strip(), api_key))
+        vector_literal = _vector_literal(_embed_query(
+            query.strip(), api_key,
+            usage_recorder=self._usage_recorder, client_id=self.client.client_id,
+        ))
         embed_ms = round((time.perf_counter() - embed_start) * 1000, 1)
 
         resultados, candidates_fetched, query_ms, candidate_limit = self._retrieve(
@@ -1516,7 +1548,18 @@ class VectorSearchRepository:
         if analysis.get("patrones") and resultados:
             payload["patrones"] = analysis["patrones"]
         if not incluir_fragmentos:
+            # "resumen_verificado" (2026-09-10) nació como segunda fuente para contrastar contra el
+            # fragmento antes de CITARLO -ver el docstring de search(). Desde que el modelo nunca
+            # cita texto textual (2026-09-22, "NUNCA CITES TEXTUAL" en vi_agent.py) ese motivo dejó
+            # de existir: el modelo principal no lo lee para nada (no aparece en ningún lado de
+            # SYSTEM_INSTRUCTION_TEMPLATE), sólo el analista lo usa puertas adentro como fallback
+            # de "fragmento_aproximado" para clientes de schema delgado -eso ya pasó antes de esta
+            # línea. Mismo criterio que "fragmento_aproximado": se descarta cuando ya hay "notas"
+            # (el insight viaja ahí), midiendo en vivo contra mens_fashion_alto/Ubaldo Ramos ~10.2KB
+            # de "search_conversations" por búsqueda en modo comparación -este campo era una parte
+            # real de eso, sin ningún uso corriente del lado del modelo principal.
             for item in [*payload["resultados"], *payload.get("companeros", [])]:
                 if item.get("notas"):
                     item.pop("fragmento_aproximado", None)
+                    item.pop("resumen_verificado", None)
         return json.dumps(payload, ensure_ascii=False, default=str)

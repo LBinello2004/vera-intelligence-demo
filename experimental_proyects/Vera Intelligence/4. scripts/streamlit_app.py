@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 import uuid
 from contextlib import contextmanager
@@ -468,7 +469,14 @@ def _extract_citable_conversations(tool_calls: list[dict]) -> list[dict]:
     escuchar -deduplicadas por conversation_id (una búsqueda puede haber traído el mismo resultado
     más de una vez si el modelo reformuló), en el orden en que aparecieron. Tool calls con error,
     resultado no parseable, o sin conversation_id se ignoran en silencio -mismo criterio de
-    "mejor esfuerzo" que el resto de esta función (ver _render_audio_players)."""
+    "mejor esfuerzo" que el resto de esta función (ver _render_audio_players).
+
+    Incluye tanto `resultados` (conversaciones del vendedor) como `companeros` (2026-09-22, bug
+    real: en modo `comparar_con_mejores` sólo se leía `resultados`, así que las conversaciones de
+    compañeros con mejor resultado -las que sí muestran cómo se hace bien- nunca aparecían acá,
+    aunque la sección "PRIVACIDAD" del prompt ya asumía que el usuario podía escucharlas sin el
+    nombre del compañero en el texto; confirmado con Lucas que los nombres reales quedan visibles
+    en este panel a propósito, ver "6. busqueda_vectorial/README.md")."""
     conversations: list[dict] = []
     seen_conversation_ids: set[str] = set()
     for call in tool_calls:
@@ -478,13 +486,31 @@ def _extract_citable_conversations(tool_calls: list[dict]) -> list[dict]:
             payload = json.loads(call.get("result") or "")
         except (TypeError, ValueError):
             continue
-        for resultado in payload.get("resultados", []) if isinstance(payload, dict) else []:
-            conversation_id = resultado.get("conversation_id")
-            if not conversation_id or conversation_id in seen_conversation_ids:
-                continue
-            seen_conversation_ids.add(conversation_id)
-            conversations.append(resultado)
+        if not isinstance(payload, dict):
+            continue
+        for grupo_key in ("resultados", "companeros"):
+            for resultado in payload.get(grupo_key, []) or []:
+                conversation_id = resultado.get("conversation_id")
+                if not conversation_id or conversation_id in seen_conversation_ids:
+                    continue
+                seen_conversation_ids.add(conversation_id)
+                conversations.append(resultado)
     return conversations
+
+
+def _format_conversation_date(fecha: object) -> str:
+    """Convierte la fecha ISO cruda que devuelve search_conversations (ej.
+    "2026-07-25T20:53:37.809000+00:00") a un formato legible ("25/07/2026 20:53") para el panel de
+    audio -antes se mostraba tal cual, con microsegundos y offset UTC incluidos (2026-09-22, bug
+    real reportado por Lucas). Si no se puede parsear, se devuelve el valor original sin romper el
+    render -mismo criterio "mejor esfuerzo" que el resto de esta función."""
+    if not isinstance(fecha, str) or not fecha:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(fecha)
+    except ValueError:
+        return fecha
+    return parsed.strftime("%d/%m/%Y %H:%M")
 
 
 def _render_audio_players(tool_calls: list[dict], message_key: str) -> None:
@@ -511,11 +537,20 @@ def _render_audio_players(tool_calls: list[dict], message_key: str) -> None:
     if not conversations:
         return
 
-    with st.expander(f"🔊 Escuchar conversaciones citadas ({len(conversations)})"):
+    # "analizadas", no "citadas" (2026-09-22): desde que search_conversations nunca cita texto
+    # literal en la respuesta (ver response_policy.py, NUNCA CITES TEXTUAL) y sólo menciona
+    # tienda/fecha de un caso cuando se piden ejemplos explícitamente, "citadas" describía mal lo
+    # que este panel en realidad ofrece -las conversaciones que la tool encontró y usó como
+    # insumo del análisis, se hayan mencionado por nombre en el texto o no.
+    with st.expander(f"🔊 Escuchar conversaciones analizadas ({len(conversations)})"):
         for resultado in conversations:
             conversation_id = resultado["conversation_id"]
             label = " · ".join(
-                str(bit) for bit in (resultado.get("tienda"), resultado.get("vendedor"), resultado.get("fecha"))
+                str(bit) for bit in (
+                    resultado.get("tienda"),
+                    resultado.get("vendedor"),
+                    _format_conversation_date(resultado.get("fecha")),
+                )
                 if bit
             ) or "conversación"
             state_key = f"audio_url_{message_key}_{conversation_id}"

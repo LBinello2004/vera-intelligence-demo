@@ -338,3 +338,48 @@ class BaseFromSqlRowTests(unittest.TestCase):
         s = {}
         add_result(s, {"columns": ["tasa_cierre"], "rows": [[13.9]]})
         self.assertTrue(any("porcentaje sin base" in e for e in verify_answer("El cierre es 13.9%.", s).errors))
+
+
+class ConfidentLanguageTests(unittest.TestCase):
+    """CONFIDENT (2026-09-22): "definitiv[oa]" se sacó del patrón -encontrado investigando un
+    reintento real en vivo (mens_fashion_alto, coaching de Ubaldo Ramos) que resultó ser un falso
+    positivo: "cierre definitivo"/"decisión definitiva" es vocabulario normal de venta retail, no
+    una afirmación de certeza estadística. Ver el comentario junto a CONFIDENT en
+    answer_verification.py.
+
+    Con `store` vacío, `verify_answer` retorna antes de llegar al chequeo de CONFIDENT (rama
+    "cifra de resultados sin evidencia" más arriba) -estos tests arman un store mínimo (mismo
+    patrón que VerificationTests.setUp) para que la prosa sí llegue a esa verificación."""
+
+    def setUp(self):
+        self.store = {}
+        self.id = add_result(
+            self.store,
+            {"columns": ["tasa", "n_evaluados"], "rows": [[13.9, 115]], "truncated": False},
+        )
+
+    def _verify(self, prose: str):
+        # 13,9% con base 115 presente en el store: no dispara ningún otro error, así que un
+        # `errors` no vacío sólo puede venir de CONFIDENT en estos tests.
+        text = f"El cierre fue 13,9% (115 conversaciones evaluadas). {prose}"
+        return verify_answer(text, self.store, current_ids={self.id})
+
+    def test_cierre_definitivo_is_legitimate_sales_vocabulary_not_flagged(self):
+        # Caso real que disparaba el reintento antes del fix.
+        v = self._verify("El foco de mejora es lograr un cierre definitivo cuando el cliente ya validó la prenda.")
+        self.assertFalse(any("certeza" in e for e in v.errors))
+
+    def test_decision_definitiva_is_not_flagged(self):
+        v = self._verify("Falta avanzar hacia una decisión definitiva del cliente.")
+        self.assertFalse(any("certeza" in e for e in v.errors))
+
+    def test_genuine_certainty_language_is_still_flagged(self):
+        for phrase in (
+            "Sin duda, el vendedor mejora si sigue el plan.",
+            "Esto demuestra concluyentemente que el problema es el cierre.",
+            "El plan garantiza mejores resultados.",
+            "El resultado es estadísticamente significativo.",
+        ):
+            with self.subTest(phrase=phrase):
+                v = self._verify(phrase)
+                self.assertTrue(any("certeza" in e for e in v.errors))

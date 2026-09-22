@@ -75,6 +75,19 @@ class ResponsePolicyTests(unittest.TestCase):
         )
         self.assertIn("cita textual de una conversación", violations)
 
+    def test_long_business_phrases_in_quotes_are_not_flagged(self) -> None:
+        # Encontrado en vivo (2026-09-22, investigando cómo bajar costos): un umbral de sólo 4+
+        # palabras disparaba con nombres de sucursal, criterio o indicador entre comillas -ninguno
+        # es una reconstrucción de diálogo, cada uno hubiera forzado un reintento pagado sin motivo.
+        for phrase in (
+            'La sucursal "Mens Fashion Patio Sendero Saltillo" lidera en cierre.',
+            'El criterio "vendedor pregunta la ocasión de uso" tiene baja tasa.',
+            'El indicador "tasa de cierre de compra general" bajó este mes.',
+            'Se recomienda reforzar la etapa de "invitación a pasar a caja".',
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(client_answer_violations(phrase), [])
+
     def test_short_quoted_business_term_is_not_flagged_as_a_quote(self) -> None:
         # Una frase de negocio corta entre comillas (nombre de promo, término del checklist) no es
         # una reconstrucción de diálogo -el umbral es de 4+ palabras dentro de las comillas.
@@ -85,7 +98,7 @@ class ResponsePolicyTests(unittest.TestCase):
 
     def test_curly_quotes_are_also_detected(self) -> None:
         violations = client_answer_violations(
-            "El cliente preguntó «cuánto cuesta el traje completo con corbata incluida»."
+            "El cliente preguntó «cuánto le va a costar el traje completo con corbata»."
         )
         self.assertIn("cita textual de una conversación", violations)
 

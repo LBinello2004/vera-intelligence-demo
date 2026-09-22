@@ -164,5 +164,51 @@ class UsageTrackingTests(unittest.TestCase):
             self.assertEqual(load_usage_events(path), [])
 
 
+class RecordEstimatedTests(unittest.TestCase):
+    """UsageRecorder.record_estimated (2026-09-22): para llamadas cuyo proveedor no devuelve
+    usage_metadata (ej. embed_content de Gemini, ver _embed_query en vector_search.py) -el costo
+    real quedaba invisible en gemini_calls.jsonl hasta ahora."""
+
+    def test_writes_an_event_with_estimated_tokens_and_zero_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "usage.jsonl"
+            event = UsageRecorder(path).record_estimated(
+                client_id="mens_fashion",
+                model="gemini-embedding-001",
+                session_id="",
+                interaction_id="i1",
+                call_index=1,
+                call_kind="embed_query",
+                prompt_token_count=13,
+            )
+            self.assertEqual(event["prompt_token_count"], 13)
+            self.assertEqual(event["total_token_count"], 13)
+            self.assertEqual(event["candidates_token_count"], 0)
+            self.assertTrue(event["is_estimated"])
+            self.assertEqual(load_usage_events(path), [event])
+
+    def test_estimated_events_are_distinguishable_from_measured_ones(self) -> None:
+        # Un evento medido de verdad (record_response) nunca debe llevar is_estimated -ningún
+        # reporte debe poder confundir estimado con exacto.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "usage.jsonl"
+            recorder = UsageRecorder(path)
+            recorder.record_response(
+                SimpleNamespace(usage_metadata=SimpleNamespace(
+                    prompt_token_count=100, candidates_token_count=10, thoughts_token_count=0,
+                    cached_content_token_count=0, tool_use_prompt_token_count=0, total_token_count=110,
+                )),
+                client_id="c", model="gemini-test", session_id="s", interaction_id="i",
+                call_index=1, call_kind="initial", attempts=1,
+            )
+            recorder.record_estimated(
+                client_id="c", model="gemini-embedding-001", session_id="", interaction_id="i2",
+                call_index=1, call_kind="embed_query", prompt_token_count=5,
+            )
+            events = load_usage_events(path)
+            self.assertNotIn("is_estimated", events[0])
+            self.assertTrue(events[1]["is_estimated"])
+
+
 if __name__ == "__main__":
     unittest.main()

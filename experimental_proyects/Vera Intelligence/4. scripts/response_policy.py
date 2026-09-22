@@ -90,9 +90,7 @@ _PHYSICAL_IDENTIFIER = re.compile(
 # explícito, ver "6. busqueda_vectorial/README.md" > Iteración 28). `search_conversations` ya no
 # manda el texto crudo al modelo (`incluir_fragmentos` forzado a false en vi_agent.py), así que el
 # modelo no tiene de dónde copiar una cita real -esto es la segunda capa, por si igual redacta algo
-# entre comillas que aparente ser una cita (fabricada o no). Umbral de 4+ palabras dentro de las
-# comillas: una frase de negocio corta ("tres por dos", un nombre de promoción) no dispara esto;
-# reconstruir lo que dijo alguien sí.
+# entre comillas que aparente ser una cita (fabricada o no).
 #
 # BUG REAL encontrado en vivo (2026-09-22, mismo día): los bloques ```vera-suggestions``` (chips de
 # preguntas de seguimiento, ver streamlit_app.py) son un array JSON de strings entre comillas
@@ -100,8 +98,23 @@ _PHYSICAL_IDENTIFIER = re.compile(
 # que hubiera forzado una reescritura en CADA respuesta con sugerencias, sin ninguna cita real de
 # por medio. `_FENCED_BLOCK` (mismo patrón que `OTHER_FENCES` en answer_verification.py) saca todo
 # bloque ```...``` antes de buscar comillas -ningún bloque vera-* debería tener diálogo citado.
+#
+# SEGUNDO FALSO POSITIVO encontrado el mismo día, investigando cómo bajar costos: un umbral de sólo
+# 4+ palabras también disparaba con frases de negocio legítimas entre comillas -nombres de
+# sucursal ("Mens Fashion Patio Sendero Saltillo"), de criterio ("vendedor pregunta la ocasión de
+# uso"), de indicador ("tasa de cierre de compra general")-, cada una un reintento pagado sin
+# ninguna cita real de por medio. `_DIALOGUE_MARKER` exige además una señal concreta de diálogo
+# reconstruido dentro de la cita: signos de pregunta/exclamación, un pronombre personal (te, le,
+# nos, me, usted, tú, vos, yo) o un verbo de habla reportada (dijo, preguntó, respondió...) -un
+# sustantivo de negocio no tiene ninguna de las dos cosas, una frase textual de un cliente o
+# vendedor casi siempre sí.
 _FENCED_BLOCK = re.compile(r"```.*?```", re.S)
 _QUOTED_CONVERSATION_SPAN = re.compile(r"[«\"“]([^»\"”]+)[»\"”]")
+_DIALOGUE_MARKER = re.compile(
+    r"[?¿!¡]|\b(?:te|le|nos|me|usted|t[uú]|vos|yo)\b|"
+    r"\b(?:dij[oe]|dijeron|dec[ií]a|coment[oó]|pregunt[oó]|respondi[oó]|contest[oó])\b",
+    re.IGNORECASE,
+)
 
 
 def _quoted_conversation_spans(answer: str) -> list[str]:
@@ -109,7 +122,7 @@ def _quoted_conversation_spans(answer: str) -> list[str]:
     return [
         match.group(0)
         for match in _QUOTED_CONVERSATION_SPAN.finditer(prose)
-        if len(match.group(1).split()) >= 4
+        if len(match.group(1).split()) >= 4 and _DIALOGUE_MARKER.search(match.group(1))
     ]
 
 _BUSINESS_TERMS = re.compile(

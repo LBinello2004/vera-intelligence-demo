@@ -242,6 +242,32 @@ class EmbedQueryRetryTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 vector_search._embed_query("consulta", "fake-key")
 
+    def test_records_estimated_usage_when_a_recorder_is_passed(self) -> None:
+        # 2026-09-22: embed_content no devuelve usage_metadata -sin esto el costo real de cada
+        # búsqueda quedaba invisible en gemini_calls.jsonl. Opcional (default None) para no romper
+        # ningún call site que no lo pase.
+        success = MagicMock()
+        success.embeddings = [MagicMock(values=[0.1, 0.2])]
+        mock_recorder = MagicMock()
+        with patch.object(vector_search.genai, "Client", return_value=self._make_client_mock([success])):
+            vector_search._embed_query(
+                "una consulta de cinco palabras", "fake-key",
+                usage_recorder=mock_recorder, client_id="mens_fashion",
+            )
+        mock_recorder.record_estimated.assert_called_once()
+        kwargs = mock_recorder.record_estimated.call_args.kwargs
+        self.assertEqual(kwargs["client_id"], "mens_fashion")
+        self.assertEqual(kwargs["model"], vector_search.EMBEDDING_MODEL)
+        self.assertEqual(kwargs["call_kind"], "embed_query")
+        self.assertGreater(kwargs["prompt_token_count"], 0)
+
+    def test_does_not_record_usage_when_no_recorder_is_passed(self) -> None:
+        success = MagicMock()
+        success.embeddings = [MagicMock(values=[0.1, 0.2])]
+        with patch.object(vector_search.genai, "Client", return_value=self._make_client_mock([success])):
+            # No debe tirar ni intentar registrar nada -mismo criterio "opcional" que _judge_relevance.
+            vector_search._embed_query("consulta", "fake-key")
+
 
 class VectorLiteralTests(unittest.TestCase):
     def test_formats_as_pgvector_bracket_literal(self) -> None:
@@ -520,6 +546,15 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         sql, _params = cursor.executed[-1]
         self.assertIn("LEFT JOIN LATERAL", sql)
         self.assertIn("core_v2.conversations", sql)
+
+    def test_distancia_is_rounded_to_four_decimals(self) -> None:
+        # 2026-09-22, investigando cómo bajar costos: antes viajaba con precisión completa de
+        # punto flotante (ej. 0.22961762271533293, 20 caracteres) mientras
+        # "distancia_relativa_al_mejor_resultado" ya iba redondeada -inconsistente y sin uso real
+        # para el modelo. Bytes de más en CADA resultado de CADA búsqueda.
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.22961762271533293)]
+        payload, _ = self._run_search("mens_fashion_alto", rows)
+        self.assertEqual(payload["resultados"][0]["distancia"], 0.2296)
 
     def test_deduplicates_by_conversation_id_keeping_the_best_distance(self) -> None:
         # 3 chunks de la conversación "conv1" (la misma conversación larga tocó el tema varias
@@ -1393,6 +1428,27 @@ class CompareWithBestTests(_RedirectsUsageLogTestCase):
     def test_fragments_are_kept_when_a_result_has_no_notes(self) -> None:
         payload, _, _, _ = self._compare()
         self.assertIn("fragmento_aproximado", payload["resultados"][0])
+
+    def test_resumen_verificado_is_also_dropped_when_notes_exist_unless_requested(self) -> None:
+        # 2026-09-22, investigando cómo bajar costos: "resumen_verificado" nació para contrastar
+        # contra el fragmento antes de CITARLO -desde que el modelo nunca cita texto (Iteración 29)
+        # ese motivo ya no existe, y el modelo principal no lo lee para nada. Mismo criterio que
+        # "fragmento_aproximado": se descarta cuando ya hay "notas".
+        def judge(query, resultados, **kw):
+            for r in resultados:
+                r["notas"] = {"situacion": "s", "que_hizo": "q", "como_termino": "c"}
+            return [True] * len(resultados)
+
+        payload, _, _, _ = self._compare(judge=judge)
+        for item in payload["resultados"] + payload["companeros"]:
+            self.assertNotIn("resumen_verificado", item)
+        payload, _, _, _ = self._compare(judge=judge, incluir_fragmentos=True)
+        for item in payload["resultados"] + payload["companeros"]:
+            self.assertIn("resumen_verificado", item)
+
+    def test_resumen_verificado_is_kept_when_a_result_has_no_notes(self) -> None:
+        payload, _, _, _ = self._compare()
+        self.assertIn("resumen_verificado", payload["resultados"][0])
 
     def test_peer_names_never_reach_the_model(self) -> None:
         payload, _, _, _ = self._compare()
