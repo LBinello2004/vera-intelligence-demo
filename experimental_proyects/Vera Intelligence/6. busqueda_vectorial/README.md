@@ -2211,3 +2211,26 @@ invisible en una lectura rápida de gerente.
   búsqueda vectorial pasa de una sola señal global a una señal global + una señal local por cada
   afirmación -exactamente lo que le faltaba al primer intento para responder la pregunta real de
   Lucas.
+
+### Iteración 49 (2026-09-23, mismo día): la etiqueta se repetía en cada viñeta de una lista ya agrupada -corregido a una vez por bloque
+
+Feedback en vivo de Lucas sobre la Iteración 48, con captura de pantalla real: dentro de una sección
+ya titulada "Patrones cualitativos observados", CADA una de las 3 viñetas repetía "**En
+conversaciones reales:**" al principio -mecánico y repetitivo, aunque el título de la sección ya
+dejaba claro que las tres eran del mismo origen. La regla anterior no distinguía entre "una
+observación suelta en medio de un párrafo con números" (donde la etiqueta es necesaria, el caso
+real que motivó la Iteración 48) y "una lista ya agrupada bajo su propio título" (donde repetirla en
+cada línea es redundante).
+
+- **Cambio**: `vi_agent.py`, misma regla "MARCAR VISIBLEMENTE QUÉ SALE DE ACÁ", separada en dos
+  casos explícitos: (1) 2+ notas/patrones agrupados en su propia sección o lista con título → UNA
+  sola mención al principio del bloque (como intro, o dejar que el título ya inequívoco cumpla ese
+  rol), sin repetir en cada viñeta; (2) una observación cualitativa suelta en medio de un párrafo
+  con números de SQL → ahí sí, la etiqueta marca esa oración puntual, sin excepción.
+- **Verificado en vivo, mismo caso real**: misma pregunta de Lucas contra `mens_fashion_alto` -esta
+  vez el modelo condensó el patrón cualitativo en un solo párrafo al final, con una sola mención de
+  la etiqueta, sin repetición. No se forzó un caso con 2+ viñetas agrupadas en esta corrida puntual,
+  pero la regla ahora distingue explícitamente ambos casos en vez de aplicar "una etiqueta por
+  viñeta" de forma ciega.
+- 543/543 tests sin cambios (regla de prosa libre, mismo criterio que la Iteración 48: se verifica
+  en vivo, no hay assert posible sobre el formato exacto que elige el modelo).
