@@ -162,6 +162,30 @@ _DEFAULT_RESUMEN_COLUMN = "resumen_ejecutivo_conversacion"
 # _RESUMEN_COLUMN_BY_TENANT) -directamente no hay resumen_verificado equivalente para este cliente.
 _DESCRIPTIVOS_UNSUPPORTED_TENANTS: frozenset[str] = frozenset({"Maga", "Atlas"})
 
+# Cobertura real de backfill de embeddings por tenant (analytics_v2.conversation_embeddings vs
+# mart_v2.recordings_enriched), verificada por SQL directo el 2026-09-22 (ver "6. busqueda_vectorial/
+# README.md", Iteración 42). La mayoría de los clientes con vector_search habilitado están entre
+# 75-97% -aceptable-, pero dos tienen un hueco estructural que NO es backfill atrasándose (los
+# últimos 5-8 meses muestran el mismo nivel bajo, no una caída sólo en el mes más reciente) y que
+# además no es necesariamente una muestra aleatoria: Atlas ronda 30-43% parejo entre sus ~15 tiendas
+# (backfill incompleto en general), Salomon va de 41% a 90% SEGÚN LA TIENDA (backfill desparejo, no
+# sólo incompleto). El pipeline de backfill lo administra otra persona, fuera de este proyecto -acá
+# sólo se advierte al modelo para que no presente "patrones observados" como representativos de
+# todas las conversaciones del período/tienda cuando en realidad puede estar viendo bastante menos
+# de la mitad, o una muestra sesgada hacia las tiendas mejor cubiertas.
+_LOW_EMBEDDING_COVERAGE_TENANTS: dict[str, str] = {
+    "Atlas": (
+        "este cliente tiene cobertura de embeddings de aproximadamente 30-43% de sus conversaciones "
+        "(backfill incompleto, similar entre tiendas) -las notas y patrones observados vienen de una "
+        "muestra parcial, no de todas las conversaciones del período"
+    ),
+    "Salomon": (
+        "este cliente tiene cobertura de embeddings despareja por tienda (41%-90% según la tienda) "
+        "-las notas y patrones pueden sobrerrepresentar a las tiendas con mejor cobertura de "
+        "backfill, no asumir que reflejan por igual a todas las tiendas"
+    ),
+}
+
 
 def _find_descriptivos_source(client: ClientConfig) -> SourceConfig | None:
     """Ubica, si existe, la fuente de resumen ejecutivo por conversación del cliente activo.
@@ -1496,6 +1520,18 @@ class VectorSearchRepository:
             performance_source=performance_source,
         )
 
+        # Ambigüedad de employee_name (2026-09-23): el filtro es ILIKE '%employee_name%" -coincidencia
+        # PARCIAL, ya advertida en el docstring de arriba ("un nombre de pila puede matchear a otra
+        # persona") pero hasta ahora nunca chequeada mecánicamente: dependía por completo de que el
+        # modelo hubiera verificado por SQL de antemano que el nombre no era ambiguo. Si el propio
+        # `employee_full_name` de los resultados trae más de una persona distinta, se lo decimos acá
+        # -mecánico, no una esperanza de que el modelo se acuerde de chequearlo él mismo antes.
+        empleados_encontrados: list[str] = []
+        if employee_name and employee_name.strip():
+            empleados_encontrados = sorted(
+                {r["vendedor"] for r in resultados if r.get("vendedor")}
+            )
+
         # Modo comparación: las conversaciones de los mejores del criterio, en la misma llamada. Los
         # nombres NO viajan al modelo principal (privacidad garantizada en código, no sólo por
         # prompt): se reemplazan por una etiqueta neutra.
@@ -1571,6 +1607,16 @@ class VectorSearchRepository:
                 f"; se descartaron {judge_filtered_count} resultado(s) que quedaron cerca en la "
                 "búsqueda pero un verificador adicional no confirmó que respaldaran genuinamente "
                 "la pregunta"
+            )
+        coverage_note = _LOW_EMBEDDING_COVERAGE_TENANTS.get(self.client.tenant)
+        if coverage_note:
+            aviso += f"; {coverage_note}"
+        if len(empleados_encontrados) > 1:
+            aviso += (
+                f"; employee_name=\"{employee_name}\" coincidió con varias personas distintas "
+                f"({', '.join(empleados_encontrados)}) -estos resultados mezclan conversaciones de "
+                "más de un vendedor real, no asumas que son de la misma persona; volvé a buscar con "
+                "el nombre completo exacto de a quién se refiere la pregunta"
             )
         if label_context is not None:
             for resultado_item in resultados:

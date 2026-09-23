@@ -447,6 +447,60 @@ class ExtractCitableConversationsTests(unittest.TestCase):
         self.assertEqual([r["conversation_id"] for r in result], ["c1", "c2"])
 
 
+class ExtractSearchUsageTests(unittest.TestCase):
+    """`_extract_search_usage` (pedido explícito de Lucas, 2026-09-22: "quiero que cuando pregunte
+    me dé cuenta que se está utilizando la búsqueda vectorial") -parte pura de
+    `_render_vector_search_badge`, misma separación de `st` que ExtractCitableConversationsTests."""
+
+    def _search_call(self, *, aviso: str = "los fragmentos son una reconstrucción aproximada", error: str | None = None) -> dict:
+        return {
+            "name": "search_conversations",
+            "error": error,
+            "result": json.dumps({"resultados": [], "aviso": aviso}),
+        }
+
+    def test_no_tool_calls_means_not_used(self) -> None:
+        self.assertEqual(streamlit_app._extract_search_usage([]), {"used": False, "count": 0, "avisos": []})
+
+    def test_ignores_other_tools(self) -> None:
+        tool_calls = [{"name": "run_readonly_sql", "error": None, "result": "{}"}]
+        info = streamlit_app._extract_search_usage(tool_calls)
+        self.assertFalse(info["used"])
+
+    def test_ignores_calls_with_error(self) -> None:
+        tool_calls = [self._search_call(error="algo falló")]
+        info = streamlit_app._extract_search_usage(tool_calls)
+        self.assertFalse(info["used"])
+
+    def test_detects_single_successful_call(self) -> None:
+        info = streamlit_app._extract_search_usage([self._search_call()])
+        self.assertEqual(info, {"used": True, "count": 1, "avisos": []})
+
+    def test_counts_multiple_calls(self) -> None:
+        info = streamlit_app._extract_search_usage([self._search_call(), self._search_call()])
+        self.assertEqual(info["count"], 2)
+
+    def test_extracts_extra_aviso_beyond_the_fixed_boilerplate(self) -> None:
+        aviso = (
+            "los fragmentos son una reconstrucción aproximada; se descartaron 1 resultado(s) que "
+            "quedaron cerca en la búsqueda pero un verificador adicional no confirmó que "
+            "respaldaran genuinamente la pregunta"
+        )
+        info = streamlit_app._extract_search_usage([self._search_call(aviso=aviso)])
+        self.assertEqual(len(info["avisos"]), 1)
+        self.assertIn("se descartaron 1 resultado", info["avisos"][0])
+
+    def test_deduplicates_identical_avisos_across_calls(self) -> None:
+        aviso = "los fragmentos son una reconstrucción aproximada; cobertura de embeddings baja"
+        info = streamlit_app._extract_search_usage([self._search_call(aviso=aviso), self._search_call(aviso=aviso)])
+        self.assertEqual(info["avisos"], ["cobertura de embeddings baja"])
+
+    def test_malformed_json_does_not_raise_but_still_counts_as_used(self) -> None:
+        tool_calls = [{"name": "search_conversations", "error": None, "result": "esto no es JSON"}]
+        info = streamlit_app._extract_search_usage(tool_calls)
+        self.assertEqual(info, {"used": True, "count": 1, "avisos": []})
+
+
 class FormatConversationDateTests(unittest.TestCase):
     """_format_conversation_date (2026-09-22): la fecha ISO cruda de search_conversations pasa a
     formato legible en el panel de audio -bug real reportado por Lucas, se mostraba tal cual con

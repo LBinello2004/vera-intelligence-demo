@@ -588,8 +588,8 @@ vale la pena incluir:
       2026-09-10, ver "Iteración 3" abajo.
    4. ~~Umbral de distancia mínima~~ — evaluado y descartado a favor de una distancia relativa por
       búsqueda, ver "Iteración 3" abajo (los datos reales no soportan un corte absoluto todavía).
-   5. Ronda 3 de evaluación con un revisor que no haya diseñado la tool, para sacar el sesgo de
-      confirmación de las 11 preguntas actuales. Sigue pendiente — es la que más falta ahora.
+   5. ~~Ronda 3 de evaluación con un revisor que no haya diseñado la tool~~ — hecha el 2026-09-22,
+      ver Iteración 41 abajo.
 5. Sólo después de eso, evaluar generalizar `vector_search` a otro `config.yaml` — candidatos
    razonables: `salomon_alto`/`steren_alto` (volumen alto, sin RAG activo, para no mezclar dos
    fuentes semánticas nuevas a la vez). Verificar primero el % de cobertura de backfill de ese
@@ -1918,3 +1918,264 @@ ahora que `incluir_fragmentos` ya no es controlable desde el modelo.
   inesperado del analista) podía romper la garantía de "nunca cita textual" sin que ningún test lo
   detectara -los tests existentes probaban el camino feliz del analista, nunca su falla total
   combinada con `incluir_fragmentos=False` fijo.
+
+### Iteración 41 (2026-09-22, mismo día): Ronda 3 de evaluación -revisor independiente sobre uso real
+
+Pedido explícito de Lucas: seguir mejorando el uso de la búsqueda vectorial. Cerraba el ítem de la
+lista de mejoras marcado como "el que más falta" desde la Iteración 3: una ronda de evaluación con
+un revisor que NO haya diseñado la tool, para sacar el sesgo de confirmación de haber verificado
+todo este proyecto con mis propios criterios.
+
+- **Método**: 3 preguntas de negocio reales corridas en vivo con `debug=True` contra
+  `mens_fashion_alto` y `farma24_alto` -una de exploración abierta ("qué objeciones se repiten"),
+  una de "por qué" (caída de venta cruzada) y una de coaching individual (Ubaldo Ramos)-. Las 3
+  transcripciones completas (incluyendo el log de tool calls) se le dieron a un agente fresco, sin
+  contexto de este proyecto ni acceso al código, con instrucciones de auditar como un gerente
+  escéptico -sin asumir que el diseño es correcto-.
+- **Resultado del revisor**: sin violaciones de "nunca citar texto literal" en las 3 respuestas, sin
+  uso desproporcionado de `search_conversations` (1 llamada por respuesta), aritmética de los
+  números SQL verificada a mano y correcta. Un hallazgo marcado como "el más grave": en la respuesta
+  de Farma24, la sección de contraste mencionaba "diclofenac" y "magnesio" como ejemplos concretos
+  de los mejores vendedores, pero el revisor sólo vio en el log una llamada a `search_conversations`
+  con `resultado='No'` -sin ver ninguna evidencia de que esos productos vinieran de una fuente
+  real- y lo marcó como una posible fabricación con apariencia de evidencia.
+- **Verificado y descartado como falso positivo**: repetí la misma llamada a `repo.search()`
+  directamente (sin pasar por el log de debug, que trunca cada resultado a 500 caracteres para no
+  inundar la terminal -`vi_agent.py`, línea ~2151-) y confirmé que "diclofenac" y "magnesio" SÍ
+  vienen de notas reales y verificadas mecánicamente en `companeros` (los vendedores con mejor
+  resultado en ese criterio, que `comparar_con_mejores=True` trae automáticamente en la misma
+  llamada) -el revisor no fabricó su crítica, pero trabajó con una vista incompleta del tool result
+  porque mi propio harness de prueba le pasó el log truncado en vez del JSON completo (disponible
+  sin truncar en `tool_calls_log`, que ya usan los tests). Lección para la próxima ronda: auditar
+  contra el JSON completo, nunca contra el preview de stderr pensado para lectura humana rápida en
+  vivo -no se cambia el código de truncado en sí, porque cumple su propósito real (debug legible en
+  terminal) y el modelo principal siempre recibe el JSON completo, nunca el preview.
+- **Hallazgo menor, no reproducido de forma determinística**: en una corrida de la misma pregunta de
+  "por qué" (Farma24, venta cruzada) usando ventanas rolling de 30 días, la prosa mezcló en una
+  misma oración el número del período anterior (58.503) dentro del párrafo del "último mes" -cada
+  cifra individual seguía siendo correcta y rastreable a SQL, pero la redacción resultaba confusa
+  sobre a qué período pertenecía cada una-. Una segunda corrida de la misma pregunta, donde el
+  modelo formuló el SQL con buckets mensuales en vez de ventanas rolling, salió con prosa clara. No
+  se investigó más a fondo por no ser reproducible con la misma query -queda como algo a vigilar si
+  reaparece, no una corrección de código con esta única observación-.
+- **Balance de la ronda**: el mecanismo de búsqueda vectorial en sí (verificación de evidencia,
+  límite de números, `comparar_con_mejores`) sostiene el escrutinio de un revisor externo escéptico.
+  El punto de fricción real no estuvo en el código de producción sino en la instrumentación de
+  prueba (debug log truncado) usada para auditar -corregido para la próxima ronda de evaluación, sin
+  necesidad de tocar `vector_search.py` ni `vi_agent.py`.
+
+### Iteración 42 (2026-09-22, mismo día): cobertura de embeddings desigual entre clientes -Atlas y Salomon con hueco estructural
+
+Pedido explícito de Lucas: seguir iterando para mejorar el uso de la búsqueda vectorial. Con el
+trigger mucho más agresivo de esta sesión (usar `search_conversations` por default en varios casos
+nuevos), tenía sentido verificar que el supuesto de fondo -que hay suficientes conversaciones
+vectorizadas para que una búsqueda sea representativa- se sostiene igual en todos los clientes
+habilitados, no sólo en los que ya se probaron en vivo (mens_fashion_alto, farma24_alto).
+
+- **Medido con SQL directo** (`analytics_v2.conversation_embeddings` vs `mart_v2.recordings_enriched`,
+  2026-09-22) para los 14 clientes con `vector_search` habilitado: la mayoría está entre 75% y 97%
+  de cobertura (Farma24 96,6%, Maga 97,2%, Boggi 90,4%, Steren 86,6%, Hyundai 82,4%, Roberts 81,5%,
+  High Life 80,1%, Tigo 76,2%, Huerpel 75,2%, Mens Fashion 75,1%) -aceptable-, pero **Atlas (39,1%)
+  y Salomon (59,0%)** tienen un hueco mucho más grande. GAC (52,9%) y Dalton (55,6%) también están
+  bajos pero con volumen tan chico (295 y 54 conversaciones) que no vale la pena una mitigación
+  dedicada.
+- **Descartado que sea backfill atrasándose** (que se autocorregiría solo): desglosado por mes,
+  Atlas se mantiene entre 27% y 43% durante los últimos 5-6 meses -no es que el mes más reciente
+  esté incompleto, es un piso estructural parejo en el tiempo. Salomon en cambio muestra una
+  tendencia (85%→52%→62%), sin recuperarse del todo.
+- **Hallazgo más importante en Salomon**: la cobertura NO es pareja entre tiendas -de 41% (Antea
+  Querétaro, Satélite) a 90% (Pachuca, Altozano, Lerma)-. Esto significa que una búsqueda sobre una
+  tienda mal cubierta ve una fracción mucho menor de sus conversaciones reales que una sobre una
+  tienda bien cubierta -un patrón que "no aparece" en la primera puede ser sólo falta de datos, no
+  ausencia real. En Atlas, en cambio, el hueco es más parejo entre sus ~15 tiendas (27%-47%, con
+  Cosmopol en 63% como única excepción) -menos representativo en general, pero al menos no sesgado
+  hacia unas tiendas más que otras.
+- **Cambio**: `vector_search.py` agrega `_LOW_EMBEDDING_COVERAGE_TENANTS` (mismo patrón que
+  `_DESCRIPTIVOS_UNSUPPORTED_TENANTS`, un dict fijo por tenant) y anexa una nota a `aviso` -el campo
+  que ya usa el modelo para saber que descartó resultados o que los fragmentos son aproximados- para
+  Atlas y Salomon, explicando la limitación en cada caso (backfill incompleto parejo vs. desparejo
+  por tienda). No se tocó la query ni el ranking: es sólo una advertencia para que el modelo no
+  presente "patrones observados" como representativos de todas las conversaciones/tiendas cuando en
+  estos 2 clientes puede estar viendo bastante menos de la mitad, o una muestra sesgada.
+- 2 tests nuevos (`test_aviso_includes_low_coverage_note_for_known_tenant`,
+  `test_aviso_has_no_coverage_note_for_tenant_not_in_the_known_list`). 532/532 tests en verde.
+  Verificado en vivo contra `atlas_alto`: el `aviso` real incluye la nota nueva.
+- **Fuera de alcance, a escalar**: el hueco de backfill en sí no es corregible desde este proyecto
+  -lo administra otra persona (mismo criterio que el índice vectorial pendiente, ver lista de
+  mejoras más arriba)-. Esta iteración sólo evita que Vera Intelligence hable con más confianza de
+  la que los datos disponibles justifican para estos 2 clientes; la corrección real (parejar el
+  backfill) queda pendiente de escalar fuera de este Data Map/código.
+
+### Iteración 43 (2026-09-22, mismo día): visible para quien lee la respuesta cuándo se usó búsqueda vectorial
+
+Pedido explícito de Lucas: "quiero que cuando pregunte me dé cuenta que se está utilizando la
+búsqueda vectorial". Hasta ahora, la única señal de que `search_conversations` había aportado a una
+respuesta era el nombre técnico de la tool dentro del caption `_render_tool_summary`
+(`streamlit_app.py`) -agregado en su momento (2026-09-11) a pedido explícito para VERIFICAR en
+pruebas qué tool disparaba una pregunta, mezclado en una sola línea con `run_readonly_sql` y
+`get_business_rules`, fácil de pasar por alto para alguien leyendo la respuesta como gerente, no
+auditando el sistema. Con el trigger mucho más agresivo de esta sesión (Iteraciones 36-39: la
+búsqueda se dispara por default en varios casos nuevos), esa distinción importa más que antes.
+
+- **Cambio**: `streamlit_app.py` agrega `_extract_search_usage(tool_calls)` (lógica pura, sin `st`,
+  mismo patrón que `_extract_citable_conversations`) y `_render_vector_search_badge`, que muestra
+  SIEMPRE -sin gate de `_asks_for_examples` ni de `--internal-debug`- un caption claro apenas
+  `search_conversations` participó en la respuesta: "🔎 Esta respuesta se apoya en búsqueda semántica
+  sobre conversaciones reales". Se renderiza antes que `_render_tool_summary`, no lo reemplaza -ese
+  caption técnico sigue existiendo para quien quiera confirmar tiempos/cantidad de llamadas.
+- **Efecto colateral bueno, no buscado originalmente**: la misma función expone, por primera vez a
+  quien lee la respuesta (antes sólo viajaba en el JSON que ve el modelo), cualquier aviso de
+  calidad de datos que la tool haya agregado a `aviso` -en particular la nota de cobertura de
+  embeddings baja para Atlas/Salomon de la Iteración 42 recién hecha en esta misma sesión: ahora,
+  además de que el modelo se entera y matiza su respuesta, la persona que lee la respuesta en el
+  chat también ve "⚠️ este cliente tiene cobertura de embeddings de aproximadamente 30-43%..." como
+  un caption aparte. Las dos iteraciones de esta sesión terminan complementándose sin haberlo
+  planeado así.
+- 8 tests nuevos (`ExtractSearchUsageTests`), sin tests de `_render_vector_search_badge` en sí -mismo
+  criterio ya documentado en el resto de este archivo para funciones con `st.*`: se verifica en vivo,
+  no con `st` mockeado. 540/540 tests en verde.
+
+### Iteración 44 (2026-09-23): ambigüedad de `employee_name` detectada mecánicamente, no sólo confiada al prompt
+
+Pedido explícito de Lucas: seguir mejorando la funcionalidad de la búsqueda vectorial. Revisando el
+propio docstring de `search()` para buscar próximos candidatos, apareció una advertencia ya escrita
+pero nunca aplicada en código: *"employee_name... es coincidencia parcial: un nombre de pila puede
+matchear a otra persona"*. Esto no era hipotético -`test_employee_name_partial_match_can_cross_match_
+different_people` (5. tests/test_vector_search.py) ya documentaba un caso real visto en vivo el
+2026-09-16 en `mens_fashion_alto`: pasar sólo "Rocio" trajo conversaciones de "Rocio Haro Leal" Y
+"Rocio Vazquez Rivera" mezcladas, dos vendedoras distintas. El propio comentario del test decía
+textualmente que la mitigación "vive en el prompt... ninguna de las dos en este módulo" -es decir,
+la única defensa contra citar coaching de la persona equivocada era que el modelo se acordara de
+verificar por SQL antes de buscar. Con el trigger de `search_conversations` mucho más agresivo desde
+esta sesión, confiar sólo en que el modelo se acuerde de un chequeo previo es más frágil que antes.
+
+- **Cambio**: `vector_search.py`, en `search()`, después de la llamada a `_retrieve()` con
+  `employee_name`, junta los valores DISTINTOS de `employee_full_name` que realmente vinieron en los
+  resultados. Si hay más de uno, `aviso` lo dice explícitamente con los nombres reales encontrados
+  ("coincidió con varias personas distintas (Rocio Haro Leal, Rocio Vazquez Rivera)... volvé a
+  buscar con el nombre completo exacto"). Puramente aditivo: no cambia la query ni descarta
+  resultados -sigue siendo el modelo quien decide qué hacer con la ambigüedad, pero ahora se entera
+  siempre, mecánicamente, no sólo si se acordó de chequear antes.
+- **Verificado en vivo con el caso real documentado**: la misma búsqueda de 2026-09-16 (`employee_
+  name="Rocio"` en `mens_fashion_alto`) hoy devuelve el aviso nuevo con los dos nombres reales -el
+  juez además filtró esta vez a una sola persona en `resultados` (`Rocio Haro Leal`), pero el aviso
+  de ambigüedad sigue apareciendo porque la mezcla ya ocurrió en la consulta SQL, antes del juez -es
+  la señal correcta: avisa sobre el filtro que se usó, no sobre la suerte de qué sobrevivió después.
+- 3 tests nuevos (`test_aviso_warns_when_employee_name_matches_multiple_people` y sus 2 casos
+  negativos: un solo empleado real, y sin filtro `employee_name`). 543/543 tests en verde.
+- **Por qué importa**: cierra el único gap de este proyecto donde una limitación conocida y ya
+  documentada en un test (no un hallazgo nuevo, sino una deuda reconocida desde 2026-09-16) seguía
+  sin mecanismo real -la nota "no busques para esa persona" del prompt de `vi_agent.py` ahora tiene
+  una señal mecánica que la respalda, en vez de depender sólo de que el modelo lo recuerde.
+
+### Iteración 45 (2026-09-23): prueba de precisión del trigger -no sólo que dispare, que dispare sólo cuando corresponde
+
+Pedido explícito de Lucas: "quiero que la búsqueda vectorial quede como lo central de Vera
+Intelligence... lo más inteligente posible... de forma sensata". Todas las rondas de verificación
+en vivo anteriores (Ronda 3, Iteraciones 36-39) confirmaron CASOS donde la búsqueda debía dispararse
+y lo hacía bien, pero nunca se probó sistemáticamente el caso contrario: preguntas donde la búsqueda
+NO debería dispararse, para confirmar que "más central" no se estaba pagando con sobre-disparo
+innecesario (costo y ruido) -"sensata" pide las dos cosas a la vez, no sólo más cobertura.
+
+- **Método**: 4 preguntas reales contra `mens_fashion_alto`, elegidas para cubrir los bordes de la
+  lógica documentada en `SYSTEM_INSTRUCTION_TEMPLATE`:
+  1. *"¿Cuántas conversaciones tuvo el equipo la semana pasada?"* (puramente numérica) → **0
+     búsquedas** -correcto, sólo `run_readonly_sql`.
+  2. *"¿Qué áreas de oportunidad tiene el equipo en general?"* (abierta, sin vendedor/criterio
+     puntual) → **1 búsqueda**, anclada en el criterio más débil que el propio SQL identificó
+     (`vendedorrealizocierrecompra`) con `comparar_con_mejores=true` -correcto, la búsqueda por
+     default que se pidió en la Iteración 36.
+  3. *"Dame el ranking de las 5 tiendas con mejor tasa de cierre"* (ranking puro, sin pedir el
+     porqué) → **0 búsquedas** -correcto, respeta el LÍMITE DURO documentado en la Iteración 36
+     ("si la pregunta es un ranking SIN pedir el porqué, no agregues nada").
+  4. *"¿Cómo se compara Ubaldo Ramos contra Gabriel Villaseñor en cierre de venta?"* (comparación
+     1-a-1 entre 2 vendedores nombrados) -caso NO cubierto por ninguna categoría explícita del
+     prompt (no es "coaching de un vendedor", tampoco "varios vendedores a la vez", pensado para
+     listas tipo "los peores 3")-. El modelo generalizó solo el patrón "identificar quién quedó más
+     débil en el criterio + UNA búsqueda ahí" que ya usa en POR QUÉ/CAUSA RAÍZ: buscó sólo sobre
+     Ubaldo Ramos (el más débil de los dos en cierre, 14,3% vs 32,8%), con `comparar_con_mejores`, y
+     dejó la comparación numérica de ambos resuelta 100% por SQL. **1 búsqueda**, asimétrica pero
+     razonada explícitamente -no fue un olvido de Gabriel, fue la aplicación consistente de "buscar
+     donde hay algo que explicar".
+- **Resultado**: 4 de 4 casos se comportaron como se esperaba, incluyendo el caso sin categoría
+  explícita en el prompt -el diseño generaliza bien sin necesitar una sección nueva para cada
+  variante de pregunta. No se tocó `vi_agent.py`: agregar una categoría "comparación 1 a 1" hoy
+  sería una abstracción sin un problema real que resolver (el caso ya sale bien), en línea con no
+  agregar reglas para escenarios hipotéticos.
+- 543/543 tests sin cambios (no hubo cambio de código en esta iteración, es una iteración de
+  medición/documentación pura).
+- **Balance**: con esta prueba de precisión sumada a las de cobertura (Iteraciones 36-39) y a la
+  Ronda 3 (Iteración 41), la búsqueda vectorial dispara cuando debe, no dispara cuando no debe, y
+  generaliza razonablemente a casos sin categoría explícita -la definición de "central pero
+  sensata" que pidió Lucas parece sostenerse en la práctica, no sólo en el diseño del prompt.
+
+### Iteración 46 (2026-09-23): cobertura de casos adicionales -vendedor/tienda sin pedido explícito, continuidad conversacional, degradación ante error real de API
+
+Pedido explícito de Lucas, más intenso que el de la Iteración 45: "tiene que utilizarse
+absolutamente siempre que se pueda y que sea útil" -no sólo "sensata" (restricción), sino maximizar
+cobertura donde agregue valor real. Se probaron 4 escenarios más, elegidos porque ninguna prueba
+anterior de esta sesión los había cubierto:
+
+1. **Vendedor puntual sin pedir "coaching" explícitamente** (*"¿Cómo está Ubaldo Ramos en
+   general?"*) → 1 búsqueda, correctamente disparada -la palabra "coaching" no es necesaria, el
+   nombre propio ya alcanza.
+2. **Tienda puntual sin pedir "coaching" ni nombrar un criterio** (*"¿Cómo está la tienda Mens
+   Fashion Tezontle este mes?"*) → 1 búsqueda, correctamente disparada.
+3. **Continuidad conversacional -el caso más nuevo probado esta sesión**: turno 1 pidió un ranking
+   puro (*"tiendas con peor tasa de cierre"*, 0 búsquedas, correcto) y el turno 2, un follow-up
+   corto sin repetir contexto (*"¿Y por qué está tan mal esa última tienda?"*), retomó el nombre de
+   tienda del historial de la conversación y disparó UNA búsqueda anclada en ese nombre -confirma
+   que el trigger funciona con el patrón de uso real de un gerente (preguntas cortas encadenadas),
+   no sólo con preguntas autocontenidas como las de todas las pruebas anteriores.
+4. **Dato disperso + error real de cuota de la API** (`dalton_medio`, cliente de bajísimo volumen,
+   pregunta abierta sobre objeciones repetidas): el modelo reformuló una vez como indica el prompt
+   ("máximo una reformulación más amplia si no trae nada"), pero ambos intentos de
+   `search_conversations` fallaron con `429 RESOURCE_EXHAUSTED` real de la API de embeddings -cuota
+   agotada por el volumen de pruebas en vivo de esta sesión, no un bug-. El sistema degradó
+   correctamente: no inventó un patrón, contestó con lo que el SQL sí pudo confirmar y no rompió la
+   respuesta. Comportamiento correcto ante una falla real de infraestructura externa, sin cambios de
+   código necesarios -el reintento con backoff ya existe (`_MAX_EMBED_RETRIES`), esto fue
+   agotamiento de cuota real, no una falla transitoria que el retry debiera haber absorbido.
+- **No se modificó código**: los 4 escenarios probados ya se comportan como se esperaría de un
+  sistema "central pero útil" -el límite real hoy no es de diseño/prompt, es la cuota de la API de
+  embeddings, agotada por el volumen de pruebas en vivo de este día. Se pausan las pruebas en vivo
+  hasta que la cuota se recupere.
+- **Balance de todo el bloque de iteraciones 36-46**: search_conversations pasó de un uso
+  oportunista y poco confiable a ser, en la práctica medida hoy, el mecanismo por default para
+  cualquier pregunta cualitativa de negocio -vendedor, tienda, equipo, período, comparación,
+  exploración abierta, y follow-ups cortos- sin sacrificar el límite duro de nunca usarlo para un
+  número ni de dispararlo quando no aporta nada nuevo. 543/543 tests en verde, sin cambios desde la
+  Iteración 44.
+
+### Iteración 47 (2026-09-23): última ronda de cobertura -patrones positivos, sentimiento, y por qué un número "plano" NO debe activar la búsqueda
+
+Pedido explícito de Lucas: buscar si falta algún tipo de pregunta cualitativa, y evaluar si preguntas
+de NÚMEROS también podrían enriquecerse con búsqueda vectorial. Se probaron 3 casos más:
+
+1. **Pregunta numérica plana, sin ángulo de "por qué" ni coaching** (*"¿Cuál es la tasa de cierre de
+   compra del equipo este mes?"*) → **0 búsquedas**, correcto -devuelve el número limpio (44,95%,
+   2.250/5.006) sin agregar una búsqueda que no aportaría nada a una pregunta que sólo pide el dato.
+   Esto responde directamente la parte de la pregunta de Lucas sobre "números que pudieran tener
+   mejor información": el límite duro contra usar la búsqueda PARA calcular o validar un número se
+   mantiene sin cambios -motivo ya documentado extensamente (la distancia vectorial sola tiene
+   ~15-20% de precisión en tareas de clasificación subjetiva, ver limitación estructural en la
+   introducción de este archivo)-, pero la vía correcta para que un número se enriquezca con
+   contexto cualitativo YA EXISTE desde la Iteración 36: la categoría "POR QUÉ / CAUSA RAÍZ" agrega
+   UNA búsqueda cuando el número en sí representa un problema a explicar. Ampliar la búsqueda a
+   *cualquier* pregunta numérica -incluida una consulta plana como esta- sería puro costo y ruido
+   sin pedido real detrás, lo opuesto a "sensata".
+2. **Pregunta de sentimiento/maltrato** (*"¿Hay vendedores con mal trato o groserías hacia los
+   clientes?"*) → 1 búsqueda, correcto -confirma que el caso de uso ORIGINAL de este mecanismo
+   (Iteración 14, "insultos"/"malos tratos") sigue funcionando después de todos los cambios de esta
+   sesión.
+3. **Patrón POSITIVO, no de fallas** (*"¿Qué está funcionando muy bien en el equipo? Quiero
+   replicarlo en las demás tiendas"*) → 1 búsqueda, con contenido concreto y accionable
+   ("validación frente al espejo", "presentación de combinaciones completas en el probador") -no
+   sólo "OTROS USOS" reacciona a problemas, también a buenas prácticas a replicar, sin necesitar un
+   prompt separado para el caso positivo -el bucket de exploración abierta ya es neutral respecto a
+   la valencia de lo que se busca.
+- **No se modificó código.** Los 3 casos ya salen bien con el diseño actual. Conclusión de esta
+  ronda: no quedó ningún tipo de pregunta cualitativa probada hoy sin cobertura, y la restricción
+  contra usar la búsqueda para números sigue siendo la decisión correcta -el valor de "más
+  información" en preguntas numéricas ya se resuelve por la vía del "por qué", no ampliando cuándo
+  se dispara la búsqueda en sí. 543/543 tests sin cambios.

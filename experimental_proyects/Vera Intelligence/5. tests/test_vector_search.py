@@ -363,10 +363,11 @@ class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
     def test_employee_name_partial_match_can_cross_match_different_people(self) -> None:
         # Regresión documental de un hallazgo real en vivo (2026-09-16, mens_fashion_alto): pasar
         # sólo el primer nombre ("Rocio") trajo resultados de DOS vendedores distintos ("Rocio Haro
-        # Leal" y "Rocio Vazquez Rivera") -ILIKE es coincidencia parcial, no exacta. Este test fija
-        # que el filtro efectivamente deja pasar coincidencias parciales (SQL/ILIKE, no un bug de
-        # nuestro lado) -la mitigación real vive en el prompt (pedir el nombre completo) y en la
-        # re-verificación del campo `vendedor` antes de citar, ninguna de las dos en este módulo.
+        # Leal" y "Rocio Vazquez Rivera") -ILIKE es coincidencia parcial, no exacta. Hasta el
+        # 2026-09-23 la única mitigación vivía en el prompt (pedir el nombre completo); ahora
+        # `search()` también lo detecta mecánicamente y lo dice en `aviso` -ver
+        # test_aviso_warns_when_employee_name_matches_multiple_people abajo- para no depender sólo
+        # de que el modelo se acuerde de chequear esto por SQL antes de buscar.
         rows = [
             ("rid1", 0, "Tienda A", "Rocio Haro Leal", None, "hola", "conv1", None, 0.20),
             ("rid2", 0, "Tienda B", "Rocio Vazquez Rivera", None, "chau", "conv2", None, 0.22),
@@ -377,6 +378,32 @@ class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
         self.assertIn("%Rocio%", params)
         vendedores = {r["vendedor"] for r in payload["resultados"]}
         self.assertEqual(vendedores, {"Rocio Haro Leal", "Rocio Vazquez Rivera"})
+
+    def test_aviso_warns_when_employee_name_matches_multiple_people(self) -> None:
+        rows = [
+            ("rid1", 0, "Tienda A", "Rocio Haro Leal", None, "hola", "conv1", None, 0.20),
+            ("rid2", 0, "Tienda B", "Rocio Vazquez Rivera", None, "chau", "conv2", None, 0.22),
+        ]
+        payload, _cursor = self._run_search(rows, employee_name="Rocio")
+        self.assertIn("varias personas distintas", payload["aviso"])
+        self.assertIn("Rocio Haro Leal", payload["aviso"])
+        self.assertIn("Rocio Vazquez Rivera", payload["aviso"])
+
+    def test_aviso_has_no_ambiguity_warning_when_employee_name_matches_one_person(self) -> None:
+        rows = [
+            ("rid1", 0, "Tienda A", "Rocio Haro Leal", None, "hola", "conv1", None, 0.20),
+            ("rid2", 0, "Tienda A", "Rocio Haro Leal", None, "chau", "conv2", None, 0.22),
+        ]
+        payload, _cursor = self._run_search(rows, employee_name="Rocio Haro Leal")
+        self.assertNotIn("varias personas distintas", payload["aviso"])
+
+    def test_aviso_has_no_ambiguity_warning_without_employee_name_filter(self) -> None:
+        rows = [
+            ("rid1", 0, "Tienda A", "Rocio Haro Leal", None, "hola", "conv1", None, 0.20),
+            ("rid2", 0, "Tienda B", "Rocio Vazquez Rivera", None, "chau", "conv2", None, 0.22),
+        ]
+        payload, _cursor = self._run_search(rows)
+        self.assertNotIn("varias personas distintas", payload["aviso"])
 
     def test_store_name_and_employee_name_combine_with_and(self) -> None:
         _, cursor = self._run_search(rows=[], store_name="Tlaquepaque", employee_name="Juan")
@@ -972,6 +999,32 @@ class SearchAppliesJudgeFilteringTests(_RedirectsUsageLogTestCase):
     def test_empty_results_short_circuit_still_returns_empty_list(self) -> None:
         payload = self._run_search_with_judge([], lambda q, r, **kw: [])
         self.assertEqual(payload["resultados"], [])
+
+    def test_aviso_includes_low_coverage_note_for_known_tenant(self) -> None:
+        # Atlas/Salomon tienen backfill de embeddings estructuralmente incompleto o desparejo por
+        # tienda (ver _LOW_EMBEDDING_COVERAGE_TENANTS, Iteración 42) -el modelo tiene que enterarse
+        # por `aviso` de que la muestra no representa a todas las conversaciones/tiendas por igual.
+        client = load_client_config("atlas_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        rows = [("rid1", 0, "Sendero Qro", "Vendedor A", None, "hola, buen día", "conv1", None, 0.20)]
+        cursor = _FakeCursor(rows)
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", return_value=[True]
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("conversaciones con insultos"))
+        self.assertIn("cobertura de embeddings", payload["aviso"])
+
+    def test_aviso_has_no_coverage_note_for_tenant_not_in_the_known_list(self) -> None:
+        payload = self._run_search_with_judge(
+            [("rid1", 0, "Tienda A", "Vendedor A", None, "sos un inútil", "conv1", None, 0.20)],
+            lambda q, r, **kw: [True],
+        )
+        self.assertNotIn("cobertura de embeddings", payload["aviso"])
 
 
 class AnalystNotesTests(unittest.TestCase):

@@ -498,6 +498,41 @@ def _extract_citable_conversations(tool_calls: list[dict]) -> list[dict]:
     return conversations
 
 
+def _extract_search_usage(tool_calls: list[dict]) -> dict:
+    """Lógica pura (sin `st`): ¿esta respuesta usó `search_conversations`? Cuántas veces, y qué
+    avisos de calidad de datos trajo -más allá del texto fijo "los fragmentos son una
+    reconstrucción aproximada" que aparece siempre y no aporta nada nuevo acá-. Pedido explícito de
+    Lucas (2026-09-22): poder darse cuenta, al usar el chat, de que una respuesta se apoyó en
+    búsqueda vectorial y no sólo en SQL -hoy ese dato sólo aparecía como el nombre técnico
+    `search_conversations` dentro de `_render_tool_summary`, mezclado con las demás tools y fácil
+    de pasar por alto. También surge acá, por primera vez visible para quien lee la respuesta (antes
+    sólo viajaba en el JSON que ve el modelo), cualquier aviso de calidad de datos que la tool haya
+    agregado -ej. la nota de cobertura de embeddings baja para Atlas/Salomon, ver
+    `_LOW_EMBEDDING_COVERAGE_TENANTS` en vector_search.py, Iteración 42."""
+    count = 0
+    avisos: list[str] = []
+    for call in tool_calls:
+        if call.get("name") != "search_conversations" or call.get("error"):
+            continue
+        count += 1
+        try:
+            payload = json.loads(call.get("result") or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        aviso = payload.get("aviso")
+        if not isinstance(aviso, str):
+            continue
+        # La primera parte (separada por "; ") es siempre el texto fijo de reconstrucción
+        # aproximada -no aporta nada nuevo, se omite para no repetir lo obvio en cada respuesta.
+        partes = [p.strip() for p in aviso.split(";")]
+        for parte in partes[1:]:
+            if parte and parte not in avisos:
+                avisos.append(parte)
+    return {"used": count > 0, "count": count, "avisos": avisos}
+
+
 def _format_conversation_date(fecha: object) -> str:
     """Convierte la fecha ISO cruda que devuelve search_conversations (ej.
     "2026-07-25T20:53:37.809000+00:00") a un formato legible ("25/07/2026 20:53") para el panel de
@@ -575,6 +610,22 @@ def _render_audio_players(tool_calls: list[dict], message_key: str) -> None:
                     st.caption("No se pudo cargar el audio de esta conversación.")
 
 
+def _render_vector_search_badge(tool_calls: list[dict]) -> None:
+    """Aviso liviano, SIEMPRE visible, cuando `search_conversations` aportó a esta respuesta -ver
+    `_extract_search_usage` para el motivo (pedido explícito de Lucas, 2026-09-22). Complementa a
+    `_render_tool_summary` (ese caption ya lo decía con el nombre técnico de la tool, pero sin
+    destacarlo ni mostrar los avisos de calidad de datos que trajo)."""
+    info = _extract_search_usage(tool_calls)
+    if not info["used"]:
+        return
+    label = "🔎 Esta respuesta se apoya en búsqueda semántica sobre conversaciones reales"
+    if info["count"] > 1:
+        label += f" ({info['count']} búsquedas)"
+    st.caption(label)
+    for aviso in info["avisos"]:
+        st.caption(f"⚠️ {aviso}")
+
+
 def _render_message(
     content: str,
     charts: list[dict],
@@ -589,6 +640,7 @@ def _render_message(
     for chart in charts:
         _render_chart(chart)
     if tool_calls:
+        _render_vector_search_badge(tool_calls)
         _render_tool_summary(tool_calls)
         if debug:
             _render_debug_trace(tool_calls)
