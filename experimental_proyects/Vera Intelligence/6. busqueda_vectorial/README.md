@@ -2234,3 +2234,32 @@ cada línea es redundante).
   viñeta" de forma ciega.
 - 543/543 tests sin cambios (regla de prosa libre, mismo criterio que la Iteración 48: se verifica
   en vivo, no hay assert posible sobre el formato exacto que elige el modelo).
+
+### Iteración 50 (2026-09-23, mismo día): título+etiqueta fusionados en una sola oración, y "base evaluada" como párrafo repetido -2 bugs visuales, uno de ellos ajeno a la búsqueda
+
+Feedback en vivo de Lucas con captura real, sobre la Iteración 49: dos problemas en la misma
+respuesta.
+
+1. **Título de sección + etiqueta fusionados**: la Iteración 49 decía "dejá que el título ya
+   cumpla ese rol" COMO ALTERNATIVA a la etiqueta, pero el modelo hizo las dos cosas a la vez,
+   pegadas en la misma oración: "**Patrones cualitativos observados: En conversaciones reales:**
+   ..." -se leía como un título roto, doble marca en vez de una señal clara. La regla no era
+   explícita sobre que son alternativas EXCLUYENTES, no acumulables.
+   - **Cambio**: `vi_agent.py`, misma regla "MARCAR VISIBLEMENTE QUÉ SALE DE ACÁ" -ahora dice
+     explícitamente que si hay título de sección, la etiqueta NO va pegada después (ni al título ni
+     al párrafo que sigue): usar sólo (a) título inequívoco sin etiqueta, o (b) etiqueta sin título,
+     nunca ambas concatenadas.
+2. **"Base evaluada" como párrafo repetido, ajeno al pedido de esta sesión sobre búsqueda
+   vectorial pero visible en la misma captura**: 8 líneas seguidas de "Base evaluada de los
+   indicadores citados: N conversaciones." con la MISMA frase de relleno para cada criterio,
+   ilegible -no decía a qué criterio correspondía cada número, sólo los números sueltos en fila.
+   - **Cambio**: `vi_agent.py`, la regla de `base_evaluada` (línea ~332) ahora exige que la base
+     vaya SIEMPRE integrada en la misma línea/viñeta que su cifra ("cierre de venta: 45% (85 de 186
+     evaluadas)"), nunca como oración aparte ni como lista de oraciones repetidas con la misma frase
+     de relleno.
+- **Verificado en vivo con una pregunta diseñada para reproducir ambos patrones** (ranking de
+  tiendas por tasa de "no solución ante falta de producto" + "qué patrones cualitativos hay
+  detrás", `mens_fashion_alto`): la base salió integrada en cada línea del ranking ("19 de 22
+  conversaciones evaluadas con falta"), sin párrafo repetido, y el título "Patrones cualitativos
+  observados" quedó solo, sin la etiqueta pegada -corregidos ambos en la misma corrida.
+- 543/543 tests sin cambios (ambas son reglas de formato de prosa libre).
