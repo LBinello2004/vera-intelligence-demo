@@ -2179,3 +2179,35 @@ de NÚMEROS también podrían enriquecerse con búsqueda vectorial. Se probaron 
   contra usar la búsqueda para números sigue siendo la decisión correcta -el valor de "más
   información" en preguntas numéricas ya se resuelve por la vía del "por qué", no ampliando cuándo
   se dispara la búsqueda en sí. 543/543 tests sin cambios.
+
+### Iteración 48 (2026-09-23): la etiqueta "En conversaciones reales:" hace visible, oración por oración, qué sale de la búsqueda
+
+Pedido explícito de Lucas, con evidencia real: pegó una respuesta de la demo ya desplegada (con el
+badge 🔎 de la Iteración 43 funcionando) y aun así dijo "no entiendo dónde entra la búsqueda
+vectorial". El badge confirma QUE se usó, pero no dónde -la respuesta mezclaba números de SQL
+("43.9%", "533 conversaciones") con el contenido de la búsqueda en el mismo párrafo, con la única
+marca textual ("en las conversaciones revisadas se observa que...") enterrada a mitad de oración,
+invisible en una lectura rápida de gerente.
+
+- **Cambio**: `vi_agent.py`, `SYSTEM_INSTRUCTION_TEMPLATE`, nueva regla "MARCAR VISIBLEMENTE QUÉ
+  SALE DE ACÁ" en la sección `LEER LOS RESULTADOS` (aplica a todas las secciones que usan la tool:
+  POR QUÉ, BÚSQUEDA DE PATRONES, EQUIPO EN UN PERÍODO): cada oración o viñeta que use
+  'notas'/'patrones' de `search_conversations` tiene que EMPEZAR con la etiqueta fija en negrita
+  **"En conversaciones reales:"**, nunca intercalada a mitad de párrafo ni disuelta en la misma
+  oración que un número de SQL. El bloque de coaching por situación queda exceptuado -ya tiene su
+  propia etiqueta en negrita equivalente ("**Cuando [situación]**").
+- **Verificado en vivo, mismo caso real que reportó Lucas** (`mens_fashion_alto`, "¿hay algo que los
+  clientes están pidiendo que hoy no estemos resolviendo?"): la respuesta ahora separa
+  explícitamente "1. Fricciones dominantes" y "2. Detalle de producto" (100% SQL, con conteos) de
+  una sección nueva "3. Hallazgos cualitativos en la interacción con el cliente", con cada viñeta
+  arrancando "**En conversaciones reales:** ...". Ya no hace falta leer con atención para notar la
+  diferencia -salta a la vista en el markdown renderizado.
+- Sin tests nuevos -es una regla de formato de prosa libre del modelo, mismo criterio que el resto
+  de las reglas de `SYSTEM_INSTRUCTION_TEMPLATE` no fijadas por assert exacto (se verifica en vivo,
+  no hay forma de testear con mocks que el modelo real siga un formato de texto). 543/543 tests
+  existentes sin cambios (no se tocó código, sólo el prompt).
+- **Balance**: con el badge 🔎 (Iteración 43, "SÍ se usó búsqueda en esta respuesta") y esta etiqueta
+  (Iteración 48, "ACÁ ESPECÍFICAMENTE es donde se usó"), la transparencia sobre el uso de la
+  búsqueda vectorial pasa de una sola señal global a una señal global + una señal local por cada
+  afirmación -exactamente lo que le faltaba al primer intento para responder la pregunta real de
+  Lucas.
