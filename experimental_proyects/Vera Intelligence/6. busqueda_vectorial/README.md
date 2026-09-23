@@ -2263,3 +2263,174 @@ respuesta.
   conversaciones evaluadas con falta"), sin párrafo repetido, y el título "Patrones cualitativos
   observados" quedó solo, sin la etiqueta pegada -corregidos ambos en la misma corrida.
 - 543/543 tests sin cambios (ambas son reglas de formato de prosa libre).
+
+### Iteración 51 (2026-09-23, mismo día): "SIN GRÁFICOS EN COACHING" no se disparaba si la pregunta no decía la palabra "coaching"
+
+Pedido explícito de Lucas: seguir mejorando el funcionamiento general de Vera Intelligence, no sólo
+la búsqueda vectorial puntualmente. Auditando las propias transcripciones guardadas de esta sesión
+(no una prueba nueva, releer lo ya generado) apareció una violación real de una regla existente
+desde el 2026-09-21: "SIN GRÁFICOS EN COACHING" dice que una respuesta de coaching individual nunca
+debe incluir un bloque `vera-chart` salvo pedido explícito. Dos transcripciones de HOY la violaban:
+"¿Cómo está Ubaldo Ramos en general?" (Iteración 46) y la comparación "Ubaldo Ramos contra Gabriel
+Villaseñor" (Iteración 45) -ambas con el bloque de coaching por situación ("Cuando el cliente
+consulta precio... Un compañero...") Y un `vera-chart` al final, cuando debería haber sido uno u
+otro.
+
+- **Causa raíz**: la regla original disparaba por la PALABRA "coaching" en la pregunta, no por el
+  CONTENIDO de la respuesta -ninguna de las 2 preguntas reales decía "coaching" explícitamente
+  ("cómo está", "cómo se compara"), así que el modelo no la asoció, aunque terminó generando
+  igual el bloque de coaching por situación.
+- **Cambio**: `vi_agent.py`, la regla ahora dice explícitamente que se dispara por el CONTENIDO -si
+  la respuesta incluye el bloque de coaching por situación (el patrón "Cuando [situación]...") para
+  uno o más vendedores, sin importar si la pregunta usó la palabra "coaching" o no.
+- **Verificado en vivo, 2 corridas nuevas del mismo caso real** ("¿Cómo está Ubaldo Ramos en
+  general?", `mens_fashion_alto`): ambas dispararon `search_conversations` y ninguna generó
+  `vera-chart` -antes, la misma pregunta sí lo había generado. El caso de comparación entre 2
+  vendedores no volvió a disparar la búsqueda en 3 corridas adicionales (varianza normal del
+  modelo, ya documentada en la Iteración 45), así que no se pudo re-confirmar en vivo el mismo
+  escenario exacto con chart+coaching simultáneos, pero la regla ahora cubre ese caso por
+  construcción igual que el de Ubaldo.
+- 543/543 tests sin cambios (regla de prosa libre). **No commiteado todavía** -pedido explícito de
+  Lucas de seguir iterando antes de subir nada.
+- **Por qué importa**: es la primera vez en esta sesión que el hallazgo salió de auditar
+  transcripciones YA GUARDADAS de pruebas anteriores en vez de diseñar una pregunta nueva -un
+  recordatorio de que vale la pena releer lo que ya se generó, no sólo generar casos nuevos.
+
+### Iteración 52 (2026-09-23, mismo día): una tasa no pedida, mal verificada, tiraba abajo toda la respuesta -incluido el contenido cualitativo válido
+
+Pedido explícito de Lucas: seguir mejorando, y pensar cómo -sin darle una dirección puntual, se
+decidió seguir el método que acababa de dar resultado (Iteración 51): generar preguntas nuevas en
+escenarios sin probar todavía (varios vendedores a la vez, tendencia de período largo con porqué,
+cliente de "schema delgado") y auditar el resultado.
+
+- **3 escenarios nuevos probados**: (1) "Dame un plan de coaching para los 3 vendedores con peor
+  tasa de cierre" (`mens_fashion_alto`) → 3 llamadas a `search_conversations` (una por vendedor,
+  como documenta VARIOS VENDEDORES A LA VEZ), 0 gráficos -la corrección de la Iteración 51 se
+  sostiene también con 3 personas a la vez, cada una con su bloque de coaching por situación
+  completo y distinto, sin genericidad entre ellas-. (2) "¿Cómo evolucionó el desempeño del equipo
+  en cierre en los últimos 3 meses y por qué?" → 1 búsqueda + 1 gráfico de tendencia -correcto, no
+  es coaching individual ni de equipo, es una tendencia con causa raíz-. Ambos sin hallazgos nuevos,
+  el diseño ya cubre bien esos casos.
+- **Hallazgo real, el tercer escenario**: (3) "¿Qué quejas u objeciones repiten los clientes que no
+  compran?" contra `salomon_alto` (schema delgado) terminó devolviendo el fallback genérico "No pude
+  verificar las cifras con suficiente respaldo..." -PESE a que la búsqueda semántica ya había
+  encontrado notas reales y válidas que respondían la pregunta perfectamente. Causa raíz: el modelo,
+  sin que la pregunta lo pidiera, intentó calcular por su cuenta una "tasa de manejo de objeciones"
+  como contexto adicional; esa cifra derivada falló la verificación de evidencia 3 veces seguidas
+  (`MAX_EVIDENCE_REPAIRS=2` + el intento inicial) y, al agotarse los reintentos, `vi_agent.py`
+  descarta la respuesta COMPLETA -no sólo el número fallido-, perdiendo también el contenido
+  cualitativo ya verificado y correcto.
+- **Cambio**: `vi_agent.py`, nueva regla en "VERIFICACIÓN DE CIFRAS Y SUFICIENCIA": no calcular una
+  tasa/porcentaje que la pregunta no pidió sólo para "dar contexto" -un número de más, mal
+  verificado, puede tirar abajo una respuesta que ya estaba bien resuelta sin él. Preferí un conteo
+  simple ya resuelto en la consulta (sin fórmula derivada que exija su propio bloque de evidencia)
+  antes que una tasa nueva no solicitada.
+- **Verificado en vivo, mismo caso real que falló** (reintentado tras un error transitorio de red no
+  relacionado): la misma pregunta contra `salomon_alto` ahora resuelve con UNA sola búsqueda, sin
+  intentar ninguna tasa innecesaria, entregando los 4 patrones cualitativos completos (quiebres de
+  stock por talla, preferencia de color/variantes, restricciones de presupuesto, tipologías no
+  disponibles) donde antes fallaba por completo.
+- 543/543 tests sin cambios (regla de prosa/comportamiento, no de código verificable por mock).
+  **No commiteado todavía** -pedido explícito de Lucas de seguir iterando antes de subir nada.
+- **Por qué importa más que los hallazgos de formato de las Iteraciones 48-51**: este no era un
+  problema estético (una etiqueta repetida, un gráfico de más) sino una FALLA TOTAL DE LA
+  RESPUESTA -el usuario no recibía nada útil pese a que el sistema ya tenía la respuesta correcta en
+  mano. Es el hallazgo de mayor impacto de todo el bloque de auditoría de esta sesión.
+
+### Iteración 53 (2026-09-23, mismo día): 5 escenarios más auditados -sin hallazgos nuevos
+
+Pedido explícito de Lucas: seguir auditando. 5 escenarios nuevos contra `mens_fashion_alto` y
+`farma24_alto`, elegidos por no haberse probado todavía end-to-end en esta sesión:
+
+1. **Pregunta técnica + negocio mezclada** ("¿qué modelo de IA usás, y cuál es la tasa de cierre del
+   equipo?") → ignoró la parte técnica, respondió sólo el número de negocio. Sin hallazgos.
+2. **Nombre ambiguo real en un pedido de coaching** ("Dame coaching de Rocio" -2 personas reales,
+   Rocio Haro Leal y Rocio Vazquez Rivera, hallazgo documentado desde 2026-09-16) → el modelo
+   consultó SQL primero, detectó la ambigüedad y **pidió aclaración en vez de mezclar a las dos o
+   adivinar**. Primera vez que se prueba este flujo completo de punta a punta (antes sólo el
+   mecanismo de detección a nivel de código, Iteración 44). Sin hallazgos.
+3. **Pregunta cross-cliente** ("¿cómo le va a Roberts comparado con nosotros?", desde una sesión de
+   Mens Fashion) → declaró explícitamente que no tiene acceso a datos de Roberts, y reencuadró la
+   pregunta de forma honesta usando un campo propio de Mens Fashion (menciones de competencia en sus
+   propias conversaciones) -aislamiento respetado con una solución útil, no un simple rechazo. Sin
+   hallazgos.
+4. **Saludo simple** ("Hola, ¿cómo estás?") → 0 tool calls, respuesta breve. Sin hallazgos.
+5. **Coaching individual en Farma24** (dominio de farmacia, no probado en todo el día -sólo
+   `mens_fashion_alto`) → 1 búsqueda, 0 gráficos (regla de la Iteración 51 se sostiene), contenido
+   cualitativo específico del dominio (complementos terapéuticos, no ropa). Confirma que las
+   correcciones de hoy generalizan a otro cliente/dominio. Sin hallazgos.
+
+Además, un sexto caso puntual ("recomendación al equipo" sin mencionar coaching individual) también
+salió limpio: 1 búsqueda, 0 gráficos. Sin cambios de código en esta iteración -es un registro
+positivo de auditoría, mismo criterio que la Iteración 45.
+
+### Iteración 54 (2026-09-23, mismo día): el bug real detrás de la Iteración 50 vivía en el código, no sólo en el prompt
+
+Pedido explícito de Lucas: auditar otra área distinta. Se revisó `answer_verification.py` (el
+validador de cifras en sí, código Python, no texto de prompt) en vez de seguir generando
+transcripciones nuevas -motivado por la sospecha de que la Iteración 50 (fix de prompt para el
+párrafo repetido de "Base evaluada...") podía no haber tocado la causa raíz real.
+
+- **Confirmado**: la función `verify_answer()` tiene un fallback (línea ~413, agregado 2026-09-21)
+  que, cuando un porcentaje citado no trae su base declarada en el bloque de evidencia, busca en el
+  mismo SQL una columna de conteo y la usa como base -pero el bucle recorre TODAS las filas de TODOS
+  los payloads, y antes agregaba una línea de `verdict.limitations` **por cada fila calificada**. Con
+  un patrón UNION ALL (una fila por criterio, muy común en este proyecto -ver las consultas de 20
+  criterios de Mens Fashion), cada fila generaba su propia línea casi idéntica, sólo distinta en el
+  número -exactamente el bug de la captura de pantalla de Lucas ("Base evaluada de los indicadores
+  citados: 186 conversaciones. Base evaluada de los indicadores citados: 123 conversaciones....").
+  El dedup final (`list(dict.fromkeys(...))`) no las colapsaba porque el número es distinto en cada
+  una. La Iteración 50 (regla de prompt "formatear la base en línea") reduce cuándo se LLEGA a este
+  fallback -si el modelo declara bien sus bases, nunca se ejecuta-, pero no lo elimina: si el modelo
+  no declara la base, este código seguía reproduciendo el bug exacto sin que ningún cambio de prompt
+  pudiera evitarlo.
+- **Cambio**: el fallback ahora junta todos los valores encontrados en una lista y emite UNA sola
+  oración al final -"Base evaluada de los indicadores citados: N conversaciones." si es un solo
+  valor (igual que antes, no rompe el caso simple ya testeado), o "...respectivamente: N1, N2, N3
+  conversaciones." si son varios.
+- 1 test nuevo (`test_multiple_rows_needing_fallback_base_produce_a_single_limitation`, reproduce el
+  patrón UNION ALL con 2 filas/criterios) + 1 test existente sin cambios de comportamiento
+  (`test_count_column_with_other_name_becomes_the_base_without_error`, caso de un solo valor).
+  544/544 tests en verde.
+- **Por qué importa**: es la primera vez en esta sesión que una auditoría de CÓDIGO (no de
+  transcripciones ni de prompt) encuentra la causa raíz real de un bug que un fix de prompt sólo
+  había mitigado parcialmente -sin esto, el bug seguía latente para cualquier pregunta donde el
+  modelo no declarara bien sus bases, sin importar cuánto se afinara el prompt.
+- **No commiteado todavía** -pedido explícito de Lucas de seguir iterando antes de subir nada.
+
+### Iteración 55 (2026-09-23, mismo día): 2 nombres de campo de Steren no bloqueados por el filtro de identificadores internos
+
+Pedido explícito de Lucas: auditar otra área distinta. Se revisó el mecanismo de caja negra que
+evita que un identificador físico interno llegue a la respuesta final -`_is_internal_identifier`/
+`_load_internal_identifiers` en `vi_agent.py`-, motivado por haber tocado el Data Map de Steren hoy
+mismo (auditoría de la mañana, Data Map V2) sin haber vuelto a correr la validación exhaustiva que
+sostiene este mecanismo.
+
+- **Contexto del mecanismo**: `_load_internal_identifiers` sólo necesita cubrir nombres de
+  campo/fuente SIN guion bajo (los que sí lo tienen ya los atrapa `_SNAKE_CASE` en
+  `response_policy.py`), usando un umbral de longitud (`_NATURAL_WORD_MAX_LENGTH = 12`) validado en
+  2026-09-09 contra los 19 Data Maps de ese momento -"ningún nombre corto que debiera bloquearse
+  quedó sin bloquear". Esa afirmación quedó desactualizada: el proyecto agregó clientes (incluido
+  Steren) después de esa validación, y nadie volvió a correrla.
+- **Hallazgo**: escaneando TODOS los Data Maps actuales por nombres de campo/fuente sin guion bajo
+  de ≤12 caracteres, aparecieron 20 nombres distintos -18 son vocabulario de negocio natural
+  correcto ("marca", "talla", "categoria", "sentimiento", etc.), pero 2 son de Steren y son
+  claramente comprimidos, no palabras que alguien diría en una charla real: **"secompro"** (8
+  caracteres, "¿se compró?" sin espacio) y **"motivocompra"** (12 caracteres exactos, justo en el
+  límite del umbral ">12" -"motivo de compra" sin espacios ni preposición-). Ninguno de los dos
+  pasaba el filtro: si el modelo alguna vez los escribe tal cual en una respuesta sobre Steren
+  (parafraseando mal, o citando el criterio por su nombre interno por error), el mecanismo de caja
+  negra no lo habría detectado ni disparado una reescritura.
+- **Cambio**: `vi_agent.py`, `_FORCE_BLOCK_SHORT_IDENTIFIERS` -la válvula de escape que el propio
+  código ya preveía para exactamente este caso- pasa de vacía a `{"secompro", "motivocompra"}`.
+- **Tests**: actualizado el invariante existente (`AllClientsIdentifierLengthInvariantTests`) para
+  que la excepción declarada a propósito no cuente como "bloqueo no intencional" (seguía protegiendo
+  contra el caso real: una palabra corta nueva bloqueada por accidente). 1 test nuevo
+  (`test_steren_short_compound_field_names_are_force_blocked`) confirma que ambos términos ahora
+  disparan `client_answer_violations`. 545/545 tests en verde.
+- **Por qué importa**: es un hallazgo de la misma familia que la Iteración 54 -una garantía de
+  seguridad/caja negra que dependía de una validación puntual en el tiempo (2026-09-09) que quedó
+  desactualizada al crecer el proyecto, sin que ningún test lo hubiera detectado hasta correr el
+  escaneo completo hoy. El propio mecanismo ya tenía la válvula de escape prevista para esto -sólo
+  hacía falta usarla.
+- **No commiteado todavía** -pedido explícito de Lucas de seguir iterando antes de subir nada.

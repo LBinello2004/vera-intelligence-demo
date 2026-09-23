@@ -407,6 +407,31 @@ class NaturalBusinessWordsRegressionTests(unittest.TestCase):
             ["identificadores internos"],
         )
 
+    def test_steren_short_compound_field_names_are_force_blocked(self) -> None:
+        """Hallazgo real (2026-09-23, auditoría de identificadores internos): "secompro" (8
+        caracteres) y "motivocompra" (12, justo en el límite ">12" del umbral general) son
+        nombres de campo comprimidos de Steren -no vocabulario de negocio natural, nadie los
+        diría así en una charla real- que quedaban por debajo del umbral de longitud y no se
+        bloqueaban antes de agregarlos a `_FORCE_BLOCK_SHORT_IDENTIFIERS`."""
+        client = load_client_config("steren_alto")
+        identifiers = vi_agent._load_internal_identifiers(client.data_map_path)
+        self.assertIn("secompro", identifiers)
+        self.assertIn("motivocompra", identifiers)
+        self.assertEqual(
+            client_answer_violations(
+                "El producto fue secompro en la mayoría de los casos.",
+                internal_identifiers=identifiers,
+            ),
+            ["identificadores internos"],
+        )
+        self.assertEqual(
+            client_answer_violations(
+                "El motivocompra más frecuente fue precio.",
+                internal_identifiers=identifiers,
+            ),
+            ["identificadores internos"],
+        )
+
 
 class AllClientsIdentifierLengthInvariantTests(unittest.TestCase):
     """Prueba, contra los 19 Data Maps reales a la vez (no casos elegidos a mano), el invariante
@@ -418,11 +443,20 @@ class AllClientsIdentifierLengthInvariantTests(unittest.TestCase):
     `_FORCE_BLOCK_SHORT_IDENTIFIERS`, no bajar el umbral general sin volver a mirar los 19 casos."""
 
     def test_no_client_blocks_a_short_no_underscore_identifier(self) -> None:
+        # Excepción explícita (2026-09-23): "secompro"/"motivocompra" (Steren) están en
+        # `_FORCE_BLOCK_SHORT_IDENTIFIERS` a propósito -son nombres de campo comprimidos, no
+        # vocabulario de negocio natural, ver el comentario junto a esa válvula de escape en
+        # vi_agent.py. El invariante sigue protegiendo contra un bloqueo NO intencional de una
+        # palabra corta nueva; una excepción declarada a propósito no cuenta como tal.
         for client_id in available_client_ids():
             with self.subTest(client_id=client_id):
                 client = load_client_config(client_id)
                 identifiers = vi_agent._load_internal_identifiers(client.data_map_path)
-                too_short = [word for word in identifiers if len(word) <= vi_agent._NATURAL_WORD_MAX_LENGTH]
+                too_short = [
+                    word for word in identifiers
+                    if len(word) <= vi_agent._NATURAL_WORD_MAX_LENGTH
+                    and word not in vi_agent._FORCE_BLOCK_SHORT_IDENTIFIERS
+                ]
                 self.assertEqual(
                     too_short, [], f"{client_id}: identificador(es) corto(s) bloqueado(s) sin querer"
                 )

@@ -339,6 +339,28 @@ class BaseFromSqlRowTests(unittest.TestCase):
         add_result(s, {"columns": ["tasa_cierre"], "rows": [[13.9]]})
         self.assertTrue(any("porcentaje sin base" in e for e in verify_answer("El cierre es 13.9%.", s).errors))
 
+    def test_multiple_rows_needing_fallback_base_produce_a_single_limitation(self):
+        # Bug real (2026-09-23, reportado por Lucas con captura de pantalla): una consulta con un
+        # criterio por fila (patrón UNION ALL, muy común en este proyecto -una fila por criterio, en
+        # vez de una columna por criterio) generaba una línea de limitations POR FILA calificada
+        # -"Base evaluada de los indicadores citados: 186 conversaciones. Base evaluada de los
+        # indicadores citados: 123 conversaciones...." repetido 8 veces, ilegible. Debe quedar UNA
+        # sola oración con todos los valores encontrados.
+        s = {}
+        add_result(s, {
+            "columns": ["criterio", "tasa", "total_conversaciones"],
+            "rows": [
+                ["Trato amable", 95.8, 186],
+                ["Cierre de venta", 44.9, 123],
+            ],
+        })
+        v = verify_answer("Trato amable: 95.8%. Cierre de venta: 44.9%.", s)
+        self.assertFalse(v.errors)
+        limitation_lines = [l for l in v.limitations if "Base evaluada" in l]
+        self.assertEqual(len(limitation_lines), 1)
+        self.assertIn("186", limitation_lines[0])
+        self.assertIn("123", limitation_lines[0])
+
 
 class ConfidentLanguageTests(unittest.TestCase):
     """CONFIDENT (2026-09-22): "definitiv[oa]" se sacó del patrón -encontrado investigando un

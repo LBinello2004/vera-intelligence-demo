@@ -415,6 +415,18 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
             # cantidad entera positiva con nombre de conteo (evaluad*, total, cantidad, n_*,
             # conversaciones...), esa es la base -se informa acá, en código, en vez de gastar una
             # llamada completa al modelo principal para que la agregue.
+            # CORREGIDO (2026-09-23, bug real reportado por Lucas con captura de pantalla -"Base
+            # evaluada de los indicadores citados: 186 conversaciones. Base evaluada de los
+            # indicadores citados: 123 conversaciones...." repetido 8 veces): este bucle recorre
+            # TODAS las filas de TODOS los payloads, y antes agregaba una línea de limitations POR
+            # FILA calificada -con una consulta de 8 criterios (una fila por criterio, patrón UNION
+            # ALL muy común en este proyecto), cada fila con su propio N generaba su propia línea. El
+            # dedup final (`list(dict.fromkeys(...))`) no las colapsa porque el N es distinto en cada
+            # una -8 oraciones casi idénticas, ilegible. La corrección de prompt de la Iteración 50
+            # (formatear la base en línea) reduce cuándo se llega a este fallback, pero no lo
+            # elimina: si el modelo no declaró la base en su bloque de evidencia, este código sigue
+            # siendo el que la aporta, y debe hacerlo UNA sola vez, no una por fila.
+            fallback_bases: list[int] = []
             for payload in active_store.values():
                 for row in rows_of(payload):
                     if not any(
@@ -432,8 +444,14 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
                             and cell > 0 and cell == int(cell)
                         ):
                             positive.append(number(cell))
-                            verdict.limitations.append(f"Base evaluada de los indicadores citados: {int(cell)} conversaciones.")
+                            if int(cell) not in fallback_bases:
+                                fallback_bases.append(int(cell))
                             break
+            if len(fallback_bases) == 1:
+                verdict.limitations.append(f"Base evaluada de los indicadores citados: {fallback_bases[0]} conversaciones.")
+            elif fallback_bases:
+                listado = ", ".join(str(n) for n in fallback_bases)
+                verdict.limitations.append(f"Base evaluada de los indicadores citados, respectivamente: {listado} conversaciones.")
         if not positive:
             if any("%" in raw and any(matches(raw, value) for value in percentages) for raw in cited):
                 # Un porcentaje sin su base no se publica (pedido explícito 2026-09-21): el error
