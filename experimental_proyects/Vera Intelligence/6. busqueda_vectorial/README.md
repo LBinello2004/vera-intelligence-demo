@@ -2545,3 +2545,26 @@ sostiene este mecanismo.
   `hubo_ofrecimiento_complementarios` como fuente primaria pero la pregunta es sobre el campo del
   checklist; el modelo consulta ambas y agrega cifras derivadas difíciles de respaldar.
 
+### Iteración 60 — Pendientes de Mens Fashion (2026-09-24)
+
+- **q30 (cashback "mecánica completa")**: NO era un error del agente sino un banco desactualizado. El
+  checklist v10 vigente marca `VendedorInformoCashback = Sí` con CUALQUIER mención explícita al cashback
+  (sin exigir porcentaje ni mecánica; verificado leyendo el rulebook `sales_evaluation` v10). El agente
+  lo decía bien; la pregunta suponía el checklist v9 (5 componentes, cruce 80/805). Banco actualizado:
+  nuevos `requisitos`, `respuesta_esperada` y `sql_verdad` (distribución de conducta entre las 2.276
+  conversaciones analizables donde el vendedor mencionó primero el cashback).
+- **q19 (fallbacks esporádicos)**: causa confirmada -la regla `ofrecimiento_complementarios_dual_source`
+  (V6) mandaba usar siempre `hubo_ofrecimiento_complementarios`, pero la pregunta era sobre el
+  cumplimiento del vendedor; el modelo presentaba las DOS fuentes y agregaba cifras derivadas sin
+  respaldo. **`VI Data Map Mens Fashion V10.yaml`** (promovido): elegir UNA fuente según lo que pide la
+  pregunta (cumplimiento del vendedor -> checklist; hecho comercial -> insights). Menciones de la segunda
+  fuente en las respuestas: 3 de 8 (V9) -> 1 de 8 (V10); fallbacks 0 de 11 corridas con V10.
+- **q25 y q21**: la "verdad" numérica no aplica (q25: la respuesta correcta es la advertencia sobre la
+  cascada N/A rota, no un conteo; q21: el ranking depende del piso de volumen elegido). Se marcaron
+  `cobertura_no_aplica: true` en el banco (soportado por `golden_groundtruth_eval.py`) y se revisaron a
+  mano: q25 advierte la inconsistencia de la cascada, q21 nombra primero a Jorge Javier Martínez Blanco
+  como en `respuesta_esperada`.
+- **Hallazgo aparte, sin resolver**: 2 de ~30 corridas devolvieron "No pude acceder a la información
+  necesaria en este momento" (`OperationalUnavailable`, `business_rules.py`) al inicio de un proceso; se
+  ve con corridas paralelas y es transitorio, pero conviene revisarlo si aparece en producción.
+

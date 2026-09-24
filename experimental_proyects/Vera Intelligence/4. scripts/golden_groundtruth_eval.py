@@ -173,7 +173,7 @@ def main() -> int:
             broken.append(question["id"])
             print(f"  SQL_ROTO {question['id']}: {str(last_error).splitlines()[0][:100]}", flush=True)
             continue
-        expected_ints, expected_pcts = expected_numbers(rows)
+        expected_ints, expected_pcts = (set(), set()) if question.get("cobertura_no_aplica") else expected_numbers(rows)
         for run in range(args.runs):
             try:
                 answer = vi_agent.run_tool_loop(

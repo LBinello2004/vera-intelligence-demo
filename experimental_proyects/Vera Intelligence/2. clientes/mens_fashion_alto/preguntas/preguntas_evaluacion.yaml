@@ -427,7 +427,8 @@ preguntas:
   # categórica+descriptiva, y un periodo de fecha explícito.
 
   - id: q21_peores_vendedores_cumplimiento_general
-    pregunta: ¿Quiénes son mis tres peores vendedores en términos de rendimiento?
+    pregunta: ¿Quiénes son mis tres peores vendedores en términos de rendimiento?
+    cobertura_no_aplica: true  # la respuesta correcta es cualitativa/de ranking: los números dependen del piso de volumen o de la advertencia; se revisa a mano
     fuentes_requeridas: [performance]
     requisitos:
     - 'Rendimiento "general" implica agregar sobre TODOS los criterios vigentes del checklist (25
@@ -576,7 +577,8 @@ preguntas:
 
   - id: q25_cascada_na_confeccion_medida
     es_trampa: true
-    pregunta: ¿En cuántas conversaciones el vendedor no destacó las ventajas de la confección a medida, teniendo la oportunidad real de hacerlo?
+    pregunta: ¿En cuántas conversaciones el vendedor no destacó las ventajas de la confección a medida, teniendo la oportunidad real de hacerlo?
+    cobertura_no_aplica: true  # la respuesta correcta es cualitativa/de ranking: los números dependen del piso de volumen o de la advertencia; se revisa a mano
     fuentes_requeridas: [performance]
     requisitos:
     - 'TRAMPA / HALLAZGO GRAVE DE CALIDAD DE DATOS (2026-08-31): el checklist define que
@@ -683,16 +685,11 @@ preguntas:
   - id: q30_cruce_cashback_checklist_vs_insights
     es_trampa: true
     pregunta: De las conversaciones donde el vendedor mencionó el cashback, ¿en cuántas informó correctamente la mecánica completa del 20%?
+    cobertura_no_aplica: true  # la respuesta correcta es aclarar que el criterio v10 ya no mide la mecánica; las cifras de conducta son opcionales
     fuentes_requeridas: [categorical_insights, performance]
     requisitos:
-    - 'TRAMPA sutil: "mencionó el cashback" (insights.primer_mencion_cashback=''vendedor'', un criterio
-      amplio y binario) NO es lo mismo que "informó correctamente la mecánica completa del 20%"
-      (performance.vendedorinformocashback20porciento=''Sí'', que exige los 5 componentes exactos del
-      checklist). Cruzarlos por conversation_id da sólo 80 de 805 (9.9%) — un agente que no distinga
-      ambos criterios podría reportar el mismo número para las dos preguntas, o confundir "mencionar"
-      con "informar completo".'
-    - Requiere JOIN entre categorical_insights y performance por conversation_id (ambas vistas usan
-      seller_id como tenant_field, mismo profile standard_conversation).
+    - 'ACTUALIZADO 2026-09-24 (la pregunta original suponía el checklist v9, que exigía comunicar la dinámica de 5 componentes del cashback 20%): en el checklist v10 vigente, VendedorInformoCashback = "Sí" con CUALQUIER mención explícita al cashback, sin exigir porcentaje ni mecánica (ver Data Map V9+, changes_from_v6, y el rulebook sales_evaluation v10). Ya NO existe un indicador de "mecánica completa": el agente debe decirlo, no presentar el cruce viejo (80 de 805) ni un porcentaje de "mecánica completa" como si se midiera.'
+    - 'Lo que sí se puede responder: entre las conversaciones donde el vendedor mencionó primero el cashback (categorical_insights.primer_mencion_cashback = vendedor), la distribución de conducta_vendedor_cashback (explica_beneficio, promueve_compra_futura, sugiere_dividir_o_diferir_compra_actual). Si se cruza con performance.vendedorinformocashback20porciento, declarar si se incluyen o excluyen las filas NULL de performance.'
     sql: |
       SELECT
         COUNT(*) FILTER (WHERE rv.vendedorinformocashback20porciento = 'Sí') AS informo_completo,
@@ -702,4 +699,10 @@ preguntas:
         ON ci.conversation_id = rv.conversation_id
       WHERE ci.seller_id = 'Mens Fashion' AND rv.seller_id = 'Mens Fashion'
         AND ci.primer_mencion_cashback = 'vendedor'
-    respuesta_esperada: '80 de 805 (9.9%) informaron la mecánica completa de las que mencionaron el cashback. Un agente que confunda "mencionar" con "informar completo" daría un número mucho más alto (564, el total de primer_mencion_cashback=vendedor) o reportaría el mismo dato para ambas preguntas.'
+    respuesta_esperada: 'El agente debe aclarar que el criterio vigente considera cumplido el indicador con cualquier mención explícita al cashback, sin auditar la mecánica completa del 20%; puede dar la distribución de conducta entre las conversaciones analizables donde el vendedor mencionó primero el cashback (2.276: explica_beneficio 2.039, promueve_compra_futura 221, sugiere_dividir_o_diferir 11, cifras vivas 2026-09-24).'
+    sql_verdad: |
+      SELECT conducta_vendedor_cashback, COUNT(DISTINCT conversation_id)
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND usefulforanalysis IS TRUE AND primer_mencion_cashback = 'vendedor'
+      GROUP BY 1 ORDER BY 2 DESC
+
