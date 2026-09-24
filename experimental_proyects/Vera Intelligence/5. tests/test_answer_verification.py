@@ -361,6 +361,43 @@ class BaseFromSqlRowTests(unittest.TestCase):
         self.assertIn("186", limitation_lines[0])
         self.assertIn("123", limitation_lines[0])
 
+    def test_mixed_bases_do_not_error_when_prose_omits_the_zero_base_indicator(self):
+        # Hallazgo real (2026-09-24, hyundai_bajo "recomendación al equipo esta semana"): una fila
+        # ancha con pares _si/_base y un indicador con base 0 en una semana de pocos datos. El
+        # error genérico no le decía al modelo CUÁL indicador, y lo repetía hasta el fallback.
+        s = {}
+        add_result(s, {
+            "columns": ["saludo_si", "saludo_base", "prueba_si", "prueba_base"],
+            "rows": [[10, 12, 0, 0]],
+        })
+        v = verify_answer("El saludo se cumple en el 83% de las conversaciones.", s)
+        joined = " ".join(v.errors)
+        self.assertNotIn("sin observaciones disponibles", joined)
+
+    def test_percentage_column_named_evaluadas_is_not_read_as_a_base(self):
+        # Hallazgo real (2026-09-24, Roberts q07 cashback): una columna `pct_evaluadas` (un
+        # porcentaje) coincidía con BASIS por terminar en "evaluadas", se leía como una cantidad, no
+        # era entera y disparaba "base evaluada inválida" hasta el fallback genérico, 5 de 5 veces.
+        s = {}
+        add_result(s, {
+            "columns": ["primer_mencion_cashback", "total_conversaciones", "pct_evaluadas"],
+            "rows": [["no_mencionado", 2566, 77.71047849788008], ["vendedor", 670, 20.290732889158086]],
+        })
+        v = verify_answer("El 20,29% de las conversaciones evaluadas lo mencionó primero el vendedor.", s)
+        self.assertNotIn("base evaluada inválida", " ".join(v.errors))
+
+    def test_zero_base_error_names_columns_when_prose_cites_zero_percent(self):
+        s = {}
+        add_result(s, {
+            "columns": ["saludo_si", "saludo_base", "prueba_si", "prueba_base"],
+            "rows": [[10, 12, 0, 0]],
+        })
+        v = verify_answer("El saludo se cumple en el 83% (10 de 12) y la prueba de manejo en 0% (0 de 0).", s)
+        joined = " ".join(v.errors)
+        self.assertIn("sin observaciones disponibles", joined)
+        self.assertIn("prueba_base", joined)
+        self.assertNotIn("saludo_base", joined)
+
 
 class ConfidentLanguageTests(unittest.TestCase):
     """CONFIDENT (2026-09-22): "definitiv[oa]" se sacó del patrón -encontrado investigando un

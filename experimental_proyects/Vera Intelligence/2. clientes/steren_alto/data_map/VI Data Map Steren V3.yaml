@@ -1,0 +1,574 @@
+metadata:
+  name: VI Data Map Steren V3
+  version: 3.0.0
+  client: Steren
+  model_target: Gemini 3.7
+  generated_at: '2026-09-24'
+  changes_from_v2: 'V3 (2026-09-24, edición manual + verificación SQL directa contra Postgres QA, no vía
+    regeneración con Gemini): SOLO cambia el filtro de calidad. Hallazgo encontrado corriendo el banco
+    dorado 3 veces por versión: la pregunta "¿qué porcentaje de conversaciones terminan sin que el
+    cliente compre?" daba 34,51% en unas corridas (base 14.960, SIN filtro) y 19,0% en otras (base
+    10.858, CON usefulforanalysis IS TRUE) -mismo Data Map, mismo modelo, según si el modelo decidía
+    o no que la pregunta "se refería a conversaciones analizables". No es ruido: las conversaciones
+    NO analizables son 75,6% "No compra" (3.100 de 4.102) contra 19,0% en las analizables, así que
+    incluirlas infla la cifra principal ~15 puntos. V3: el filtro pasa de condicional a OBLIGATORIO en
+    las vistas de conversación y de producto (en la de rendimiento es casi inocuo, 31 filas no
+    analizables, pero se aplica igual por consistencia). Sin cambios en ningún otro campo o regla.'
+  correccion_columnas_insights_descriptivos_2026-09-24: 'Los 8 campos de la fuente insights_descriptivos
+    estaban declarados SIN el prefijo descriptivos_ que sí tienen las columnas físicas de
+    vw_steren_insights_descriptivos (verificado con information_schema el 2026-09-24; barrido de TODOS
+    los clientes/fuentes: es la única deriva real). Efecto: cualquier SQL de Voz del Cliente (objeciones,
+    quejas, promociones, cierre de venta, etc.) fallaba con "column does not exist" en el primer
+    intento y el modelo caía a la búsqueda semántica sin haber podido usar el dato estructurado.
+    Corregido renombrando las 8 claves; la vista, el grano y el tenant no cambian.'
+  changes_from_v1: 'V2 (2026-09-22) es la segunda ronda de auditoría de confiabilidad que Steren nunca
+    había tenido -a diferencia de Mens Fashion/Farma24, que ya pasaron por varias rondas-. Revisión
+    manual/SQL-directa contra Postgres QA (no vía el pipeline de regeneración con Gemini), enfocada en
+    el objetivo de que ningún número que dé Vera Intelligence para este cliente sea engañoso o
+    silenciosamente incompleto. Verificó el hallazgo abierto de V1 (respuestaantefaltadeproducto) con
+    números actualizados, encontró 2 hallazgos nuevos de cascada N/A no respetada por la extracción
+    (ver hallazgos_criticos_verificados_2026-09-22), escaneó todos los demás campos categóricos en
+    busca de desborde de enum similar (ninguno encontrado -sólo respuestaantefaltadeproducto lo tiene),
+    y confirmó que el hallazgo de "30 filas con las 12 columnas de performance NULL simultáneamente"
+    de V1 ya no reproduce (0 filas hoy) -se documenta como resuelto, no se sabe si por reprocesamiento
+    upstream o porque esas filas específicas ya no están en la ventana de datos actual.'
+  hallazgos_criticos_verificados_2026-09-22:
+  - 'CASCADA N/A NO RESPETADA — motivo_no_compra_gate: el Data Map V1 documentaba el gate como si
+      fuera absoluto ("sólo es interpretable cuando tipointeraccion=''No compra''"), pero la extracción
+      NO lo respeta siempre: 619 de 14.777 filas (4,2%) tienen un motivo ESPECÍFICO real (no NULL, no
+      "N/A" string) pese a que tipointeraccion es "Compra" (108 filas) o "Consulta técnica" (511
+      filas) -verificado con GROUP BY tipointeraccion + CASE sobre motivo_no_compra el 2026-09-22-.
+      Antes se recomendaba tratar el filtro como una ayuda; ahora se documenta como OBLIGATORIO: sin
+      el filtro WHERE tipointeraccion=''No compra'' explícito, un COUNT/GROUP BY sobre motivo_no_compra
+      mezclaría motivos reales de No compra con motivos "filtrados" que en realidad corresponden a
+      Compra o Consulta técnica, sub-representando ambos grupos.'
+  - 'CASCADA N/A NO RESPETADA — disponibilidad_respuesta_gate: el Data Map V1 documentaba la regla
+      como determinística ("si disponibleentienda=''Si'', entonces respuestaantefaltadeproducto DEBE
+      ser ''N/A''"), pero 266 de 15.621 filas (1,7%) con disponibleentienda=''Si'' tienen en cambio una
+      respuesta real de "no dio solución/ofreció similar/sugirió encargar" -contradictorio: el producto
+      estaba disponible pero el campo describe una situación de falta de stock-. Verificado con COUNT
+      filtrando disponibleentienda=''Si'' AND respuestaantefaltadeproducto != ''N/A'' el 2026-09-22. La
+      regla deja de presentarse como "DEBE" y pasa a exigir el filtro WHERE disponibleentienda=''No''
+      explícito en cualquier pregunta sobre respuestaantefaltadeproducto, igual que el gate anterior.'
+  - 'RESUELTO (ya no reproduce) — V1 documentaba "30 filas con las 12 columnas de performance NULL
+      simultáneamente (misma conversación rota)". Reverificado el 2026-09-22 sobre 14.770 filas
+      actuales de vw_steren_rendimiento_vendedor: 0 filas con las 12 columnas NULL, 0 filas con NULL
+      parcial (1-11 de 12). Se retira de limitations; puede haber sido un artefacto transitorio de
+      ingesta ya reprocesado, no investigado más allá de la reverificación.'
+  - 'respuestaantefaltadeproducto reverificado con volumen actual (15.621 filas de producto vs 16.125
+      en V1, la vista creció +9,7% en dos semanas): agrupando por prefijo semántico como ya recomendaba
+      V1, el desborde real de enum es menor de lo que "decenas de variantes" sugería -1.485 "No dio
+      solución" + 429 "Sugirió..." + 255 "Ofreció producto similar" + 114 "N/A" + 11 "Ofreció envío a
+      domicilio" cubren 2.294 de 2.323 filas (98,8%) con disponibleentienda=''No''-; sólo 29 filas
+      (1,2%) son texto libre genuinamente fuera de las 4 categorías + variantes de acentuación. El
+      artefacto de codificación corrupto ("Ofreci6oacute;...") sigue existiendo, ahora confirmado como
+      1 sola fila aislada (no un patrón sistémico) -no se investigó su origen exacto, sigue QUEDANDO
+      ABIERTO igual que en V1, pero con el impacto correctamente dimensionado: ínfimo en volumen, el
+      riesgo real de esta limitación es el 1,2% de texto libre variado, no el artefacto puntual.'
+  - 'Producto_orden (declarado nullable=false) reverificado: 0 NULL sobre 17.944 filas actuales -sigue
+      correcto, sin cambios.'
+  - 'Enums categóricos restantes escaneados en busca de desborde similar al de
+      respuestaantefaltadeproducto -genero_cliente (2), tipointeraccion (4), cliente_compra_objetivo
+      (3), acercamiento_cliente (3), categoria (15), disponibleentienda (2), secompro (2),
+      cambiodeopinion (3)- ninguno desborda su lista configurada. El problema es específico de
+      respuestaantefaltadeproducto, no un patrón sistémico de la extracción de Steren.'
+  - 'Volumen actualizado (2026-09-22, 15 días después de V1): 14.777 conversaciones (antes 13.569,
+      +8,9%), usefulforanalysis=True en 10.707 (72,5%, antes 73,7% -estable-), rango 2026-06-22 a
+      2026-09-22 (el piso de fecha se corrió porque la ventana de datos avanza con el tiempo, no
+      porque haya cambiado el alcance).'
+  pendiente_de_verificar: 'Queda abierto, sin corrección posible desde el Data Map (es un problema del
+    pipeline de extracción, no de mapeo): (1) el origen exacto de por qué motivo_no_compra y
+    respuestaantefaltadeproducto a veces se llenan pese al gate que dice que no deberían -no
+    investigado si es el modelo de extracción ignorando la instrucción condicional o un paso de
+    post-procesamiento-; (2) el artefacto de codificación corrupto puntual en
+    respuestaantefaltadeproducto (1 fila conocida) -no se buscaron artefactos similares en otros
+    campos de texto libre de este cliente, sería el siguiente paso si aparece más evidencia de que no
+    es un caso aislado.'
+  scope: Cuatro vistas dashboard_v2 de Steren. El tenant ('Steren') es fijo para este cliente; no se
+    resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Steren/checklist (Langfuse, label production, v8 al construir este mapa)
+    insights_prompt: clientes/Steren/insights (Langfuse, label production, v4 al construir este mapa)
+    note: 'Steren es "esquema no estándar": ni el molde completo de 6 vistas (Atlas/Boggi/etc.) ni el
+      schema delgado de 2 vistas (Salomon/GAC/etc.) — tiene 4. La diferencia clave: NO existe una
+      vista "insights_categoricos_generales" separada. Los campos generales de comportamiento
+      (TipoInteraccion, MotivoNoCompra, AcercamientoCliente, ClienteCompraObjetivo, GeneroCliente)
+      están definidos en la sección "C. DEMOGRAFIA Y COMPORTAMIENTO" del propio prompt de INSIGHTS,
+      pero se materializan como columnas dentro de la vista demografia, no en una vista de insights
+      separada. Dominio: tienda física de electrónica (audio, cables, videovigilancia, smart home,
+      componentes). Construido leyendo el texto completo de ambos prompts y verificando con
+      GROUP BY/COUNT contra Postgres QA el 2026-09-07.'
+  known_findings_v1:
+  - 'VOLUMEN REAL Y ALTO (actualizado 2026-09-22, ver hallazgos_criticos_verificados_2026-09-22):
+      14.777 conversaciones totales, 10.707 analizables (72,5%), rango 2026-06-22 a 2026-09-22 —
+      comparable en escala a Mens Fashion/Roberts, es el cliente de mayor volumen del batch de esquema
+      no estándar.'
+  - 'HALLAZGO — respuestaantefaltadeproducto (categorical_product_insights) DESBORDA SU ENUM
+      CONFIGURADO: el prompt define 4 valores cerrados + N/A ("Ofreció un producto similar",
+      "Sugirió encargarlo en línea o tienda matriz", "Ofreció envío a domicilio", "No dio solución"),
+      pero en la práctica hay decenas de variantes de texto libre con detalle adicional entre
+      paréntesis (ej. "Ofreció un producto similar (190 metros disponibles de un corte)"), variantes
+      sin tilde ("Ofrecio" vs "Ofreció", "Sugirio" vs "Sugirió", "No dio solucion" vs "No dio
+      solución") y AL MENOS UN ARTEFACTO DE CODIFICACIÓN CORRUPTO ("Ofreci6oacute; un producto
+      similar" — entidad HTML mal decodificada). No investigado el origen (¿el modelo no respeta
+      el enum cerrado? ¿un paso de post-procesamiento corrompió algunos registros?). Para agrupar por
+      este campo, normalizar agrupando por prefijo semántico (contains) en vez de igualdad exacta, o
+      advertir la fragmentación si se pide una distribución exacta. QUEDA ABIERTO para una futura
+      auditoría de limpieza de datos -no es algo que Vera Intelligence pueda corregir desde el Data
+      Map, sería una corrección en el pipeline de extracción-.'
+  - 'HALLAZGO MENOR — motivo_no_compra mezcla NULL real y el string literal "N/A" para el mismo
+      concepto de "no aplica": 8.841 NULL + 2.764 "N/A" (string) cuando TipoInteraccion no es "No
+      compra" -el prompt pide "N/A" explícito, pero buena parte de las filas quedaron NULL en su
+      lugar. Tratar ambos como equivalentes ("no aplica") al filtrar, pero mencionarlo si se pregunta
+      por la distribución cruda del campo.'
+  - 'tipointeraccion tiene 3 valores con volumen real (Compra=7.785, No compra=4.543, Consulta
+      técnica=1.208) y 2 casi inexistentes (Conversación no finalizada=2, Saludo/Transferencia=1) —
+      "Consulta técnica" es un valor propio de Steren que no existe en el resto de los clientes del
+      proyecto (ej. cliente prueba un cable y no funciona, sin llegar a compra ni no-compra
+      tradicional).'
+  - 'Los 12 criterios del checklist tienen enum limpio (Sí/No/N/A, 30 NULL consistentes en las 12
+      columnas simultáneamente -misma conversación rota, patrón visto en el resto del proyecto-).'
+  - 'categorical_product_insights (PorProducto) es un array de hasta 3 productos por conversación:
+      16.125 filas de producto sobre 11.569 conversaciones distintas -promedio ~1,4 productos por
+      conversación con datos-. categoria tiene 15 valores configurados, los 15 aparecen en la
+      muestra con volumen real (Cables=2.862 es el más frecuente).'
+  - 'RAG no aplica: verificado en Langfuse que clientes/Steren/checklist e clientes/Steren/insights
+      no declaran geminiFileSearchStoreName (el store de clientes/Steren/feedback es de otro
+      producto/feature, no de Vera Intelligence).'
+decision_flow:
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Elegir una sola familia primaria según routing; sumar una segunda fuente sólo si la pregunta exige
+  evidencia y existe join declarado.
+- Antes de escribir SQL, resolver profile, grano y tenant.
+- SIEMPRE filtrar usefulforanalysis IS TRUE en demografía, rendimiento y producto, incluso si la
+  pregunta no dice "analizables", porque las conversaciones no analizables son ~76% "No compra" y sin este
+  filtro cualquier porcentaje de resultado/no compra/cambio de opinión sale inflado (34,5% vs 19,0%
+  de no compra). Mencionar en una frase que la base son conversaciones analizables.
+- Si la pregunta requiere respuestaantefaltadeproducto, advertir que el campo tiene variantes de
+  texto libre fuera del enum configurado (ver known_findings_v1) -agrupar por prefijo/contains, no
+  por igualdad exacta, si se pide una distribución.
+- Elegir campos físicos exactos y valores observados; después construir filtros y agregaciones.
+- Si el campo tiene nullable=true, decidir explícitamente si la pregunta requiere excluir NULL o si
+  NULL es parte legítima de la respuesta -para motivo_no_compra, tratar NULL y "N/A" (string) como
+  equivalentes salvo que se pida la distribución cruda-.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: resultado de la interacción, género del cliente, motivo de no compra, tipo de
+      acercamiento (programado/ocasional), si compró el producto que buscaba originalmente
+    avoid: no confundir con insights de producto -motivo de no compra es GENERAL de la conversación,
+      no por producto-
+  performance:
+    questions: criterios del protocolo de venta de Steren (conexión inicial, investigación de
+      necesidad, explicación de producto, Mesa de Experiencia, promociones, productos adicionales,
+      instalación, canales de asesoría, programa de lealtad, cierre)
+    avoid: no tratar N/A como incumplimiento -varios campos (Mesa de Experiencia, instalación,
+      confirmación de pago) sólo aplican en situaciones específicas-
+  categorical_product_insights:
+    questions: producto consultado/comprado, categoría, disponibilidad en tienda, motivo de compra
+      por producto, problema del producto, si cambió de opinión, respuesta ante falta de stock
+    avoid: grano por producto (hasta 3 por conversación), no por conversación -no confundir
+      "SeCompro" (por producto) con TipoInteraccion=Compra (general de la conversación)-
+  insights_descriptivos:
+    questions: voice of customer -objeciones, quejas, promociones ofrecidas, cierre de venta,
+      productos negociados, en texto libre-
+    avoid: no agrupar ni calcular frecuencia de texto libre; esta fuente no tiene conversation_id ni
+      seller_id, no se puede cruzar con las otras 3 fuentes (ver joins)
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions:
+    - store_id
+    - store_name
+    - sector_id
+    - sector_name
+    - employee_id
+    - employee_full_name
+    quality_filter: usefulforanalysis IS TRUE SIEMPRE (V3, obligatorio aunque la pregunta no diga "analizables"; ver changes_from_v2). Aclarar en la respuesta que la base son conversaciones analizables.
+  descriptive_conversation_aislada:
+    row_key: recordingid
+    tenant_field: seller_name
+    date_field: upload_time_mexico
+    optional_dimensions:
+    - store_name
+    - full_name
+    quality_filter: 'No hay conversation_id ni seller_id en esta vista, no se puede cruzar con las
+      otras 3 fuentes de Steren.'
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Steren') sobre el tenant_field de cada fuente
+    (seller_id en 3 de 4 vistas; insights_descriptivos usa seller_name -no tiene seller_id ni
+    conversation_id-).
+  time: Filtrar profiles[profile].date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_orden)).
+  performance_rate: cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No;
+    excluir N/A y null.
+  categorical_rate_general_rule: La misma convención de performance_rate aplica a cualquier campo
+    categórico con semántica afirmativo/negativo/no_aplica del Data Map.
+  free_text_response_ante_falta: 'Filtrar SIEMPRE WHERE disponibleentienda=''No'' primero (ver
+    semantic_dependencies.disponibilidad_respuesta_gate -el gate no es absoluto-). Al agrupar
+    respuestaantefaltadeproducto, usar LIKE/contains sobre el prefijo semántico (ej. "Ofreci%" o
+    "Sugiri%") en vez de igualdad exacta, dado el desborde de variantes -ver known_findings_v1 y
+    hallazgos_criticos_verificados_2026-09-22-. Con ese agrupado, 98,8% de las filas caen en las 4
+    categorías + N/A; sólo ~1,2% es texto libre genuinamente atípico -mencionar la fragmentación si se
+    pide una distribución exacta, pero no exagerar su magnitud.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto
+    narrativo (aplica a insights_descriptivos y a los campos de texto libre de categorical_product_insights
+    como MotivoCompra/ProblemaProducto).
+semantic_dependencies:
+  motivo_no_compra_gate: 'motivo_no_compra sólo es interpretable cuando tipointeraccion = "No compra".
+    NO CONFIAR en que el campo se autolimite: la extracción no respeta el gate en 619 de 14.777 filas
+    (4,2%) -tienen un motivo específico real pese a que tipointeraccion es "Compra" o "Consulta
+    técnica"- ver hallazgos_criticos_verificados_2026-09-22. Filtrar SIEMPRE con
+    WHERE tipointeraccion=''No compra'' explícito antes de agrupar o contar por motivo_no_compra,
+    nunca asumir que los valores fuera de ese filtro ya vienen en NULL/N/A.'
+  disponibilidad_respuesta_gate: 'Regla del prompt: si disponibleentienda = "Si", entonces
+    respuestaantefaltadeproducto DEBERÍA ser "N/A" (no aplica, no hubo falta de stock) -pero no es
+    absoluta: 266 de 15.621 filas (1,7%) con disponibleentienda=''Si'' tienen igual una respuesta real
+    de falta de stock, contradictorio (ver hallazgos_criticos_verificados_2026-09-22). Filtrar SIEMPRE
+    con WHERE disponibleentienda=''No'' explícito antes de agrupar o contar por
+    respuestaantefaltadeproducto, no confiar en que el propio campo ya viene en N/A cuando no
+    corresponde.'
+joins:
+  producto_evidence:
+    left: categorical_product_insights
+    right: descriptive_insights
+    keys: []
+    cardinality: none
+    note: 'NO DISPONIBLE: insights_descriptivos no tiene conversation_id ni producto_orden -es un
+      resumen de sesión completa, no por producto-, no se puede unir con categorical_product_insights
+      ni con ninguna otra fuente de Steren.'
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo
+    categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_steren_demografia
+    use_when: Resultado de la interacción, género, motivo de no compra, tipo de acercamiento, si
+      compró el producto original que buscaba.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      genero_cliente:
+        configured_values: [Masculino, Femenino]
+        observed_values: [Masculino, Femenino]
+        type: text
+        nullable: true
+        description: 'Género inferido del cliente. Masculino=12.420 (91,8%), Femenino=1.116 (8,2%),
+          33 NULL.'
+        operations: [filter, group, compare]
+      tipointeraccion:
+        configured_values: [Compra, 'No compra', 'Consulta técnica', Cambio, Queja, 'Saludo/Transferencia a otro vendedor', 'Conversación no finalizada']
+        observed_values: [Compra, 'No compra', 'Consulta técnica', 'Conversación no finalizada', 'Saludo/Transferencia a otro vendedor']
+        type: text
+        nullable: true
+        description: 'Resultado de la interacción. "Consulta técnica" es un valor propio de Steren
+          (cliente prueba un producto y no funciona, sin llegar a compra ni no-compra tradicional) que
+          no existe en el resto del proyecto. Compra=7.785 (57,4%), No compra=4.543 (33,6%), Consulta
+          técnica=1.208 (8,9%), 30 NULL. Cambio y Queja están en el enum configurado del prompt pero
+          no se observaron en la muestra.'
+        operations: [filter, group, compare]
+      cliente_compra_objetivo:
+        configured_values: ['Compra Producto Deseado', 'Compra Producto Diferente', N/A]
+        observed_values: ['Compra Producto Deseado', N/A, 'Compra Producto Diferente']
+        type: text
+        nullable: true
+        description: 'Si el cliente terminó comprando lo que buscaba originalmente o algo distinto
+          (cross-selling/sustituto técnico). "Compra Producto Deseado"=7.111, N/A=5.742 (no
+          interpretable fuera del contexto de compra), "Compra Producto Diferente"=683.'
+        operations: [filter, group, compare]
+      acercamiento_cliente:
+        configured_values: ['Compra Programada', 'Compra Ocasional']
+        observed_values: ['Compra Ocasional', 'Compra Programada', N/A]
+        type: text
+        nullable: true
+        description: 'Compra Programada = llega con modelo/foto específica. Compra Ocasional = llega
+          explorando sin objetivo preciso. Compra Ocasional=6.046 (44,6%), Compra Programada=4.983
+          (36,7%), N/A=2.507 (la interacción no permitió determinarlo).'
+        operations: [filter, group, compare]
+      motivo_no_compra:
+        configured_values: ['Falta de disponibilidad o surtido', 'Producto no cumple la necesidad técnica', 'Cliente no decide, no necesita o prefiere otra opción', 'Motivo no determinable o conversación insuficiente', 'Precio o condiciones de pago']
+        observed_values: ['Motivo no determinable o conversación insuficiente', 'Falta de disponibilidad o surtido', 'Cliente no decide, no necesita o prefiere otra opción', 'Producto no cumple la necesidad técnica', 'Precio o condiciones de pago']
+        type: text
+        nullable: true
+        description: 'Sólo interpretable cuando tipointeraccion="No compra" -ver
+          semantic_dependencies.motivo_no_compra_gate, el gate NO es absoluto, filtrar siempre por
+          tipointeraccion explícito-. Sobre las 5.110 filas de "No compra" (2026-09-22): "Motivo no
+          determinable o conversación insuficiente"=1.715 (33,6%, el más frecuente), "Falta de
+          disponibilidad o surtido"=776, "Cliente no decide..."=519, "Producto no cumple..."=221,
+          "Precio o condiciones de pago"=22, NULL=2.476 (48,4% -sin motivo registrado, no confundir
+          con "N/A" string, que no aparece nunca dentro de No compra)- el desglose real es más ambiguo
+          que claro, no presentar como si la mayoría de las no-compras tuviera un motivo específico
+          bien identificado.'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_steren_rendimiento_vendedor
+    use_when: Criterios estructurados del protocolo de venta (conexión inicial, investigación,
+      presentación de producto, Mesa de Experiencia, promociones, complementos, instalación, canales
+      de asesoría, lealtad, cierre).
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Los 12 criterios admiten Sí/No/N/A con la lógica estándar -"Sí" con
+      evidencia verbal clara atribuible al vendedor, "No" con oportunidad real observable sin
+      cumplimiento, "N/A" sin oportunidad real o evidencia insuficiente-. Enum limpio verificado. El
+      hallazgo de V1 ("30 filas NULL en las 12 columnas simultáneamente") ya NO reproduce -reverificado
+      2026-09-22, 0 filas con las 12 NULL, ver hallazgos_criticos_verificados_2026-09-22-.'
+    fields:
+      establececonexioninicial:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Apertura verbal al inicio real de la atención. Sí=7.978, No=3.935, N/A=1.626.'
+        operations: [filter, group, compare]
+      investiganecesidadcliente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Al menos una pregunta sustantiva sobre uso/compatibilidad/contexto. N/A si el
+          cliente ya llegó con la necesidad totalmente resuelta (compra directa). Sí=7.043, N/A=5.175,
+          No=1.321.'
+        operations: [filter, group, compare]
+      explicaproductoconclaridad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'N/A si fue una compra directa/simple sin decisión técnica relevante (ej. "dame
+          estas pilas AA"). Sí=8.391, N/A=4.460, No=688.'
+        operations: [filter, group, compare]
+      invitaamesadeexperiencia:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Sólo aplica si el producto/necesidad se relaciona con Smart Home o experiencia
+          demostrable. N/A muy alto por diseño: 9.559 de 13.539 (70,6%). Sí=2.484, No=1.496.'
+        operations: [filter, group, compare]
+      mencionapromocionesactuales:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'N/A si no hay evidencia de que exista una promoción aplicable en la
+          conversación -no usar conocimiento externo sobre promociones vigentes-. Casi empatado:
+          N/A=4.999, Sí=4.974, No=3.566.'
+        operations: [filter, group, compare]
+      ofreceproductosadicionales:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Sí=5.530, N/A=4.396, No=3.613.'
+        operations: [filter, group, compare]
+      agradeceydespidecordialmente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Aplica haya compra o no, si el final quedó capturado. Sí=7.986, No=3.677,
+          N/A=1.876.'
+        operations: [filter, group, compare]
+      confirmamontoymetododepago:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Exige DOS componentes: monto total claro + método de pago preguntado/confirmado.
+          N/A si otra persona gestiona el pago o no llegó a esa etapa. N/A=6.475, No=4.107, Sí=2.957
+          -tasa de cumplimiento baja cuando aplica-.'
+        operations: [filter, group, compare]
+      entregapreticketeindicapasoacaja:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'N/A si el mismo vendedor cobra directamente (no se penaliza por no derivar a
+          caja). N/A=6.499, Sí=5.383, No=1.657.'
+        operations: [filter, group, compare]
+      mencionacanalesdeasesoria:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'WhatsApp, web, app, soporte u otro canal digital. N/A=6.230, Sí=3.675, No=3.634
+          -casi empatado entre Sí y No cuando aplica-.'
+        operations: [filter, group, compare]
+      ofreceprogramadelealtad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Steren Card/app. Cuenta también si el cliente confirma que ya lo tiene y el
+          vendedor lo reconoce. Sí=5.665, N/A=5.663 (casi empatados), No=2.211.'
+        operations: [filter, group, compare]
+      ofreceservicioinstalacion:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: true
+        description: 'Sólo si la instalación es pertinente para el producto. N/A=8.671 (mayoría, por
+          diseño), Sí=2.757, No=2.111.'
+        operations: [filter, group, compare]
+  categorical_product_insights:
+    source: dashboard_v2.vw_steren_insights_categoricos_por_producto
+    use_when: Producto consultado/comprado, categoría, disponibilidad, motivo de compra por producto,
+      problema del producto, cambio de opinión, respuesta ante falta de stock.
+    grain: Una fila por conversación + producto (hasta 3 productos por conversación, producto_orden
+      1-3).
+    profile: standard_conversation
+    data_quality_note: 'respuestaantefaltadeproducto desborda su enum configurado con variantes de
+      texto libre y al menos un artefacto de codificación corrupto -ver known_findings_v1, no agrupar
+      por igualdad exacta sin advertirlo-.'
+    fields:
+      producto_orden:
+        type: integer
+        nullable: false
+        description: Orden del producto dentro de la conversación (1, 2, 3). Clave para relacionar
+          filas de la misma conversación, no hay join con otra fuente de producto en este cliente.
+        operations: [join_key, filter]
+      producto:
+        type: text
+        nullable: true
+        description: Nombre del producto tal como fue mencionado o inferido, texto libre fiel a la
+          conversación -no es un enum cerrado-.
+        operations: [select_evidence]
+      categoria:
+        configured_values: [Audio, Computacion, Herramientas, Cables, 'Telefonia, celulares y tablets', 'TV y video', 'Videovigilancia y seguridad', Iluminacion, Energia, 'Casa y oficina', 'Proyectos de electronica', Automotriz, 'Smart Home', 'Fibra optica', 'Linea estudiantil']
+        observed_values: [Cables, Energia, 'Casa y oficina', 'Videovigilancia y seguridad', 'Telefonia, celulares y tablets', Computacion, 'Proyectos de electronica', Audio, 'TV y video', Herramientas, Iluminacion, 'Smart Home', Automotriz, 'Fibra optica', 'Linea estudiantil', N/A]
+        type: text
+        nullable: true
+        description: 'Categoría funcional del producto. Cables es la más frecuente (2.862 de 16.125,
+          17,7%), seguida de Energia (2.476) y Casa y oficina (1.694). Todas las 15 categorías
+          configuradas aparecen con volumen real en la muestra.'
+        operations: [filter, group, compare]
+      motivocompra:
+        type: text
+        nullable: true
+        description: Texto libre -el "dolor" o uso específico que motiva la compra. No agregar ni
+          contar por frecuencia exacta, usar como evidencia.
+        operations: [select_evidence]
+      problemaproducto:
+        type: text
+        nullable: true
+        description: Texto libre -dudas de compatibilidad, quejas de producto previo, limitaciones.
+          No agregar ni contar por frecuencia exacta.
+        operations: [select_evidence]
+      disponibleentienda:
+        configured_values: &si_no [Si, 'No']
+        observed_values: *si_no
+        type: text
+        nullable: true
+        description: 'Si=13.984 (86,7%), No=2.141 (13,3%). Si="Si", respuestaantefaltadeproducto DEBE
+          ser N/A (ver semantic_dependencies.disponibilidad_respuesta_gate).'
+        operations: [filter, group, compare]
+      secompro:
+        configured_values: *si_no
+        observed_values: *si_no
+        type: text
+        nullable: true
+        description: 'Por PRODUCTO, no confundir con tipointeraccion=Compra (general de la
+          conversación) -un producto puede no comprarse aunque la conversación termine en compra de
+          otro producto-. Si=10.701 (66,4%), No=5.424 (33,6%).'
+        operations: [filter, group, compare]
+      cambiodeopinion:
+        configured_values: ['Si, eligio otro producto', 'Si, decidio no comprar nada', 'No, mantuvo su eleccion original']
+        observed_values: ['No, mantuvo su eleccion original', 'Si, decidio no comprar nada', 'Si, eligio otro producto']
+        type: text
+        nullable: true
+        description: '"No, mantuvo su eleccion original"=11.577 (71,8%, mayoría), "Si, decidio no
+          comprar nada"=4.125 (25,6%), "Si, eligio otro producto"=423 (2,6%, minoría real -no
+          confundir con la categoría mayoritaria-).'
+        operations: [filter, group, compare]
+      respuestaantefaltadeproducto:
+        type: text
+        nullable: true
+        description: 'FRAGMENTADO, pero menos de lo que sugiere "decenas de variantes" (ver
+          known_findings_v1, hallazgos_criticos_verificados_2026-09-22 y
+          sql_rules.free_text_response_ante_falta): sobre las 2.323 filas con disponibleentienda=No
+          (2026-09-22), agrupando por prefijo semántico 98,8% caen en 5 categorías reconocibles
+          ("No dio solución"=1.485, "Sugirió..."=429, "Ofreció producto similar"=255, "N/A"=114,
+          "Ofreció envío a domicilio"=11) y sólo 1,2% (29 filas) es texto libre genuinamente atípico,
+          más 1 fila con un artefacto de codificación corrupto puntual. Además, el gate
+          disponibilidad_respuesta_gate NO es absoluto: 266 filas con disponibleentienda=Si igual
+          tienen una respuesta real -filtrar siempre por disponibleentienda explícito, nunca confiar
+          en que el campo ya viene en N/A por sí solo. Agrupar por prefijo semántico si se pide una
+          distribución, no por igualdad exacta.'
+        operations: [filter, select_evidence]
+  insights_descriptivos:
+    source: dashboard_v2.vw_steren_insights_descriptivos
+    use_when: Voice of Customer -objeciones, quejas, promociones ofrecidas, cierre de venta,
+      productos negociados y complementarios, en texto libre-. AISLADA -ver joins-.
+    grain: Una fila por recordingid (NO por conversation_id); texto libre no agregable.
+    profile: descriptive_conversation_aislada
+    data_quality_note: 'No tiene conversation_id ni seller_id (sólo seller_name, recordingid) — no se
+      puede cruzar con demography, performance ni categorical_product_insights. 13.536 filas
+      totales, mismo rango de fechas que el resto (2026-06-07 en adelante).'
+    fields:
+      descriptivos_productos_negociados_descripcion:
+        type: text
+        nullable: true
+        description: Resumen breve de los productos negociados en la sesión completa. Texto libre.
+        operations: [select_evidence]
+      descriptivos_objeciones_mencionadas_cliente:
+        type: text
+        nullable: true
+        description: Barrera principal mencionada por el cliente (precio, incompatibilidad técnica,
+          falta de funciones específicas). Texto libre.
+        operations: [select_evidence]
+      descriptivos_quejas_mencionadas_cliente:
+        type: text
+        nullable: true
+        description: Malas experiencias previas o fallos en garantías anteriores. Texto libre.
+        operations: [select_evidence]
+      descriptivos_promociones_ofrecidas:
+        type: text
+        nullable: true
+        description: 'Menciona explícitamente si se ofreció la app Steren Card (acumulación 10%),
+          descuentos por temporada u otros precios especiales. Texto libre.'
+        operations: [select_evidence]
+      descriptivos_cierre_venta:
+        type: text
+        nullable: true
+        description: Frase o acción final de la sesión (ej. "cliente descargó la app y pagó con
+          tarjeta"). Texto libre.
+        operations: [select_evidence]
+      descriptivos_productos_complementarios_ofrecidos:
+        type: text
+        nullable: true
+        description: 'Garantía extendida, memorias SD, pilas, instalación, pegamento/cinta,
+          regletas. Texto libre.'
+        operations: [select_evidence]
+      descriptivos_respuesta_ante_falta_producto:
+        type: text
+        nullable: true
+        description: Versión narrativa (no categórica) de la respuesta ante falta de stock. Texto
+          libre, distinto del campo categórico homónimo de categorical_product_insights.
+        operations: [select_evidence]
+      descriptivos_problemas_producto:
+        type: text
+        nullable: true
+        description: Versión narrativa (no categórica) de problemas de producto. Texto libre.
+        operations: [select_evidence]
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'respuestaantefaltadeproducto desborda su enum configurado -ver known_findings_v1 y
+  hallazgos_criticos_verificados_2026-09-22-, pero acotado: 98,8% agrupa en 5 categorías reconocibles
+  por prefijo, sólo 1,2% es texto libre atípico + 1 fila con artefacto de codificación corrupto. No se
+  investigó la causa raíz ni se normalizó en el pipeline de extracción -QUEDA ABIERTO-.'
+- motivo_no_compra mezcla NULL real y el string "N/A" para el mismo concepto -ver known_findings_v1-.
+- 'CASCADA N/A NO RESPETADA en 2 gates semánticos (ver hallazgos_criticos_verificados_2026-09-22 y
+  semantic_dependencies): motivo_no_compra_gate (4,2% de filas con motivo real fuera de "No compra")
+  y disponibilidad_respuesta_gate (1,7% de filas con respuesta real pese a disponibleentienda=Si). Ambos
+  campos requieren filtro explícito en SQL, no se autolimitan -QUEDA ABIERTO, es un problema del
+  pipeline de extracción, no corregible desde el Data Map-.'
+- insights_descriptivos no tiene conversation_id ni seller_id, no se puede cruzar con las otras 3
+  fuentes de este cliente.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros
+  clientes.
+- '[V2, 2026-09-22] RESUELTO: la limitación de V1 sobre 30 filas con las 12 columnas de performance
+  NULL simultáneamente ya no reproduce -ver hallazgos_criticos_verificados_2026-09-22-.'

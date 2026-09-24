@@ -1078,7 +1078,7 @@ class VectorSearchRepository:
             "JOIN mart_v2.recordings_enriched r ON r.recording_id = ce.recording_id",
             "JOIN raw_v2.conversations_raw cr ON cr.recording_id = ce.recording_id",
             """LEFT JOIN LATERAL (
-                SELECT c.conversation_id
+                SELECT c.conversation_id, c.useful_for_analysis
                 FROM core_v2.conversations c
                 WHERE c.recording_id = ce.recording_id
                 ORDER BY c.extracted_at DESC NULLS LAST
@@ -1112,6 +1112,13 @@ class VectorSearchRepository:
 
         sql = "SELECT " + ", ".join(select_columns) + "\n" + "\n".join(joins) + "\n"
         sql += "WHERE r.seller_id = %s\n  AND ce.embedding_config_id = %s\n"
+        # Norma general del proyecto (2026-09-24, decisión de producto explícita): todo se calcula y
+        # se muestra sobre conversaciones ANALIZABLES. Antes la búsqueda no filtraba: entre 3% y 19%
+        # de los embeddings de cada cliente son de conversaciones no analizables (Steren 5.592 de
+        # 32.771, Tigo 25.594 de 135.360), y los ejemplos/patrones podían salir de ahí mientras los
+        # números de SQL ya salían de las analizables. NULL (conversación sin fila en
+        # core_v2.conversations, 69 de 218.856 en Maga) cuenta como NO analizable.
+        sql += "  AND conv.useful_for_analysis IS TRUE\n"
         # Allowlist obligatoria de store_name (2026-09-16, habilitación de Huerpel) -ver
         # VectorSearchConfig.store_names en client_config.py. Se aplica ANTES del store_name
         # opcional que puede pedir el modelo: ambos combinan con AND, así que un cliente con
@@ -1279,6 +1286,7 @@ class VectorSearchRepository:
             f'COUNT(*) FILTER (WHERE perf."{criterio}" IN (%s, %s)) AS base '
             f"FROM {performance_source.name} perf "
             f"WHERE perf.{performance_source.tenant_field} = %s "
+            "AND perf.usefulforanalysis IS TRUE "
             "AND perf.employee_full_name IS NOT NULL"
         )
         params: list[object] = ["Sí", "Sí", "No", self.client.tenant]

@@ -2,7 +2,7 @@ client_id: roberts
 display_name: "Roberts"
 tenant: "Roberts"
 model: gemini-3.7-flash
-data_map: "2. clientes/roberts_alto/data_map/VI Data Map Roberts V3.yaml"
+data_map: "2. clientes/roberts_alto/data_map/VI Data Map Roberts V4.yaml"
 
 # Cada fuente declara el campo que debe contener el tenant autorizado. El
 # validador SQL exige el filtro de forma deterministica antes de ejecutar.

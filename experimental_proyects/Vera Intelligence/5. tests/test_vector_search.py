@@ -324,6 +324,14 @@ class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
             result = repo.search("consulta de prueba", **kwargs)
         return json.loads(result), cursor
 
+    def test_search_only_retrieves_analyzable_conversations(self) -> None:
+        # Norma general (2026-09-24, decisión de producto): entre 3% y 19% de los embeddings de
+        # cada cliente son de conversaciones no analizables; la búsqueda no debe traerlas.
+        _, cursor = self._run_search(rows=[])
+        sql, _params = cursor.executed[-1]
+        self.assertIn("conv.useful_for_analysis IS TRUE", sql)
+        self.assertIn("c.useful_for_analysis", sql)
+
     def test_store_name_adds_ilike_filter_with_wildcards(self) -> None:
         _, cursor = self._run_search(rows=[], store_name="Tlaquepaque")
         sql, params = cursor.executed[-1]
@@ -1751,6 +1759,12 @@ class TopPerformersTests(unittest.TestCase):
         self.assertIn("%Ubaldo Ramos%", params)
         self.assertEqual(sql.count("%s"), len(params))
         self.assertEqual(tuple(params[-2:]), (vector_search._PEER_MIN_BASE, vector_search._PEER_COUNT))
+
+    def test_peer_ranking_only_counts_analyzable_conversations(self) -> None:
+        # Norma general (2026-09-24): también el ranking de compañeros sale sólo de analizables.
+        _, cursor, _ = self._call(self._repo(), rows=[("Laura Soto",)])
+        sql, _params = cursor.executed[-1]
+        self.assertIn("perf.usefulforanalysis IS TRUE", sql)
 
     def test_fails_open_and_rolls_back_on_error(self) -> None:
         names, _, connection = self._call(self._repo(), cursor_error=RuntimeError("boom"))

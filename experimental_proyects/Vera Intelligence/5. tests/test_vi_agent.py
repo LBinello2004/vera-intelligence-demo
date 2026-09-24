@@ -1720,5 +1720,18 @@ class GeminiCachingTests(unittest.TestCase):
         self.assertIsNone(captured_config["config"].temperature)
 
 
+
+
+class AnalyzableConversationsNormTests(unittest.TestCase):
+    def test_prompt_makes_analyzable_filter_the_general_norm(self):
+        # Decisión de producto explícita (2026-09-24): el default es SIEMPRE conversaciones
+        # analizables y prevalece sobre el texto condicional de cualquier Data Map. Sin esta regla,
+        # el modelo decidía al azar (Steren: 34,5% o 19,0% para la misma pregunta).
+        template = vi_agent.SYSTEM_INSTRUCTION_TEMPLATE
+        self.assertIn("BASE DE CONVERSACIONES ANALIZABLES", template)
+        self.assertIn("usefulforanalysis IS TRUE", template)
+        self.assertIn("PREVALECE", template)
+
+
 if __name__ == "__main__":
     unittest.main()

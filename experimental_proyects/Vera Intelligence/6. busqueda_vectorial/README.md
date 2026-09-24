@@ -2434,3 +2434,114 @@ sostiene este mecanismo.
   escaneo completo hoy. El propio mecanismo ya tenía la válvula de escape prevista para esto -sólo
   hacía falta usarla.
 - **No commiteado todavía** -pedido explícito de Lucas de seguir iterando antes de subir nada.
+
+### Iteración 56 — "por qué bajó X" no confirmaba que X hubiera bajado, y falso positivo de bases en cero (2026-09-24)
+
+- **Escenarios en vivo** en clientes poco probados (tigo_alto, gac_medio, hyundai_bajo,
+  high_life_alto; 12 preguntas). La mayoría salió bien; dos hallazgos reales:
+- **Premisa sin verificar (tigo_alto, "¿por qué bajó la satisfacción del cliente en el último
+  mes?")**: el modelo comparó último mes vs. mes previo con SQL (sentimiento negativo 19,1% vs
+  18,1%: casi sin cambio) pero la respuesta nunca lo dijo y explicó "causas" de una caída que los
+  datos no mostraban. **Cambio** (`vi_agent.py`, POR QUÉ / CAUSA RAÍZ): si la pregunta da por
+  hecha una tendencia, lo primero es confirmarla con el mismo indicador en ambos períodos (números
+  y bases) y decir si bajó, subió o casi no se movió. Verificado en vivo: ahora abre con "no hubo
+  una caída pronunciada, sino variaciones marginales" y compara ambos períodos.
+- **Falso positivo de verificación (hyundai_bajo, "¿qué le recomendarías al equipo esta
+  semana?")**: una fila ancha con ~20 pares `_si`/`_base` y algún criterio con base 0 en una
+  semana de pocos datos disparaba "indicador presentado como evaluado sin observaciones
+  disponibles" aunque el texto ni mencionara ese criterio; el modelo no podía corregirlo y caía al
+  fallback genérico (3 de 3 en la corrida original). **Cambio** (`answer_verification.py`): el
+  error nombra las columnas en cero, y con bases MEZCLADAS (algunas >0, otras 0) sólo se dispara si
+  el texto cita "0 de 0". Bases todas en cero siguen fallando como antes. 2 tests nuevos. Verificado
+  en vivo: 3 de 3 respuestas reales (antes 0 de 3 en la mitad de las corridas).
+- **Gate de Steren V2** (banco de 10 preguntas, dos corridas): FALLÓ mecánicamente las dos veces
+  (2/10 y 6/10 con números distintos), pero por variación de profundidad entre respuestas
+  no determinísticas, no por cifras erróneas; V2 hizo fallback en 2/20 respuestas y V1 en 4/20.
+  Por las reglas del gate, V2 NO se promovió (config.yaml sigue en V1).
+- Commiteado el 2026-09-24 (ver Iteración 59 para el estado final).
+
+### Iteración 57 — Steren V3, deriva de columnas, evaluación contra Postgres y filtro `usefulforanalysis` (2026-09-24)
+
+- **Filtro `usefulforanalysis` (Steren)**: el Data Map lo pedía sólo "cuando la pregunta se refiera a
+  conversaciones analizables" y el modelo lo decidía al azar: "¿qué % terminó sin compra?" daba 34,5%
+  (base 14.960, sin filtro) o 19,0% (base 10.858, con filtro) según la corrida. Las conversaciones NO
+  analizables son 75,6% "No compra" (3.100 de 4.102), así que sin filtro la cifra sale ~15 puntos
+  inflada. **`VI Data Map Steren V3.yaml`** (candidato, NO promovido) lo vuelve obligatorio: 4 de 4
+  corridas dan 19,0%. V1 y V2 intactas.
+- **Deriva de columnas (Steren)**: los 8 campos de `insights_descriptivos` estaban declarados sin el
+  prefijo físico `descriptivos_`; todo SQL de Voz del Cliente fallaba ("column does not exist") y el
+  modelo caía a la búsqueda. Corregido en V3 (y en la q13 del banco). **Producción (V1) sigue con este
+  problema hasta promover V3.** Barrido de TODOS los clientes contra `information_schema`: es la única
+  deriva real (Tigo `calidad_del_asesor_escala` es un grupo de documentación, no una columna).
+- **Nuevo `4. scripts/data_map_column_drift.py`** (+5 tests): compara los campos de cada Data Map con
+  las columnas reales; `--client`, `--data-map <candidato>`; código de salida 1 si hay deriva.
+  `data_map_auto_update.py` lo usa como guardia: un candidato con deriva no se promueve
+  (`deriva_de_columnas_no_promovido`) aunque el gate de números pase.
+- **Nuevo `4. scripts/golden_groundtruth_eval.py`** (+8 tests): evalúa el banco dorado contra el SQL de
+  verdad en vivo (`sql_verdad` o `sql`), N corridas por pregunta, midiendo cobertura de cifras y
+  fallbacks, y reporta SQL roto en vez de saltarlo. Reemplaza en la práctica al gate de comparación
+  vieja-vs-nueva, que en Steren falló 2 de 2 veces por variación de redacción, no por cifras erróneas,
+  y sólo corre 10 preguntas. Resultado Steren (36 corridas por versión): fallbacks V1 1/36, V2 2/36,
+  V3 1/36; contra el SQL filtrado V3 acierta todas las cifras clave (q06, q08, q09: 100%).
+- **Banco de Steren**: `respuesta_esperada` de las 12 preguntas con cifras vivas (las viejas eran de
+  hace semanas) y `sql_verdad` con el filtro de analizables (la q02 original mezclaba filtros entre
+  numerador y denominador).
+- **Auditoría del filtro en otros clientes** (no se cambió ningún otro Data Map: es una decisión de
+  producto, ver más abajo). Mismo texto condicional en casi todos. Cuánto cambia con/sin filtro: la
+  mayor distorsión está en huerpel_ventas (rendimiento: 23% de filas no analizables, hasta 15,5 pp),
+  roberts y mens_fashion (~10-12 pp en "vendedor amable"), tigo (rendimiento: 39% no analizables) y
+  boggi/high_life (5-10 pp); farma24 y maga <= 3,5 pp. Medido en vivo, con una pregunta simple 5
+  veces: mens_fashion, roberts y tigo NUNCA aplican el filtro (consistentes, sin filtrar);
+  huerpel_ventas lo aplica 1 de 5 (inconsistente). Farma24 documenta como decisión deliberada NO
+  filtrar salvo que se diga "analizables".
+- **Hyundai V2** (candidato, no promovido): unifica en SQL las variantes de mayúscula/guion bajo de
+  `tipointeraccion` y aclara la fragmentación en una frase de negocio; verificado 3/3, sin jerga
+  ("registrada en minúscula").
+- **Prompt**: con 1 a 3 resultados de búsqueda, se menciona el caso puntual en vez de omitir que se
+  buscó (GAC "qué dicen los clientes al irse").
+- Commiteado el 2026-09-24 (ver Iteración 59 para el estado final).
+
+### Iteración 58 — Norma general: siempre conversaciones analizables (2026-09-24)
+
+- **Decisión de producto (Lucas)**: el default de todo el proyecto es calcular sobre conversaciones
+  analizables (`usefulforanalysis IS TRUE`), aunque la pregunta no lo diga.
+- **Cambio** (`vi_agent.py`, sección BASE DE CONVERSACIONES ANALIZABLES del prompt): regla general que
+  PREVALECE sobre cualquier texto del Data Map (la frase condicional "cuando la pregunta se refiera a
+  analizables" se lee como "siempre"; la REGLA NEGATIVA de Mens Fashion/Roberts no aplica). Excepciones:
+  vista que no expone la columna, o pedido explícito del total bruto. La respuesta aclara en una frase
+  que la base son conversaciones analizables. Cambio central: no hizo falta versionar 17 Data Maps.
+- **Verificado en vivo**: 5 corridas por cliente con una pregunta simple sin decir "analizables" -
+  mens_fashion, roberts, huerpel_ventas, tigo, steren (incluso con su V1 de producción) y farma24:
+  filtro aplicado 30 de 30 (antes: 0/5 en mens_fashion, roberts y tigo; 1/5 en huerpel_ventas).
+  "¿Cuántas conversaciones hay en total?" responde 21.164 analizables de 24.091 registradas.
+- **Data Maps nuevos, sin promover** (para que el texto no contradiga la norma): Mens Fashion V9 y
+  Roberts V4 (derogan la regla negativa). La nota de la q16 del banco de Mens Fashion sobre "no agregar
+  el filtro" quedó histórica. Los bancos dorados de los demás clientes tienen SQL sin filtro: para
+  usarlos con `golden_groundtruth_eval.py` hay que agregarles `sql_verdad` (hecho sólo en Steren).
+- 1 test nuevo (`AnalyzableConversationsNormTests`); 560 tests en verde.
+- Commiteado el 2026-09-24 (ver Iteración 59 para el estado final).
+
+### Iteración 59 — Promociones, búsqueda sobre analizables y bug de `pct_evaluadas` (2026-09-24)
+
+- **Promovidos** (config.yaml apunta a la nueva versión): Steren V3, Hyundai V2, Mens Fashion V9,
+  Roberts V4. Antes de promover, `data_map_column_drift.py` dio "sin deriva" en los cuatro. Esto
+  reemplaza lo dicho como "candidato, no promovido" en las iteraciones 56-58 y cierra la deriva de
+  columnas de Voz del Cliente de Steren en producción.
+- **Búsqueda vectorial sólo sobre analizables** (`vector_search.py`): filtro
+  `conv.useful_for_analysis IS TRUE` (vía `core_v2.conversations`) en la recuperación y
+  `perf.usefulforanalysis IS TRUE` en el ranking de compañeros. Entre 3% y 19% de los embeddings de
+  cada cliente son de conversaciones no analizables (Steren 5.592 de 32.771; Tigo 25.594 de 135.360).
+  NULL cuenta como no analizable. Verificado en vivo en Steren, Tigo, Maga y Mens Fashion. 2 tests.
+- **Bug del verificador** (`answer_verification.py`, `BASIS`): una columna `pct_evaluadas` (un
+  porcentaje) coincidía con "evaluadas", se leía como base no entera y disparaba "base evaluada
+  inválida" -Roberts q07 cayó al fallback 5 de 5 veces (V3: 3 de 5, o sea ya existía)-. Las columnas
+  con pct/porcent/percent/tasa/rate en el nombre nunca son una base. Después: 0 de 5. 1 test.
+- **`golden_groundtruth_eval.py`**: para bancos sin `sql_verdad` agrega el filtro de analizables al SQL
+  (`analyzable_variant`) y vuelve al original si la vista no lo expone.
+- **Evaluación contra Postgres, Mens Fashion V9 (60 corridas) y Roberts V4 (30)**: fallbacks 4/60 y
+  2/30 (los de Roberts eran el bug de arriba). Contra V8/V3 con 5 corridas: q19 idéntica (0/5, cobertura
+  0,80); q25 y q30 de Mens Fashion ya tenían cobertura 0,00 en V8 (no es regresión); q21 0,22 vs 0,18.
+  Causa de fondo, sin tocar, de los fallbacks esporádicos de q19: el Data Map manda usar
+  `hubo_ofrecimiento_complementarios` como fuente primaria pero la pregunta es sobre el campo del
+  checklist; el modelo consulta ambas y agrega cifras derivadas difíciles de respaldar.
+

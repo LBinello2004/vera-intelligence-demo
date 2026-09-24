@@ -2,7 +2,7 @@ client_id: steren
 display_name: "Steren"
 tenant: "Steren"
 model: gemini-3.7-flash
-data_map: "2. clientes/steren_alto/data_map/VI Data Map Steren V1.yaml"
+data_map: "2. clientes/steren_alto/data_map/VI Data Map Steren V3.yaml"
 
 # Steren es "esquema no estándar": tiene 4 vistas (no 6 como el molde completo, no 2 como
 # el schema delgado). No existe una vista "insights_categoricos_generales" separada -los

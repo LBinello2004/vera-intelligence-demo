@@ -2,7 +2,7 @@ client_id: mens_fashion
 display_name: "Men's Fashion"
 tenant: "Mens Fashion"
 model: gemini-3.7-flash
-data_map: "2. clientes/mens_fashion_alto/data_map/VI Data Map Mens Fashion V8.yaml"
+data_map: "2. clientes/mens_fashion_alto/data_map/VI Data Map Mens Fashion V9.yaml"
 
 # Cada fuente declara el campo que debe contener el tenant autorizado. El
 # validador SQL exige el filtro de forma deterministica antes de ejecutar.

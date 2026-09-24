@@ -760,7 +760,21 @@ def run_for_client(client_id: str, *, dry_run: bool = False) -> dict:
     if bank_warnings:
         summary["golden_bank_relative_language_warnings"] = bank_warnings
 
+    # Guardia de deriva de columnas (2026-09-24, ver data_map_column_drift.py): un candidato que
+    # declara campos inexistentes en la vista real no se promueve aunque el gate de números pase
+    # -el gate no lo detecta si la pregunta afectada está fuera de las primeras MAX_GOLDEN_QUESTIONS-.
+    column_drift: list[dict] = []
     if gate.passed:
+        try:
+            from data_map_column_drift import check_client
+
+            column_drift = check_client(client_folder, regeneration.candidate_path)
+        except Exception as exc:  # noqa: BLE001 - la guardia no debe romper la corrida si la base no responde
+            summary["column_drift_check_error"] = str(exc)[:200]
+    if column_drift:
+        summary["column_drift"] = column_drift
+        summary["status"] = "deriva_de_columnas_no_promovido"
+    elif gate.passed:
         promote(client_config, regeneration.candidate_path, client_folder)
         summary["status"] = "promovido"
     else:

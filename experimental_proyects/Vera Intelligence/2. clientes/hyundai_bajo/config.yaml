@@ -2,7 +2,7 @@ client_id: hyundai
 display_name: "Hyundai"
 tenant: "Hyundai"
 model: gemini-3.7-flash
-data_map: "2. clientes/hyundai_bajo/data_map/VI Data Map Hyundai V1.yaml"
+data_map: "2. clientes/hyundai_bajo/data_map/VI Data Map Hyundai V2.yaml"
 
 # Hyundai es "schema delgado" (2 vistas, sin insights) y el cliente de este batch con más
 # señales de estar INACTIVO: sin conversaciones nuevas desde 2026-06-20 (ver README y

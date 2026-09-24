@@ -12,7 +12,12 @@ FENCE = re.compile(r"```vera-evidence\s*(.*?)```", re.S)
 OTHER_FENCES = re.compile(r"```.*?```", re.S)
 NUMBER = re.compile(r"(?<![\w])[-+]?\d+(?:[.,]\d+)*(?![\w])")
 DATES = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}/\d{4}\b|\b\d{1,2}(?:\s+al\s+\d{1,2})?\s+de\s+\w+\s+de\s+\d{4}\b", re.I)
+# Una columna de TASA/PORCENTAJE nunca es una base (2026-09-24, hallazgo real en Roberts q07:
+# "pct_evaluadas" -un porcentaje de conversaciones evaluadas- coincidía con "evaluadas" al final del
+# nombre, se leía como una cantidad, no era entera y disparaba "base evaluada inválida" hasta el
+# fallback genérico, 5 de 5 veces). El lookahead inicial descarta esos nombres antes de mirar el resto.
 BASIS = re.compile(
+    r"^(?!.*(?:pct|porcent|percent|tasa|rate))(?=.*(?:"
     r"(?:^|_)(?:evaluados|evaluadas|base_evaluada|sample_size|n_evaluados|n_observaciones|denominador|cantidad_evaluada)(?:$|_)"
     # base_<criterio> (2026-09-15, bug real encontrado probando la nueva regla de densidad de
     # SYSTEM_INSTRUCTION_TEMPLATE -ver "8. README.md"): el prompt sugiere el alias "base_evaluada"
@@ -22,7 +27,8 @@ BASIS = re.compile(
     # "base_evaluada" completo, así que ninguna de esas bases contaba como "positive" acá abajo y
     # la respuesta terminaba con "No se informó la cantidad de observaciones evaluadas" aunque la
     # respuesta SÍ informaba una base por cada uno de los 13 indicadores que citó.
-    r"|(?:^|_)base(?:$|_)",
+    r"|(?:^|_)base(?:$|_)"
+    r"))",
     re.I,
 )
 # Año calendario suelto (2026-09-17, bug real encontrado analizando .runtime/usage/gemini_calls.jsonl:
@@ -369,6 +375,7 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
         except (ValueError, TypeError, AttributeError):
             verdict.errors.append('gráfico no verificable')
     cited = list(metric_tokens(cleaned))
+    zero_base_columns: list[str] = []
     for payload in active_store.values():
         rows = rows_of(payload)
         if payload.get('truncated') is True:
@@ -388,7 +395,10 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
                         except ValueError:
                             pass
                     if relevant:
-                        try: bases.append(number(value))
+                        try:
+                            bases.append(number(value))
+                            if number(value) <= 0 and column not in zero_base_columns:
+                                zero_base_columns.append(column)
                         except ValueError: pass
     if any(base < 0 or base != base.to_integral() for base in bases):
         verdict.errors.append('base evaluada inválida')
@@ -465,8 +475,22 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
     unavailable = re.search(r"no (?:se puede|hay evaluación|hay evaluacion|se evalu|fue evalu)|sin evaluación|sin evaluacion|no disponible|no permite", prose, re.I)
     metric_cells = [(column, value) for payload in active_store.values() for row in rows_of(payload) for column, value in row.items() if METRIC.search(column) and not BASIS.search(column)]
     null_metrics = bool(metric_cells) and all(value is None for _, value in metric_cells)
-    if (null_metrics or any(base <= 0 for base in bases)) and ('%' in prose or re.search(r"promedio|puntuaci[oó]n|cumplimiento", prose, re.I)) and not unavailable:
-        verdict.errors.append('indicador presentado como evaluado sin observaciones disponibles')
+    # Mezcla de bases (2026-09-24, hyundai_bajo): si SÓLO ALGUNAS bases de la fila son 0 y otras
+    # son positivas, el error sólo corresponde cuando el texto cita un 0% (la forma de presentar
+    # como "evaluado" un indicador sin observaciones). Con bases 0 en indicadores que el texto ni
+    # menciona -el caso normal de una fila ancha con ~20 criterios en una semana chica-, el modelo
+    # no tenía cómo corregirlo (ya omitía esos indicadores) y caía al fallback genérico 3 de 3.
+    mixed_bases = any(base > 0 for base in bases) and any(base <= 0 for base in bases)
+    cites_zero_rate = bool(re.search(r"(?<![\d.,])0\s*(?:de|/)\s*0(?![\d.,])", prose))
+    zero_base_relevant = any(base <= 0 for base in bases) and (not mixed_bases or cites_zero_rate)
+    if (null_metrics or zero_base_relevant) and ('%' in prose or re.search(r"promedio|puntuaci[oó]n|cumplimiento", prose, re.I)) and not unavailable:
+        # Nombrar las columnas en cero (2026-09-24, hyundai_bajo "qué le recomendarías al equipo
+        # esta semana": una fila ancha con ~20 pares _si/_base, alguno con base 0 en una semana
+        # de pocos datos; el modelo recibía este error sin saber CUÁL indicador y lo repetía 3
+        # veces hasta caer en el fallback genérico). Con las columnas nombradas puede omitir
+        # sólo esos indicadores en vez de adivinar.
+        detail = f" (bases en cero: {', '.join(zero_base_columns[:8])}; no cites esos indicadores ni sus porcentajes, o decí explícitamente que no tuvieron observaciones evaluadas)" if zero_base_columns else ''
+        verdict.errors.append('indicador presentado como evaluado sin observaciones disponibles' + detail)
     if active_store and all(payload.get('truncated') is True for payload in active_store.values()) and re.search(r"ranking completo|todos los|ningún|ningun|ninguna|no hubo", prose, re.I):
         verdict.errors.append('conclusión completa a partir de detalle parcial')
     certainty = [m for m in CONFIDENT.finditer(prose) if not re.search(r"\bno\b|no permite|no se puede|sin evidencia", re.split(r"[.!?\n]", prose[:m.start()])[-1][-60:], re.I)]

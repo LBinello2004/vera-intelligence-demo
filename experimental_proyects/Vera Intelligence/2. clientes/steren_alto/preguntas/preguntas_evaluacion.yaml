@@ -8,7 +8,11 @@ preguntas:
       SELECT COUNT(DISTINCT conversation_id) AS total
       FROM dashboard_v2.vw_steren_demografia
       WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
-    respuesta_esperada: '9.998 conversaciones analizables'
+    respuesta_esperada: '10.858 conversaciones analizables (V3: usefulforanalysis IS TRUE; sin el filtro serían 14.960 filas)'
+    sql_verdad: |
+      SELECT COUNT(DISTINCT conversation_id) AS total
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q02_resultado_general
     pregunta: ¿Qué porcentaje de las conversaciones terminó en compra?
@@ -21,7 +25,11 @@ preguntas:
         COUNT(*) FILTER (WHERE usefulforanalysis) AS base
       FROM dashboard_v2.vw_steren_demografia
       WHERE seller_id = 'Steren'
-    respuesta_esperada: '7.785 de 9.998 (77,9%)'
+    respuesta_esperada: '7.856 de 10.858 (72,4%) terminaron en Compra (base: conversaciones analizables)'
+    sql_verdad: |
+      SELECT COUNT(*) FILTER (WHERE tipointeraccion = 'Compra') AS compras, COUNT(*) AS base
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q03_consulta_tecnica_trap
     pregunta: ¿Qué porcentaje de conversaciones terminan sin que el cliente compre?
@@ -36,8 +44,13 @@ preguntas:
       WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
       GROUP BY 1
       ORDER BY 2 DESC
-    respuesta_esperada: 'No compra=4.543 (45,5%) y Consulta técnica=1.208 (12,1%) son categorías
-      separadas -el agente debe distinguirlas, no sumarlas sin aclarar ni ignorar la segunda'
+    respuesta_esperada: No compra=2.063 (19,0%) y Consulta técnica=939 (8,6%) son categorías separadas sobre 10.858 analizables (Compra=7.856, 72,4%); el agente debe distinguirlas y usar la base analizable -sin el filtro daría 34,5%, cifra inflada-
+    sql_verdad: |
+      SELECT tipointeraccion, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 2 DESC
 
   - id: q04_tasa_investiga_necesidad
     pregunta: ¿En qué porcentaje de las conversaciones el vendedor investiga la necesidad del cliente?
@@ -50,7 +63,13 @@ preguntas:
         COUNT(*) FILTER (WHERE investiganecesidadcliente IN ('Sí','No')) AS base
       FROM dashboard_v2.vw_steren_rendimiento_vendedor
       WHERE seller_id = 'Steren'
-    respuesta_esperada: '7.043 de 8.364 (84,2%)'
+    respuesta_esperada: 7.682 de 9.149 (84,0%)
+    sql_verdad: |
+      SELECT
+        COUNT(*) FILTER (WHERE investiganecesidadcliente = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE investiganecesidadcliente IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q05_mesa_experiencia_trap
     pregunta: ¿En qué porcentaje de las conversaciones el vendedor invita a la Mesa de Experiencia?
@@ -65,9 +84,13 @@ preguntas:
         COUNT(*) FILTER (WHERE invitaamesadeexperiencia IN ('Sí','No')) AS base
       FROM dashboard_v2.vw_steren_rendimiento_vendedor
       WHERE seller_id = 'Steren'
-    respuesta_esperada: '2.484 de 3.980 (62,4%), aclarando que sólo aplica a una minoría de
-      conversaciones relacionadas con Smart Home/experiencia demostrable (N/A=70,6% del total, por
-      diseño del criterio)'
+    respuesta_esperada: 2.628 de 3.834 (68,5%), aclarando que sólo aplica a una minoría de conversaciones relacionadas con Smart Home/experiencia demostrable (N/A por diseño del criterio)
+    sql_verdad: |
+      SELECT
+        COUNT(*) FILTER (WHERE invitaamesadeexperiencia = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE invitaamesadeexperiencia IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q06_top_categoria_producto
     pregunta: ¿Cuál es la categoría de producto más consultada?
@@ -81,8 +104,14 @@ preguntas:
       GROUP BY 1
       ORDER BY 2 DESC
       LIMIT 5
-    respuesta_esperada: 'Cables=2.862 (17,7% de 16.125 filas de producto), seguido de Energia=2.476 y
-      Casa y oficina=1.694'
+    respuesta_esperada: Cables=2.823, seguido de Energia=2.639 y Casa y oficina=1.423 (sobre filas de producto de conversaciones analizables)
+    sql_verdad: |
+      SELECT categoria, COUNT(*) AS total
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 5
 
   - id: q07_respuesta_falta_producto_trap
     pregunta: Cuando un producto no está disponible, ¿qué hace el vendedor con más frecuencia?
@@ -100,9 +129,14 @@ preguntas:
       GROUP BY 1
       ORDER BY 2 DESC
       LIMIT 10
-    respuesta_esperada: 'El agente debe advertir que este campo tiene muchas variantes de texto y no
-      es un enum perfectamente limpio antes de dar una distribución; la categoría más frecuente es
-      "no dio solución" (agrupando variantes de tilde), seguida de "ofreció un producto similar"'
+    respuesta_esperada: El agente debe advertir que este campo tiene muchas variantes de texto y no es un enum perfectamente limpio antes de dar una distribución; la categoría más frecuente es "no dio solución" (1.104 + 27 por variante sin tilde), seguida de "sugirió encargarlo en línea/tienda matriz" (348) y "ofreció un producto similar" (225)
+    sql_verdad: |
+      SELECT respuestaantefaltadeproducto, COUNT(*)
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE AND disponibleentienda = 'No'
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 10
 
   - id: q08_tasa_cambio_opinion
     pregunta: ¿Con qué frecuencia el cliente cambia de opinión y elige un producto distinto al que buscaba?
@@ -115,8 +149,13 @@ preguntas:
       WHERE seller_id = 'Steren'
       GROUP BY 1
       ORDER BY 2 DESC
-    respuesta_esperada: 'Mantiene su elección original=11.577 (71,8%, mayoría), decide no comprar
-      nada=4.125 (25,6%), elige otro producto=423 (2,6%, minoría real)'
+    respuesta_esperada: Mantiene su elección original=12.436 (76,4%), decide no comprar nada=3.447 (21,2%), elige otro producto=390 (2,4%) sobre 16.273 filas de producto analizables
+    sql_verdad: |
+      SELECT cambiodeopinion, COUNT(*)
+      FROM dashboard_v2.vw_steren_insights_categoricos_por_producto
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 2 DESC
 
   - id: q09_tasa_programa_lealtad
     pregunta: ¿Con qué frecuencia el vendedor ofrece o reconoce el programa de lealtad (Steren Card)?
@@ -129,7 +168,13 @@ preguntas:
         COUNT(*) FILTER (WHERE ofreceprogramadelealtad IN ('Sí','No')) AS base
       FROM dashboard_v2.vw_steren_rendimiento_vendedor
       WHERE seller_id = 'Steren'
-    respuesta_esperada: '5.665 de 7.876 (71,9%)'
+    respuesta_esperada: 6.158 de 8.880 (69,3%)
+    sql_verdad: |
+      SELECT
+        COUNT(*) FILTER (WHERE ofreceprogramadelealtad = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE ofreceprogramadelealtad IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q10_motivo_no_compra_null_trap
     pregunta: ¿Cuál es el motivo principal de no compra?
@@ -146,9 +191,13 @@ preguntas:
       WHERE seller_id = 'Steren' AND tipointeraccion = 'No compra'
       GROUP BY 1
       ORDER BY 2 DESC
-    respuesta_esperada: '"Motivo no determinable o conversación insuficiente" es el más frecuente
-      (1.041 de 4.543 no-compras, ~22,9%) — el agente debe aclarar que es un motivo vago/indeterminado,
-      no un motivo específico bien identificado'
+    respuesta_esperada: '"Falta de disponibilidad o surtido" (543) es el motivo específico más frecuente entre las no-compras analizables; el NULL (992) NO es un motivo -hay que filtrarlo-; "Motivo no determinable o conversación insuficiente" (125) es un motivo vago, no específico'
+    sql_verdad: |
+      SELECT motivo_no_compra, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE AND tipointeraccion = 'No compra'
+      GROUP BY 1
+      ORDER BY 2 DESC
 
   - id: q11_genero_distribucion
     pregunta: ¿Cómo se distribuyen los clientes por género?
@@ -161,7 +210,13 @@ preguntas:
       WHERE seller_id = 'Steren'
       GROUP BY 1
       ORDER BY 2 DESC
-    respuesta_esperada: 'Masculino=12.420 (91,8%), Femenino=1.116 (8,2%)'
+    respuesta_esperada: Masculino=9.777 (90,0%), Femenino=1.081 (10,0%) sobre 10.858 analizables
+    sql_verdad: |
+      SELECT genero_cliente, COUNT(*)
+      FROM dashboard_v2.vw_steren_demografia
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
+      GROUP BY 1
+      ORDER BY 2 DESC
 
   - id: q12_tasa_confirma_pago
     pregunta: ¿En qué porcentaje de los cierres el vendedor confirma el monto y método de pago?
@@ -174,7 +229,13 @@ preguntas:
         COUNT(*) FILTER (WHERE confirmamontoymetododepago IN ('Sí','No')) AS base
       FROM dashboard_v2.vw_steren_rendimiento_vendedor
       WHERE seller_id = 'Steren'
-    respuesta_esperada: '2.957 de 7.064 (41,9%) — tasa baja cuando aplica'
+    respuesta_esperada: 2.984 de 7.562 (39,5%) — tasa baja cuando aplica
+    sql_verdad: |
+      SELECT
+        COUNT(*) FILTER (WHERE confirmamontoymetododepago = 'Sí') AS si,
+        COUNT(*) FILTER (WHERE confirmamontoymetododepago IN ('Sí','No')) AS base
+      FROM dashboard_v2.vw_steren_rendimiento_vendedor
+      WHERE seller_id = 'Steren' AND usefulforanalysis IS TRUE
 
   - id: q13_insights_descriptivos_evidencia_trap
     pregunta: Dame algunos ejemplos textuales de objeciones que mencionan los clientes.
@@ -184,9 +245,9 @@ preguntas:
     - 'TRAMPA: es texto libre, no debe agregarse ni presentarse como una distribución/ranking -sólo
       evidencia puntual con contexto (fecha/tienda si están disponibles).'
     sql: |
-      SELECT objeciones_mencionadas_cliente, seller_name, store_name, upload_time_mexico
+      SELECT descriptivos_objeciones_mencionadas_cliente, seller_name, store_name, upload_time_mexico
       FROM dashboard_v2.vw_steren_insights_descriptivos
-      WHERE seller_name = 'Steren' AND objeciones_mencionadas_cliente IS NOT NULL
+      WHERE seller_name = 'Steren' AND descriptivos_objeciones_mencionadas_cliente IS NOT NULL
       LIMIT 5
     respuesta_esperada: 'El agente debe dar ejemplos textuales puntuales, no una distribución
       agregada ni un ranking de objeciones'
