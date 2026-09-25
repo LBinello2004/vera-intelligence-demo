@@ -252,6 +252,17 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertEqual(chat.send_message.call_count, vi_agent.MAX_RETRIES)
         self.assertEqual(wait.call_count, vi_agent.MAX_RETRIES - 1)
 
+    def test_retry_delay_grows_exponentially_with_bounded_jitter(self):
+        # 2026-09-24: sin jitter, varios procesos que reciben el mismo 503 de "alta demanda"
+        # reintentan sincronizados y vuelven a chocar; con 6 intentos la espera total nominal es ~62 s.
+        for attempt in range(1, vi_agent.MAX_RETRIES):
+            nominal = vi_agent.RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            low = nominal * (1 - vi_agent.RETRY_JITTER_FRACTION)
+            high = nominal * (1 + vi_agent.RETRY_JITTER_FRACTION)
+            for _ in range(50):
+                self.assertTrue(low - 0.01 <= vi_agent._retry_delay(attempt) <= high + 0.01)
+        self.assertGreaterEqual(vi_agent.MAX_RETRIES, 6)
+
     def test_query_timeout_rolls_back_without_reconnecting(self):
         connection = MagicMock()
         connection.closed = False

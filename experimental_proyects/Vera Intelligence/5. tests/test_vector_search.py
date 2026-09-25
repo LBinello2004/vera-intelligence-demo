@@ -115,6 +115,71 @@ class _RedirectsUsageLogTestCase(unittest.TestCase):
         patcher = patch.object(vector_search, "VECTOR_SEARCH_LOG_PATH", log_path)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Los tests arman filas con transcripciones de una palabra ("hola"): el mínimo de palabras por
+        # conversación (2026-09-25, ver _conversation_context) tiene sus propios tests más abajo.
+        words_patcher = patch.object(vector_search, "_MIN_CONVERSATION_WORDS", 0)
+        words_patcher.start()
+        self.addCleanup(words_patcher.stop)
+
+
+class ConversationContextTests(unittest.TestCase):
+    """`_conversation_context` (2026-09-25): el analista lee la conversación, no sólo el chunk."""
+
+    def test_short_conversation_is_returned_whole(self) -> None:
+        transcript = " ".join(f"palabra{i}" for i in range(300))
+        text, total = vector_search._conversation_context(transcript, 0)
+        self.assertEqual(total, 300)
+        self.assertEqual(text, transcript)
+
+    def test_long_conversation_keeps_opening_matched_span_and_closing_with_gaps_marked(self) -> None:
+        transcript = " ".join(f"w{i}" for i in range(6000))
+        text, total = vector_search._conversation_context(transcript, 3)
+        self.assertEqual(total, 6000)
+        self.assertLessEqual(len(text.split()), vector_search._CONTEXT_MAX_WORDS + 2)
+        self.assertTrue(text.startswith("w0 "))
+        self.assertIn("[...]", text)
+        self.assertTrue(text.endswith("w5999"))
+        start = 3 * vector_search._STEP_WORDS
+        self.assertIn(f"w{start}", text.split())
+
+    def test_tiny_tail_chunk_still_gets_the_whole_conversation(self) -> None:
+        # Caso real (tigo_alto): el chunk que matcheó era un resto de 6 palabras al final de una
+        # conversación; el analista igual tiene que ver la conversación entera.
+        transcript = " ".join(f"p{i}" for i in range(_TAIL_WORDS_FOR_TEST))
+        text, total = vector_search._conversation_context(transcript, 2)
+        self.assertEqual(total, _TAIL_WORDS_FOR_TEST)
+        self.assertEqual(text, transcript)
+
+
+_TAIL_WORDS_FOR_TEST = 1000
+
+
+class MinimumConversationLengthTests(_RedirectsUsageLogTestCase):
+    def _search(self, rows):
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        connection = _FakeConnection(_FakeCursor(rows))
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.object(vector_search, "_MIN_CONVERSATION_WORDS", 50), patch.dict(
+            os.environ, {"VERA_AI_API_KEY": "test-key"}
+        ):
+            return json.loads(repo.search("consulta de prueba"))
+
+    def test_conversations_below_the_minimum_do_not_take_a_top_k_slot(self) -> None:
+        # Caso real (tigo_alto): "Speaker 0: cancelar el servicio de orden." (41 caracteres) subía al
+        # primer puesto por parecerse a la consulta sin contener información.
+        long_text = " ".join(f"palabra{i}" for i in range(120))
+        rows = [
+            ("rid1", 1, "Tienda A", "Ana", None, "Speaker 0: cancelar el servicio de orden.", "conv1", None, 0.10),
+            ("rid2", 0, "Tienda B", "Luis", None, long_text, "conv2", None, 0.20),
+        ]
+        payload = self._search(rows)
+        self.assertEqual([r["conversation_id"] for r in payload["resultados"]], ["conv2"])
 
 
 class ReusableConnectionTests(_RedirectsUsageLogTestCase):
@@ -856,7 +921,7 @@ class JudgeRelevanceTests(unittest.TestCase):
 
     def test_empty_resultados_returns_empty_list_without_calling_gemini(self) -> None:
         with patch.object(vector_search, "_get_reusable_embed_client") as mock_client:
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", [], model="gemini-3.7-flash", api_key="fake-key"
             )
         self.assertEqual(veredictos, [])
@@ -869,7 +934,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key"
             )
         self.assertEqual(veredictos, [True, False])
@@ -881,7 +946,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key"
             )
         self.assertEqual(veredictos, [True, True])
@@ -893,7 +958,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key"
             )
         self.assertEqual(veredictos, [True, True])
@@ -903,7 +968,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.side_effect = RuntimeError("sin red")
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key"
             )
         self.assertEqual(veredictos, [True])
@@ -919,7 +984,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client.models.generate_content.return_value = mock_response
         mock_recorder = MagicMock()
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            vector_search._judge_relevance(
+            vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
                 usage_recorder=mock_recorder, client_id="mens_fashion",
             )
@@ -937,7 +1002,7 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
             )
         self.assertEqual(veredictos, [True])
@@ -951,13 +1016,101 @@ class JudgeRelevanceTests(unittest.TestCase):
         mock_recorder = MagicMock()
         mock_recorder.record_response.side_effect = RuntimeError("disco lleno")
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
                 usage_recorder=mock_recorder, client_id="mens_fashion",
             )
         # Fail-open ya cubre esta excepción (mismo try/except que envuelve toda la llamada) -un
         # fallo al loguear no debe tirar abajo la búsqueda en sí.
         self.assertEqual(veredictos, [True])
+
+
+class PerConversationAnalysisTests(unittest.TestCase):
+    """`_judge_relevance` (2026-09-25): cada conversación se analiza en su propia llamada, para que el
+    analista no mezcle el contenido de conversaciones vecinas (ver el comentario de `_JUDGE_MAX_WORKERS`)."""
+
+    @staticmethod
+    def _client_answering_per_fragment():
+        """Cliente falso que mira QUÉ conversación viene en el prompt y responde sólo por esa."""
+        calls: list[str] = []
+
+        def generate_content(*, model, contents, config):
+            calls.append(contents)
+            response = MagicMock()
+            if "SOLO-PATRONES" in contents:
+                response.text = "{}"
+            for marker, note in (("ALFA", "nota de alfa"), ("BETA", "nota de beta"), ("GAMA", "nota de gama")):
+                if marker in contents and contents.count("ALFA") + contents.count("BETA") + contents.count("GAMA") == contents.count(marker):
+                    quote = f"cita textual de {marker.lower()} en la conversacion"
+                    response.text = json.dumps({
+                        "resultados": [{"i": 0, "relevante": True, "situacion": f"situacion {marker}",
+                                        "que_hizo": note, "evidencia": quote}],
+                        "patrones": [],
+                    })
+            if not getattr(response, "text", None) or not isinstance(response.text, str):
+                response.text = json.dumps({"resultados": [{"i": 0, "relevante": True}], "patrones": []})
+            return response
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = generate_content
+        return client, calls
+
+    def test_each_conversation_gets_its_own_notes_and_no_neighbour_content(self) -> None:
+        resultados = [
+            {"contexto_conversacion": "ALFA cita textual de alfa en la conversacion y mas palabras"},
+            {"contexto_conversacion": "BETA cita textual de beta en la conversacion y mas palabras"},
+            {"contexto_conversacion": "GAMA cita textual de gama en la conversacion y mas palabras"},
+        ]
+        client, calls = self._client_answering_per_fragment()
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=client):
+            veredictos = vector_search._judge_relevance("consulta", resultados, model="m", api_key="k")
+        self.assertEqual(veredictos, [True, True, True])
+        self.assertEqual([r["notas"]["que_hizo"] for r in resultados], ["nota de alfa", "nota de beta", "nota de gama"])
+        self.assertEqual([r["notas"]["situacion"] for r in resultados], ["situacion ALFA", "situacion BETA", "situacion GAMA"])
+        # Sin analysis_out no hay llamada de grupo: exactamente una llamada por conversación.
+        self.assertEqual(client.models.generate_content.call_count, 3)
+        for prompt in calls:
+            self.assertEqual(sum(prompt.count(m) for m in ("ALFA", "BETA", "GAMA")) > 0, True)
+            self.assertEqual(len([m for m in ("ALFA", "BETA", "GAMA") if m in prompt]), 1)
+
+    def test_group_call_only_happens_when_patterns_are_requested(self) -> None:
+        resultados = [
+            {"contexto_conversacion": "ALFA cita textual de alfa en la conversacion y mas palabras"},
+            {"contexto_conversacion": "BETA cita textual de beta en la conversacion y mas palabras"},
+        ]
+        client, _calls = self._client_answering_per_fragment()
+        analysis: dict = {}
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=client):
+            vector_search._judge_relevance("consulta", resultados, model="m", api_key="k", analysis_out=analysis)
+        self.assertEqual(client.models.generate_content.call_count, 3)  # 2 conversaciones + 1 de grupo
+        self.assertIn("patrones", analysis)
+
+    def test_single_result_uses_a_single_call(self) -> None:
+        resultados = [{"contexto_conversacion": "ALFA cita textual de alfa en la conversacion y mas palabras"}]
+        client, _calls = self._client_answering_per_fragment()
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=client):
+            vector_search._judge_relevance("consulta", resultados, model="m", api_key="k", analysis_out={})
+        self.assertEqual(client.models.generate_content.call_count, 1)
+
+    def test_a_failing_conversation_call_keeps_that_result_without_notes(self) -> None:
+        resultados = [
+            {"contexto_conversacion": "ALFA cita textual de alfa en la conversacion y mas palabras"},
+            {"contexto_conversacion": "BETA cita textual de beta en la conversacion y mas palabras"},
+        ]
+        client, _calls = self._client_answering_per_fragment()
+        original = client.models.generate_content.side_effect
+
+        def flaky(*, model, contents, config):
+            if "BETA" in contents:
+                raise RuntimeError("falla transitoria")
+            return original(model=model, contents=contents, config=config)
+
+        client.models.generate_content.side_effect = flaky
+        with patch.object(vector_search, "_get_reusable_embed_client", return_value=client):
+            veredictos = vector_search._judge_relevance("consulta", resultados, model="m", api_key="k")
+        self.assertEqual(veredictos, [True, True])  # fail-open por conversación
+        self.assertIn("notas", resultados[0])
+        self.assertNotIn("notas", resultados[1])
 
 
 class SearchAppliesJudgeFilteringTests(_RedirectsUsageLogTestCase):
@@ -1045,7 +1198,7 @@ class AnalystNotesTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            veredictos = vector_search._judge_relevance(
+            veredictos = vector_search._judge_batch(
                 "cierre", resultados, model="m", api_key="k", **kwargs
             )
         return veredictos, mock_client
@@ -1279,7 +1432,7 @@ class PatronesEvidenceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            vector_search._judge_relevance("cierre", resultados, model="m", api_key="k", **kwargs)
+            vector_search._judge_batch("cierre", resultados, model="m", api_key="k", **kwargs)
 
     def _resultados(self) -> list[dict]:
         return [
@@ -1355,7 +1508,7 @@ class ContrasteEvidenceTests(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
         with patch.object(vector_search, "_get_reusable_embed_client", return_value=mock_client):
-            vector_search._judge_relevance(
+            vector_search._judge_batch(
                 "cierre", resultados, model="m", api_key="k", compare=True, **kwargs
             )
 

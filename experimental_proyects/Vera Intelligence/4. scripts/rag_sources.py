@@ -32,9 +32,6 @@ class RagSourceRepository:
     def available_sources(self) -> tuple[str, ...]:
         return tuple(sorted(self.client.rag_sources))
 
-    def has_complete_disk_cache(self) -> bool:
-        return all(self._cache_path(key).is_file() for key in self.available_sources())
-
     def get_store_name(self, source: str, *, refresh: bool = False) -> str:
         """Devuelve el nombre físico vigente del store; usa el último snapshot si falla la red."""
         return self._get(source, refresh=refresh)["store_name"]

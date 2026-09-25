@@ -2564,7 +2564,146 @@ sostiene este mecanismo.
   `cobertura_no_aplica: true` en el banco (soportado por `golden_groundtruth_eval.py`) y se revisaron a
   mano: q25 advierte la inconsistencia de la cascada, q21 nombra primero a Jorge Javier Martínez Blanco
   como en `respuesta_esperada`.
-- **Hallazgo aparte, sin resolver**: 2 de ~30 corridas devolvieron "No pude acceder a la información
-  necesaria en este momento" (`OperationalUnavailable`, `business_rules.py`) al inicio de un proceso; se
-  ve con corridas paralelas y es transitorio, pero conviene revisarlo si aparece en producción.
+- **Hallazgo aparte**: "No pude acceder a la información necesaria en este momento"
+  (`OperationalUnavailable`); investigado en la Iteración 61.
+
+### Iteración 61 — `OperationalUnavailable` = 503 "alta demanda" de Gemini (2026-09-24)
+
+- **Causa raíz confirmada** capturando `__context__` (el código usa `raise ... from None`): `ServerError 503
+  UNAVAILABLE: "This model is currently experiencing high demand. Spikes in demand are usually
+  temporary"`. No es un bug de negocio ni de base de datos (no era `business_rules.py`: ese archivo sólo
+  comparte la clase de excepción). Los 5 reintentos (2+4+8+16 = 30 s) se agotaban y el usuario recibía el
+  mensaje genérico. Con 6 procesos en paralelo: 4 de 12 pedidos fallaron. Historial de
+  `gemini_calls.jsonl`: 0,78% de las llamadas necesitaron reintento, todas concentradas en la hora de
+  mayor carga paralela del 2026-09-24 (14% de las llamadas de esa hora, hasta 5 intentos); los
+  días anteriores 0%. Los pedidos que agotan todos los reintentos no quedan en ese log.
+- **Cambio** (`vi_agent.py`): `MAX_RETRIES` 5 -> 6 (~62 s de espera nominal en total) y jitter de +-25%
+  (`_retry_delay`) para que varios procesos que fallan a la vez no reintenten sincronizados. Tras el
+  cambio, la misma prueba de 6 procesos: 1 de 12 falló (muestra chica y la demanda del proveedor varía:
+  indicio, no prueba). 1 test nuevo. Un usuario real puede ahora esperar hasta ~1 minuto antes de ver el
+  error genérico, en vez de ~30 s.
+- **No se hizo** (decisión de producto): cambiar de modelo automáticamente ante un 503 persistente (hay
+  `gemini-3.5-flash-lite` en `AVAILABLE_MODELS`), porque cambiaría en silencio qué modelo responde a un
+  cliente.
+- Hallazgo lateral: las llamadas históricas con `unverified_fallback` son 150 de 2.125 interacciones
+  (7%); el arreglo de `pct_evaluadas` (Iteración 59) quita una de las causas más frecuentes
+  ("base evaluada inválida": 57 reintentos registrados).
+
+### Iteración 62 — Notas útiles de verdad: el analista lee la conversación, una por una (2026-09-25)
+
+Pedido: que la búsqueda vectorial sea genuinamente útil (el índice queda aparte). Auditoría con datos reales:
+
+- **Fragmentos diminutos al primer puesto** (tigo_alto, "cliente pide cancelar el servicio"): el analista sólo
+  veía el chunk que matcheó, y varios eran restos del final de una conversación de 41, 87 o 160 caracteres
+  ("Speaker 0: cancelar el servicio de orden."): un texto tan corto se parece casi exactamente a una consulta
+  corta, así que sube al primer puesto sin contener información. Resultado: 2 de 7 notas con `que_hizo`, y una
+  `situacion` que sólo repetía la consulta. **Cambio** (`vector_search.py`): `_conversation_context` -el analista
+  lee la conversación completa si es corta, o apertura + tramo que matcheó + cierre si es larga, con `[...]`
+  marcando lo omitido- y las conversaciones de menos de 50 palabras ya no ocupan un lugar del top_k. El
+  contexto es interno (`contexto_conversacion`): nunca llega al modelo principal, igual que el fragmento.
+  El prompt del analista pide `situacion` con contexto concreto (producto, plan, motivo) y `como_termino` como
+  el desenlace de la conversación, no de ese momento.
+- **El analista mezclaba conversaciones vecinas**: con 8 conversaciones largas en una sola llamada, la nota
+  `que_hizo` y su cita de la conversación 5 salían textualmente de la 6, la de la 6 de la 7, y a veces devolvía
+  7 elementos para 8 (el mapeo por `i` quedaba corrido). La verificación mecánica de citas lo descartaba -36%
+  de las citas en 4 consultas reales, 28 de 35 rechazos por venir de OTRA conversación-, pero eso dejaba notas
+  vacías, y `situacion` (que no se verifica por diseño) podía quedar en la conversación equivocada.
+  **Cambio**: `_judge_relevance` ahora analiza CADA conversación en su propia llamada (en paralelo, mismo modelo
+  barato) y una llamada de grupo aparte arma sólo `patrones`/`contraste`, que necesitan ver varias. La lógica de
+  tanda quedó en `_judge_batch`, sin cambios. Marcadores explícitos ("### CONVERSACIÓN i ###") NO ayudaron y se
+  sacaron; un modelo más potente (gemini-3.7-flash como analista) tampoco: verificó menos citas (6-15 vs 14-17)
+  y con más citas sin origen -y además no se quiere un modelo más caro-.
+- **Resultado** (6 clientes, 38-41 resultados por corrida): `que_hizo` 83% -> **95%**, `como_termino` 54% ->
+  **74%**, palabras promedio de `situacion` 10,8 -> 15,3. tigo_alto: 2 de 8 -> 8 de 8 (`que_hizo`). Extremo a
+  extremo verificado ("qué pasa cuando un cliente viene a cancelar"): la respuesta usa la sección "En
+  conversaciones reales" con lo que hacen los asesores para retener (descuentos por seis meses, planes más
+  baratos). 574 tests (8 nuevos).
+- **Costo**: una búsqueda pasa de 1 llamada a N+1 del analista (medido: 6 llamadas, 18.009 tokens de entrada y
+  1.713 de salida en una búsqueda de 5 resultados; ~US$0,007 contra ~US$0,0035 antes, con precios
+  aproximados de flash-lite): cada texto se lee dos veces.
+- **Regresión mía, corregida a medias**: el filtro de analizables de la búsqueda (Iteración 59) obligaba a
+  consultar `core_v2.conversations` por cada candidato antes de ordenar y volvió más lenta la búsqueda abierta
+  (Tigo: medianas de ~4 s a 50-100 s en el log). Se sacó `cr.data->>'transcribedAudio'` de la consulta que
+  ordena (transcripción en dos etapas: la unión con el JSON crudo sólo para las <= 40 filas finales): ~40% más
+  rápido (Tigo 82 s -> 50 s promedio, mismos resultados). Sigue lento -el plan de Tigo es un escaneo completo
+  de 1,05 millones de vectores (~5 GB) y un ordenamiento en disco; `seller_id` de la tabla de embeddings está
+  vacío en el 99,8% de las filas, así que no sirve para filtrar-: es el tema del índice, que quedó aparte. Con
+  filtro de vendedor la búsqueda tarda 0,6-4 s. Bajo carga en paralelo, 3 de 4 búsquedas chocaron con el
+  timeout de 60 s de la base.
+- Costo optimizado en la Iteración 63.
+
+### Iteración 63 — Uso medido y costo de la búsqueda bajado (2026-09-25)
+
+- **Frecuencia de uso, medida** (24 preguntas de gerencia = 6 tipos x 4 clientes: mens_fashion, steren, tigo, high_life;
+  el agente real con `debug=True`, herramientas leídas de cada respuesta): abierta cualitativa 4/4, "por qué" 4/4,
+  coaching de equipo 4/4, pedido de ejemplos 4/4 -> **usa la búsqueda en 16 de 16**; solo un número 0/4 y ranking 0/4 ->
+  **no la usa donde no corresponde** (0 de 8). Ningún caso "debería y no usó", ningún fallback de verificación. Cuando la usa:
+  1 búsqueda (13 casos) o 2 (3 casos, coaching). El uso ya está saturado: el margen no está en usarla más, sino en que
+  aporte más (Iteración 62) y cueste menos. Muestra chica (4 clientes, 1 pregunta por tipo): no cubre clientes
+  sin `vector_search` (agrosuper, forever_21, shoe_box).
+- **Costo por búsqueda** (precios aprox. de flash-lite; una búsqueda de 5-8 conversaciones): original (1 llamada) ~US$0,0035;
+  análisis por conversación sin optimizar ~US$0,0071; ahora ~US$0,0028-0,0046 según cuántas conversaciones. Palancas:
+  1. **`top_k` 8 -> 5** en el prompt (`vi_agent.py`, "Usá top_k=5"): el modelo pedía siempre 8 (89 de las últimas 100
+     búsquedas). Medido en 4 consultas: top_k=8 US$0,0158 vs top_k=5 US$0,0069 (-56%; el costo crece más que lineal
+     porque también entran más conversaciones a la síntesis); notas con `que_hizo` 25/27 vs 18/18 (misma tasa);
+     patrones verificados 2 vs 1 (muestra chica: es el costo real de bajar a 5, hay menos conversaciones para
+     encontrar repeticiones).
+  2. **Patrones/contraste sobre las NOTAS ya verificadas**, no sobre los textos crudos (`_synthesize_across`): antes la
+     llamada de grupo releía todos los textos (~1/3 de los tokens). Las citas que pide salen de la lista de citas
+     ya verificadas de cada conversación y se vuelven a verificar contra el texto real (`_verify_patrones`,
+     `_verify_contraste`, extraídas de `_judge_batch` sin cambiar su lógica).
+  3. **Prompt por conversación sin el párrafo de patrones** (`_PATRONES_BLOCK`, ~280 tokens menos por llamada) y **tope de
+     contexto 1400 -> 1000 palabras** por conversación (apertura 120, cierre 200).
+- **Calidad tras optimizar** (6 clientes): `que_hizo` 90%, `como_termino` 62% (contra 95%/74% de la versión sin optimizar y
+  83%/54% del método original: dentro del ruido entre corridas, y por encima del original).
+- **Probado y descartado**: caché implícito de Gemini reordenando la plantilla (instrucciones primero, consulta al final):
+  `cached_content_token_count` = 0 en ambas búsquedas -no se activa para este modelo/tamaño-; se revirtió el orden.
+- **Costo de coaching** (modo comparación: vendedor + 4 compañeros): ~US$0,0087 medido en una pregunta de equipo
+  (10 llamadas); sigue siendo la búsqueda más cara.
+- **Sin commitear todavía** (incluye Iteraciones 61 a 63: reintentos de Gemini, consulta en dos etapas,
+  contexto de conversación, análisis por conversación, síntesis sobre notas y top_k=5).
+
+### Iteración 64 — Coaching: costo bajado sin perder contrastes (2026-09-25)
+
+- **Hallazgo**: el análisis por conversación (Iteración 62) mejora las notas pero EMPEORABA el coaching. Medido en 6 búsquedas
+  de coaching sobre el mismo vendedor (mens_fashion, "Ubaldo Ramos", 3 criterios x 2 frases): original (1 llamada con todo)
+  **5 contrastes y 6 patrones** de 6 búsquedas; por conversación + síntesis sobre notas 0-2 contrastes y 0-2 patrones;
+  por conversación + síntesis sobre textos recortados 2 contrastes y 0 patrones. Con sólo notas, el modelo no encuentra
+  conductas repetidas entre los dos grupos. Y para coaching no era más barato (~US$0,006 vs ~US$0,005-0,009).
+- **Cambios** (`vector_search.py`): (1) en modo comparación (`comparar_con_mejores`), `_judge_relevance` vuelve a UNA llamada
+  con todas las conversaciones (`_judge_batch`); el análisis por conversación queda para ejemplos/"por qué"/exploración;
+  (2) `_PEER_TOP_K` 4 -> 3 y el grupo del vendedor se topea en `_COACHING_MAX_TOP_K = 4` (7 conversaciones en vez de 9-12);
+  (3) prompt del analista compactado (~38% menos texto de instrucciones, ~250 tokens menos por llamada) sin cambiar las
+  reglas (relevancia, notas con límites, citas textuales verificadas por código, prohibido reformular el criterio);
+  (4) en modo checklist el prompt ahora dice explícitamente "IGNORÁ el punto 1 (RELEVANCIA)": el analista, viendo UNA
+  conversación, marcaba como no relevante a 3 de 9 aunque el checklist ya garantizaba el grupo, y se perdían.
+- **Resultado**: mismas 6 búsquedas: **5 contrastes y 6 patrones** con 7 conversaciones por búsqueda (vendedor 4 +
+  compañeros 3), igual que el original con 9. Costo por búsqueda de coaching medido en el log: ~8.700-9.400 tokens de
+  entrada y ~1.100 de salida = **~US$0,004** (antes de hoy ~US$0,005-0,006; con el análisis por conversación ~US$0,0087).
+- **Resumen de costo por tipo de búsqueda** (precios aprox. flash-lite): ejemplos/"por qué"/exploración ~US$0,003-0,005
+  (por conversación, top_k=5); coaching ~US$0,004 (una llamada, 4+3 conversaciones).
+- Los scripts de medición ad hoc no registraron todos los tokens del juez en el log; los costos de arriba salen de las
+  corridas donde el log sí los tenía.
+- **Sin commitear todavía** (Iteraciones 61 a 64).
+
+### Iteración 65 — Limpieza de código sin uso (2026-09-25)
+
+Barrido de TODO el proyecto (`1. vi_agent_tester.py`, `4. scripts/`, `5. tests/`) con análisis estático propio (AST, sin dependencias
+nuevas): definiciones y constantes sin referencias, importaciones sin usar, parámetros y variables sin leer, métodos sin
+llamadas, campos de dataclass que nunca se leen, definiciones duplicadas (que se pisarían entre sí), código inalcanzable,
+`if False`, helpers de tests sin usar, código comentado y archivos huérfanos. El proyecto estaba bastante ajustado. Se sacó:
+- `BusinessRulesRepository.has_complete_disk_cache` y `RagSourceRepository.has_complete_disk_cache` (sólo las llamaba un test) y ese test.
+- Importaciones sin usar `NUMBER_SPAN_RE` y `_normalize_number` en `data_map_auto_update.py`.
+- `promote(client_config, ...)`: el parámetro `client_config` no se usaba (ahora `promote(candidate_path, client_folder)`).
+- `_ensure_greeting(..., debug=)` en `streamlit_app.py`: el parámetro `debug` no se usaba.
+- `RegenerationResult.changed` y `.raw_answer` (se escribían pero nunca se leían).
+- `vi_agent.FIXED_TENANT` y `vi_agent.ALLOWED_SOURCES` (globales de "compatibilidad con evaluaciones previas": se asignaban en `configure_client` y nada las leía).
+- La rama `compare` de `_synthesize_across` (dejó de usarse en la Iteración 64: el modo comparación va por `_judge_batch`) y sus
+  placeholders en la plantilla de síntesis.
+- `2. clientes/mens_fashion_alto/preguntas/sql_generado_por_agente.sql` (artefacto de una evaluación vieja: nada lo generaba
+  ni lo leía; sólo figuraba en el árbol de archivos del README) y esa línea del README.
+Se dejó a propósito (documentado o de uso real): `load_feedback_events` / `load_question_events` (los cargadores de los logs,
+citados en `7. feedback/README.md`), `SheetsLogger.enabled`, el formato viejo de veredictos del juez (red de seguridad si el modelo
+devuelve una lista), el parámetro `incluir_fragmentos` (garantía estructural documentada) y los Data Maps de versiones viejas
+(registro histórico, nunca se borran). 573 tests en verde (uno menos: el de `has_complete_disk_cache`).
 

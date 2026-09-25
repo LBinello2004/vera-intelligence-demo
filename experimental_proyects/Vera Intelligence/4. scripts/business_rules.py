@@ -48,15 +48,6 @@ class BusinessRulesRepository:
     def available_rulebooks(self) -> tuple[str, ...]:
         return tuple(sorted(self.client.business_rulebooks))
 
-    def has_complete_disk_cache(self) -> bool:
-        # Un rulebook local (ver client_config.BusinessRulebookConfig) no tiene cache de disco
-        # -su contenido YA vive en el repo, no hace falta bajarlo de ningún lado- así que cuenta
-        # como "completo" trivialmente.
-        return all(
-            self.client.business_rulebooks[key].source == "local" or self._cache_path(key).is_file()
-            for key in self.available_rulebooks()
-        )
-
     def get(self, rulebook: str, *, refresh: bool = False) -> str:
         """Devuelve criterios vigentes; usa el último snapshot si falla la red.
 

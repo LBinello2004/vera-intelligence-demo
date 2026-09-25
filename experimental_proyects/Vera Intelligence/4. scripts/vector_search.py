@@ -18,6 +18,7 @@ Dos límites conocidos, deliberadamente no resueltos todavía (ver el README par
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import re
@@ -238,23 +239,30 @@ JUDGE_MODEL = "gemini-3.5-flash-lite"
 # terminó) y los patrones que se repiten -el insight que el checklist y el SQL no dan (cómo falla o
 # cómo acierta alguien, no sólo cuánto). Sigue aceptándose la respuesta vieja (array de booleanos)
 # por compatibilidad y fail-open.
+# Párrafo de `patrones` de la plantilla, separado el 2026-09-25: los análisis POR CONVERSACIÓN
+# (una sola conversación) no lo necesitan -un patrón exige ver 2 o más- y omitirlo ahorra ~280 tokens
+# por llamada. Se sigue usando en la tanda completa (`_judge_batch` con varias conversaciones).
+_PATRONES_BLOCK = (
+    'Además, "patrones": 0 a 3 conductas concretas del vendedor que se REPITEN en 2 o más de los fragmentos relevantes (cada una en una frase, en términos cualitativos, sin números). Mismo estándar que "que_hizo": un patrón no puede ser el criterio reformulado ("no ofrece complementos", "no indaga la ocasión de uso") -tiene que nombrar QUÉ hace en cambio o CÓMO se repite el detalle concreto (ej. "menciona el precio y las cuotas pero nunca pregunta si el cliente se lo va a llevar", no "no propone el cierre"). Cada patrón es un objeto {{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}: "evidencia_1" y "evidencia_2" son citas TEXTUALES de 3 a 20 palabras SEGUIDAS, cada una copiada de un fragmento DISTINTO de los dos (o más) que muestran esa repetición -se verifica por código que ambas existan, cada una en un fragmento diferente; si no hay dos fragmentos distintos que respalden la repetición, es preferible una lista vacía a un patrón sin sustancia real. Si no hay repetición real, lista vacía.'
+)
+
 _JUDGE_PROMPT_TEMPLATE = """Sos un analista estricto de conversaciones reales de venta en tienda, transcriptas por ASR (con ruido).
 
 Búsqueda: "{query}"
 {label_block}
-Un sistema de búsqueda por similitud encontró los siguientes fragmentos. Para CADA uno hacé dos cosas:
+Recibís conversaciones encontradas por similitud: completas si son cortas; si son largas, la apertura, el tramo que matcheó y el cierre, con [...] en lo omitido. Leé cada una ENTERA: lo más útil suele estar DESPUÉS del momento que matcheó (qué respondió el vendedor, cómo terminó). Para CADA una:
 
-1. RELEVANCIA: ¿el texto REALMENTE contiene evidencia directa de lo que pide la búsqueda (no un tema parecido)? Si es ambiguo, incompleto o sólo tangencial, relevante=false y dejá los demás campos vacíos.
-2. NOTAS (sólo si es relevante), en español, concretas y observables, sin inventar nada que el texto no muestre:
-   - "situacion": el momento puntual de la conversación (máx. 15 palabras).
-   - "que_hizo": qué hizo -o dejó de hacer- el VENDEDOR en ese momento y con qué palabras/gestos concretos (máx. 30 palabras). El rótulo "Speaker 0/1" no es confiable: deducí quién es el vendedor por el contexto (quien ofrece, muestra, cobra).
-   - "evidencia": copiá TEXTUAL (palabra por palabra, sin resumir ni corregir) un tramo de 3 a 20 palabras SEGUIDAS del fragmento que respalde "que_hizo" -se verifica por código contra el fragmento real; si "que_hizo" no se apoya en ningún tramo textual concreto, dejá "que_hizo" Y "evidencia" vacíos en vez de inventar una cita.
-   - "como_termino": cómo respondió el cliente o cómo terminó ese momento (máx. 12 palabras).
-   - "evidencia_como_termino": copiá TEXTUAL un tramo de 3 a 20 palabras SEGUIDAS del fragmento que respalde "como_termino" -mismo criterio que "evidencia" para "que_hizo": se verifica por código; si "como_termino" no se apoya en un tramo textual concreto, dejá "como_termino" Y "evidencia_como_termino" vacíos en vez de inventar un desenlace que el fragmento no muestra.
-Reglas: no inferir intenciones ni motivos internos; no usar números, porcentajes ni conteos; describí acciones, no juicios genéricos ("fue reactivo"). Cada fragmento es sólo un tramo de la conversación, con ruido: nunca afirmes que el vendedor "no hizo" o "no ofreció" algo -escribí "no se ve en el fragmento" o "no aparece en este tramo"-, y no agregues adjetivos ni tono ("negativo", "confuso", "desinteresado") que el texto no muestre. Si el texto contradice la etiqueta del checklist (el vendedor sí hizo lo esperado), describí eso tal cual.
-PROHIBIDO EN "que_hizo": reformular el nombre del criterio buscado con otras palabras (ej. si se busca "cierre de compra", "no concreta el cierre" o "no cierra la venta" es SÓLO el criterio dicho distinto -no aporta nada que el checklist no tuviera ya). Cada "que_hizo" tiene que nombrar la ACCIÓN o PRODUCTO concreto del fragmento: qué dijo exactamente, qué mostró, qué preguntó, sobre qué prenda/producto/monto -algo que sólo se sabe habiendo leído ESE fragmento puntual, no cualquier fragmento sobre el mismo criterio.
+1. RELEVANCIA: ¿contiene evidencia directa de lo que pide la búsqueda (no un tema parecido)? Si es ambiguo o tangencial: relevante=false y los demás campos vacíos.
+2. NOTAS (si es relevante), en español, concretas, observables y sin inventar:
+   - "situacion": el momento con su contexto concreto (producto, plan, motivo, pedido), sin repetir la búsqueda (máx. 20 palabras).
+   - "que_hizo": qué hizo -o dejó de hacer- el VENDEDOR, con palabras o gestos concretos (máx. 30 palabras). "Speaker 0/1" no es confiable: deducí quién es el vendedor por el contexto (quien ofrece, muestra, cobra).
+   - "evidencia": tramo TEXTUAL de 3 a 20 palabras seguidas (sin resumir ni corregir) que respalde "que_hizo"; se verifica por código. Sin una cita real, vaciá "que_hizo" y "evidencia".
+   - "como_termino": qué decidió, pidió o acordó el cliente al final (máx. 15 palabras).
+   - "evidencia_como_termino": ídem para "como_termino"; sin cita real, vaciá ambos.
+Reglas: sin intenciones ni motivos internos, sin números ni conteos; acciones, no juicios ("fue reactivo"); ni adjetivos ni tono que el texto no muestre. Es una transcripción con ruido: nunca afirmes que el vendedor "no hizo" algo, escribí "no se ve en el texto". Si el texto contradice la etiqueta del checklist, describí lo que pasó.
+PROHIBIDO en "que_hizo": reformular el criterio buscado ("no concreta el cierre" es el criterio dicho distinto, no aporta nada): nombrá la ACCIÓN o PRODUCTO concreto (qué dijo, mostró o preguntó; sobre qué prenda, producto o monto), algo que sólo se sabe leyendo ESA conversación.
 
-Además, "patrones": 0 a 3 conductas concretas del vendedor que se REPITEN en 2 o más de los fragmentos relevantes (cada una en una frase, en términos cualitativos, sin números). Mismo estándar que "que_hizo": un patrón no puede ser el criterio reformulado ("no ofrece complementos", "no indaga la ocasión de uso") -tiene que nombrar QUÉ hace en cambio o CÓMO se repite el detalle concreto (ej. "menciona el precio y las cuotas pero nunca pregunta si el cliente se lo va a llevar", no "no propone el cierre"). Cada patrón es un objeto {{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}: "evidencia_1" y "evidencia_2" son citas TEXTUALES de 3 a 20 palabras SEGUIDAS, cada una copiada de un fragmento DISTINTO de los dos (o más) que muestran esa repetición -se verifica por código que ambas existan, cada una en un fragmento diferente; si no hay dos fragmentos distintos que respalden la repetición, es preferible una lista vacía a un patrón sin sustancia real. Si no hay repetición real, lista vacía.
+{patrones_block}
 {compare_block}
 Fragmentos (numerados desde 0):
 {fragments_block}
@@ -266,8 +274,8 @@ _OUTPUT_SPEC_BASE = (
     'Devolvé SOLO un objeto JSON con exactamente esta forma, con UN elemento por cada uno de los {n} '
     'fragmentos (i = el número del fragmento, desde 0; no saltees ninguno), sin texto adicional:\n'
     '{{"resultados": [{{"i": 0, "relevante": true, "situacion": "...", "que_hizo": "...", '
-    '"evidencia": "...", "como_termino": "...", "evidencia_como_termino": "..."}}, ...], '
-    '"patrones": [{{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}]{contraste_field}}}'
+    '"evidencia": "...", "como_termino": "...", "evidencia_como_termino": "..."}}, ...]'
+    '{patrones_field}{contraste_field}}}'
 )
 
 # Modo comparación (2026-09-21): en UNA sola llamada el analista ve las conversaciones donde el
@@ -335,7 +343,8 @@ _MAX_CANDIDATES = 60
 # de ellos traer.
 _PEER_COUNT = 3
 _PEER_MIN_BASE = 15
-_PEER_TOP_K = 4
+_PEER_TOP_K = 3
+_COACHING_MAX_TOP_K = 4
 
 _DATE_FORMAT = "%Y-%m-%d"
 
@@ -659,6 +668,57 @@ def _reconstruct_chunk_text(transcript_srt: str, chunk_idx: int) -> str:
     return " ".join(words[start:end])
 
 
+def _analysis_text(resultado: dict) -> str:
+    """Texto que lee el analista y contra el que se verifican sus citas: la conversación (o sus
+    partes relevantes) si está, si no el fragmento reconstruido, si no el resumen verificado."""
+    return (
+        resultado.get("contexto_conversacion")
+        or resultado.get("fragmento_aproximado")
+        or resultado.get("resumen_verificado")
+        or ""
+    )
+
+
+# Contexto de conversación para el analista (2026-09-25, "que la búsqueda sea genuinamente útil").
+# Hallazgo con datos reales (tigo_alto, "cliente pide cancelar el servicio"): el analista sólo veía
+# el chunk que matcheó la búsqueda, y varios eran restos diminutos del final de una conversación
+# ("Speaker 0: cancelar el servicio de orden." -41 caracteres-, otros de 87 y 160): un texto tan
+# corto es semánticamente casi idéntico a una consulta corta, así que sube al primer puesto sin
+# contener información. Resultado: 5 de 7 notas sin `que_hizo` ni `como_termino`, y una `situacion`
+# que sólo repetía la consulta ("el cliente solicita la cancelación"). Además, lo valioso de una
+# búsqueda de situación está DESPUÉS del momento que matchea (qué respondió el asesor, cómo terminó),
+# que el chunk casi nunca incluye. Ahora el analista lee la conversación completa si es corta, o
+# apertura + el tramo que matcheó + cierre si es larga (los saltos se marcan con [...]).
+_CONTEXT_MAX_WORDS = 1000
+_CONTEXT_OPENING_WORDS = 120
+_CONTEXT_CLOSING_WORDS = 200
+_MIN_CONVERSATION_WORDS = 50
+
+
+def _conversation_context(transcript_srt: str, chunk_idx: int) -> tuple[str, int]:
+    """(texto para el analista, cantidad de palabras de la conversación completa)."""
+    words = _strip_srt_noise(transcript_srt).split()
+    total = len(words)
+    if total <= _CONTEXT_MAX_WORDS:
+        return " ".join(words), total
+    start = min(chunk_idx * _STEP_WORDS, max(total - 1, 0))
+    budget = _CONTEXT_MAX_WORDS - _CONTEXT_OPENING_WORDS - _CONTEXT_CLOSING_WORDS
+    end = min(start + _WINDOW_WORDS, start + budget)
+    parts: list[str] = []
+    if start > _CONTEXT_OPENING_WORDS:
+        parts.append(" ".join(words[:_CONTEXT_OPENING_WORDS]))
+        parts.append("[...]")
+        parts.append(" ".join(words[start:end]))
+    else:
+        parts.append(" ".join(words[:end]))
+    closing_start = max(end, total - _CONTEXT_CLOSING_WORDS)
+    if closing_start < total:
+        if closing_start > end:
+            parts.append("[...]")
+        parts.append(" ".join(words[closing_start:]))
+    return " ".join(parts), total
+
+
 # Cliente de Gemini reusable entre embeddings (2026-09-11) -mismo motivo y mismo patrón que
 # _get_reusable_connection() para Postgres más arriba: _embed_query() creaba un genai.Client nuevo
 # en CADA llamada, descartando el pool de conexiones HTTP/TLS a la API de Gemini de la llamada
@@ -765,7 +825,174 @@ def _json_safe(value):
     return value
 
 
+# Análisis POR CONVERSACIÓN (2026-09-25, "que la búsqueda sea genuinamente útil"). Hallazgo con datos
+# reales: al analizar 8 conversaciones largas en UNA llamada, el analista mezclaba el contenido de
+# vecinas -la nota `que_hizo` y su cita de la conversación 5 salían textualmente de la 6, la cita de
+# la 6 de la 7-, y a veces devolvía 7 elementos para 8 conversaciones, con lo que el mapeo por `i`
+# quedaba corrido. La verificación mecánica de citas lo descartaba (36% de las citas rechazadas en 4
+# consultas reales, 28 de 35 por venir de OTRA conversación), pero eso dejaba notas vacías; y
+# `situacion`, que no se verifica por diseño, podía quedar atribuida a la conversación equivocada.
+# Ahora cada conversación se analiza en su PROPIA llamada (en paralelo, mismo modelo barato: sin
+# vecinas no hay con qué mezclar) y una llamada de grupo aparte, también en paralelo, arma sólo
+# `patrones`/`contraste`, que por definición necesitan ver varias conversaciones (se siguen
+# verificando mecánicamente contra los textos). Costo: cada texto se lee dos veces en vez de una.
+_JUDGE_MAX_WORKERS = 8
+
+
 def _judge_relevance(
+    query: str,
+    resultados: list[dict],
+    *,
+    model: str,
+    api_key: str,
+    usage_recorder: "UsageRecorder | None" = None,
+    client_id: str = "",
+    label_context: str | None = None,
+    analysis_out: dict | None = None,
+    compare: bool = False,
+) -> list[bool]:
+    """Ver `_judge_batch` (el análisis de una tanda) y el comentario de arriba: notas y relevancia
+    por conversación en llamadas independientes; patrones/contraste en una llamada de grupo."""
+    common = dict(model=model, api_key=api_key, usage_recorder=usage_recorder, client_id=client_id)
+    if compare or len(resultados) <= 1:
+        # Modo comparación (coaching): UNA llamada con todas las conversaciones, como antes. El contraste
+        # vendedor-vs-compañeros necesita ver los dos grupos a la vez, y medido el 2026-09-25 el análisis
+        # por conversación + síntesis lo empeoraba (0-2 contrastes de 6 búsquedas vs 5 de 6) sin ser más
+        # barato. Ver Iteración 64 del README.
+        return _judge_batch(
+            query, resultados, label_context=label_context, analysis_out=analysis_out,
+            compare=compare, **common,
+        )
+
+    def single(index: int) -> tuple[bool, dict | None, dict | None]:
+        item = dict(resultados[index])
+        item.pop("notas", None)
+        verdict = _judge_batch(query, [item], label_context=label_context, **common)
+        return bool(verdict[0]), item.get("notas"), item.get("_evidencias")
+
+    with ThreadPoolExecutor(max_workers=min(_JUDGE_MAX_WORKERS, len(resultados))) as pool:
+        outcomes = list(pool.map(single, range(len(resultados))))
+
+    veredictos: list[bool] = []
+    for resultado, (verdict, notas, evidencias) in zip(resultados, outcomes):
+        veredictos.append(verdict)
+        if notas:
+            resultado["notas"] = notas
+        if evidencias:
+            resultado["_evidencias"] = evidencias
+    if analysis_out is not None:
+        # Patrones/contraste sobre las NOTAS ya verificadas, no sobre los textos crudos: por
+        # definición necesitan ver varias conversaciones, pero releer todas costaba lo mismo que
+        # analizarlas (medido: ~1/3 de los tokens de una búsqueda).
+        _synthesize_across(
+            query, resultados, label_context=label_context,
+            analysis_out=analysis_out, **common,
+        )
+    if label_context:
+        # Misma regla por grupo que en `_judge_batch`: con filtro de checklist, el grupo ya está
+        # definido por el dato estructurado; un grupo sin ninguna nota se conserva entero.
+        grupos = [resultado.get("grupo") for resultado in resultados]
+        for grupo in set(grupos):
+            indices = [i for i, g in enumerate(grupos) if g == grupo]
+            if not any(resultados[i].get("notas") for i in indices):
+                for i in indices:
+                    veredictos[i] = True
+            else:
+                for i in indices:
+                    veredictos[i] = bool(resultados[i].get("notas"))
+    return veredictos
+
+
+
+_SYNTHESIS_PROMPT_TEMPLATE = """Sos un analista estricto de conversaciones reales de venta o atención, transcriptas por ASR (con ruido).
+
+Búsqueda: "{query}"
+{label_block}
+Abajo hay las notas YA VERIFICADAS de {n} conversaciones distintas, cada una con las citas textuales que las respaldan. Buscá lo que SE REPITE entre ellas.
+
+"patrones": 0 a 3 conductas concretas del vendedor o asesor que se REPITEN en 2 o más de esas conversaciones (una frase cada una, cualitativa, sin números). Un patrón no puede ser el criterio reformulado ("no ofrece complementos", "no indaga la ocasión de uso"): tiene que nombrar QUÉ hace o CÓMO se repite el detalle concreto (ej. "menciona el precio y las cuotas pero nunca pregunta si el cliente se lo va a llevar"). Cada patrón es un objeto {{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}: "evidencia_1" y "evidencia_2" son citas COPIADAS EXACTAS, sin cambiar una letra, de la lista de citas de DOS conversaciones DISTINTAS que muestran esa repetición (se verifica por código contra el texto real). Si no hay repetición real, lista vacía.
+Conversaciones:
+{notes_block}
+
+{output_spec}
+"""
+
+_SYNTHESIS_OUTPUT_SPEC = (
+    'Devolvé SOLO un objeto JSON con exactamente esta forma, sin texto adicional:\n'
+    '{"patrones": [{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}]}'
+)
+
+
+def _synthesize_across(
+    query: str,
+    resultados: list[dict],
+    *,
+    model: str,
+    api_key: str,
+    usage_recorder: "UsageRecorder | None" = None,
+    client_id: str = "",
+    label_context: str | None = None,
+    analysis_out: dict,
+) -> None:
+    """Deja en `analysis_out` los `patrones` armados a partir de las notas ya verificadas de cada
+    conversación, no de los textos crudos (2026-09-25, costo). Las citas que pide el modelo salen de
+    la lista de citas ya verificadas y se vuelven a verificar mecánicamente contra el texto real
+    (`_verify_patrones`). Sólo se usa fuera del modo comparación: el `contraste` de coaching necesita
+    ver los dos grupos completos y sale de `_judge_batch` (ver `_judge_relevance`). Fail-open: ante
+    cualquier error no hay patrones, nunca se rompe la búsqueda."""
+    entries = []
+    for index, resultado in enumerate(resultados):
+        notas = resultado.get("notas") or {}
+        citas = [c for c in (resultado.get("_evidencias") or {}).values() if c]
+        if not citas:
+            continue
+        partes = [
+            f"situación: {notas['situacion']}" if notas.get("situacion") else "",
+            f"qué hizo: {notas['que_hizo']}" if notas.get("que_hizo") else "",
+            f"cómo terminó: {notas['como_termino']}" if notas.get("como_termino") else "",
+        ]
+        citas_texto = " ".join(f"«{c}»" for c in citas)
+        entries.append(f"[{index}] " + " | ".join(p for p in partes if p) + f" | citas: {citas_texto}")
+    analysis_out["patrones"] = []
+    if len(entries) < 2:
+        return
+    label_block = (
+        f"\nContexto del checklist automático sobre estas conversaciones: {label_context}\n"
+        if label_context
+        else ""
+    )
+    prompt = _SYNTHESIS_PROMPT_TEMPLATE.format(
+        query=query,
+        label_block=label_block,
+        n=len(entries),
+        notes_block="\n".join(entries),
+        output_spec=_SYNTHESIS_OUTPUT_SPEC,
+    )
+    try:
+        client = _get_reusable_embed_client(api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            ),
+        )
+        if usage_recorder is not None:
+            usage_recorder.record_response(
+                response, client_id=client_id, model=model, session_id="",
+                interaction_id=uuid.uuid4().hex, call_index=1, call_kind="search_judge", attempts=1,
+            )
+        parsed = json.loads(response.text)
+        if not isinstance(parsed, dict):
+            return
+        analysis_out["patrones"] = _verify_patrones(parsed.get("patrones"), resultados)
+    except Exception:  # noqa: BLE001 -fail-open
+        logger.warning("Síntesis de patrones de search_conversations falló.", exc_info=True)
+
+
+def _judge_batch(
     query: str,
     resultados: list[dict],
     *,
@@ -804,24 +1031,29 @@ def _judge_relevance(
     fragments_block = "\n".join(
         f"{i}. "
         + (f"[GRUPO {result.get('grupo', 'vendedor')}] " if compare else "")
-        + f"{result.get('fragmento_aproximado') or result.get('resumen_verificado') or '(sin texto disponible)'}"
+        + f"{_analysis_text(result) or '(sin texto disponible)'}"
         for i, result in enumerate(resultados)
     )
+    # Un patrón exige ver 2 o más conversaciones: con una sola no se pide (ahorra tokens por llamada).
+    want_patterns = analysis_out is not None and len(resultados) >= 2
     label_block = (
         f"\nContexto del checklist automático sobre TODAS estas conversaciones: {label_context}\n"
-        "Usalo para orientar tus notas: explicá qué pasó concretamente en el momento decisivo (si "
-        "el checklist marcó un fallo: qué hizo el vendedor en lugar de lo esperado; si marcó un "
-        "acierto: qué técnica concreta usó). IMPORTANTE: el checklist ya garantiza que la "
-        "conversación pertenece al grupo buscado, así que la búsqueda sólo sirvió para ordenar -no "
-        "descartes por no calzar exacto con la frase: marcá relevante=true siempre que el fragmento "
-        "muestre una interacción vendedor-cliente real -aunque el momento decisivo no aparezca "
-        "completo, describí en las notas qué hizo el vendedor en lo que SÍ se ve- y "
-        "relevante=false sólo si es ilegible o no hay interacción real.\n"
+        "IGNORÁ el punto 1 (RELEVANCIA): el checklist ya garantiza que la conversación pertenece al "
+        "grupo, la búsqueda sólo ordenó. Marcá relevante=true SIEMPRE, salvo que el texto sea ilegible "
+        "o no haya interacción vendedor-cliente real. Completá las notas siempre: explicá qué pasó en "
+        "el momento decisivo (fallo: qué hizo el vendedor en lugar de lo esperado; acierto: qué técnica "
+        "concreta usó); si el momento decisivo no se ve completo, describí lo que SÍ se ve.\n"
         if label_context
         else ""
     )
     output_spec = _OUTPUT_SPEC_BASE.format(
         n=len(resultados),
+        patrones_field=(
+            ', "patrones": [{{"patron": "...", "evidencia_1": "...", "evidencia_2": "..."}}]'
+            .replace("{{", "{").replace("}}", "}")
+            if want_patterns
+            else ""
+        ),
         contraste_field=(
             ', "contraste": [{{"situacion": "...", "vendedor": "...", "evidencia_vendedor": "...", '
             '"companeros": "...", "evidencia_companeros": "..."}}]'
@@ -834,6 +1066,7 @@ def _judge_relevance(
         query=query,
         label_block=label_block,
         compare_block=_COMPARE_BLOCK if compare else "",
+        patrones_block=_PATRONES_BLOCK if want_patterns else "",
         fragments_block=fragments_block,
         output_spec=output_spec,
     )
@@ -910,13 +1143,24 @@ def _judge_relevance(
                 # principio: afirma un desenlace -qué hizo o dijo el CLIENTE- tan verificable como
                 # "que_hizo" afirma una acción del vendedor, mismo riesgo real de "no se ve en el
                 # fragmento" tratado como hecho).
-                fragmento = resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
-                if notas["que_hizo"] and not _evidence_supported(item.get("evidencia"), fragmento):
-                    notas["que_hizo"] = ""
-                if notas["como_termino"] and not _evidence_supported(item.get("evidencia_como_termino"), fragmento):
-                    notas["como_termino"] = ""
+                fragmento = _analysis_text(resultado)
+                evidencias: dict[str, str] = {}
+                if notas["que_hizo"]:
+                    if _evidence_supported(item.get("evidencia"), fragmento):
+                        evidencias["que_hizo"] = str(item.get("evidencia"))
+                    else:
+                        notas["que_hizo"] = ""
+                if notas["como_termino"]:
+                    if _evidence_supported(item.get("evidencia_como_termino"), fragmento):
+                        evidencias["como_termino"] = str(item.get("evidencia_como_termino"))
+                    else:
+                        notas["como_termino"] = ""
                 if any(notas.values()):
                     resultado["notas"] = notas
+                    # Interno (2026-09-25): las citas YA verificadas alimentan la síntesis de
+                    # patrones/contraste sobre notas (`_synthesize_across`); se descartan antes de
+                    # devolver el resultado, igual que el contexto de la conversación.
+                    resultado["_evidencias"] = evidencias
         if label_context:
             # Con filtro de checklist el grupo ya está definido por el dato estructurado (no por la
             # frase de búsqueda): la relevancia del analista no debe vaciar el resultado. Se
@@ -934,66 +1178,9 @@ def _judge_relevance(
                     for i in indices:
                         veredictos[i] = bool(resultados[i].get("notas"))
         if analysis_out is not None and compare:
-            raw_contraste = parsed.get("contraste")
-            # Verificación mecánica por lado (2026-09-22, misma idea que "que_hizo" pero aplicada a
-            # "contraste"): acá NO hay un único fragmento fuente -cada lado sintetiza un patrón
-            # entre varios fragmentos de SU grupo-, así que la cita de respaldo se busca contra
-            # CUALQUIERA de los fragmentos de ESE grupo, no contra uno específico.
-            fragmentos_por_grupo: dict[str, list[str]] = {"vendedor": [], "companeros": []}
-            for resultado in resultados:
-                grupo = resultado.get("grupo") or "vendedor"
-                fragmentos_por_grupo.setdefault(grupo, []).append(
-                    resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
-                )
-            pares = []
-            for par in raw_contraste if isinstance(raw_contraste, list) else []:
-                if not isinstance(par, dict):
-                    continue
-                limpio = {k: _clean_note(par.get(k)) for k in ("situacion", "vendedor", "companeros")}
-                vendedor_respaldado = any(
-                    _evidence_supported(par.get("evidencia_vendedor"), frag)
-                    for frag in fragmentos_por_grupo["vendedor"]
-                )
-                companeros_respaldado = any(
-                    _evidence_supported(par.get("evidencia_companeros"), frag)
-                    for frag in fragmentos_por_grupo["companeros"]
-                )
-                if limpio["vendedor"] and limpio["companeros"] and vendedor_respaldado and companeros_respaldado:
-                    pares.append(limpio)
-            analysis_out["contraste"] = pares[:3]
+            analysis_out["contraste"] = _verify_contraste(parsed.get("contraste"), resultados)
         if analysis_out is not None:
-            # Verificación mecánica de "patrones" (2026-09-22, mismo día, último campo sin verificar
-            # de los que arma el analista): a diferencia de "que_hizo" (un fragmento) o "contraste"
-            # (cualquiera de UN grupo), un patrón afirma una REPETICIÓN -así que exige dos citas
-            # reales en DOS fragmentos DISTINTOS, no sólo una cita cualquiera. Sin esto, "patrones"
-            # era el único campo puramente atestiguado por el modelo ("esto se repite, confiá en
-            # mí") sin ningún chequeo de código detrás.
-            fragmentos_todos = [
-                resultado.get("fragmento_aproximado") or resultado.get("resumen_verificado") or ""
-                for resultado in resultados
-            ]
-            raw_patrones = parsed.get("patrones")
-            patrones_verificados = []
-            for item in raw_patrones if isinstance(raw_patrones, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                patron = _clean_note(item.get("patron"))
-                if not patron:
-                    continue
-                indice_1 = next(
-                    (i for i, frag in enumerate(fragmentos_todos) if _evidence_supported(item.get("evidencia_1"), frag)),
-                    None,
-                )
-                indice_2 = next(
-                    (
-                        i for i, frag in enumerate(fragmentos_todos)
-                        if i != indice_1 and _evidence_supported(item.get("evidencia_2"), frag)
-                    ),
-                    None,
-                )
-                if indice_1 is not None and indice_2 is not None:
-                    patrones_verificados.append(patron)
-            analysis_out["patrones"] = patrones_verificados[:3]
+            analysis_out["patrones"] = _verify_patrones(parsed.get("patrones"), resultados)
         return veredictos
     except Exception:  # noqa: BLE001 -fail-open, ver docstring.
         logger.warning(
@@ -1003,6 +1190,62 @@ def _judge_relevance(
             exc_info=True,
         )
         return [True] * len(resultados)
+
+
+def _verify_contraste(raw_contraste: object, resultados: list[dict]) -> list[dict]:
+    """Verificación mecánica por lado (2026-09-22, misma idea que "que_hizo" pero aplicada a
+    "contraste"): acá NO hay un único fragmento fuente -cada lado sintetiza un patrón entre varias
+    conversaciones de SU grupo-, así que la cita de respaldo se busca contra CUALQUIERA de las
+    conversaciones de ESE grupo, no contra una específica. (Extraído de `_judge_batch` el
+    2026-09-25 para que la síntesis sobre notas use exactamente el mismo chequeo.)"""
+    fragmentos_por_grupo: dict[str, list[str]] = {"vendedor": [], "companeros": []}
+    for resultado in resultados:
+        grupo = resultado.get("grupo") or "vendedor"
+        fragmentos_por_grupo.setdefault(grupo, []).append(_analysis_text(resultado))
+    pares = []
+    for par in raw_contraste if isinstance(raw_contraste, list) else []:
+        if not isinstance(par, dict):
+            continue
+        limpio = {k: _clean_note(par.get(k)) for k in ("situacion", "vendedor", "companeros")}
+        vendedor_respaldado = any(
+            _evidence_supported(par.get("evidencia_vendedor"), frag)
+            for frag in fragmentos_por_grupo["vendedor"]
+        )
+        companeros_respaldado = any(
+            _evidence_supported(par.get("evidencia_companeros"), frag)
+            for frag in fragmentos_por_grupo["companeros"]
+        )
+        if limpio["vendedor"] and limpio["companeros"] and vendedor_respaldado and companeros_respaldado:
+            pares.append(limpio)
+    return pares[:3]
+
+
+def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
+    """Verificación mecánica de "patrones" (2026-09-22): un patrón afirma una REPETICIÓN, así que
+    exige dos citas reales en DOS conversaciones DISTINTAS, no sólo una cita cualquiera. Sin esto,
+    "patrones" era un campo puramente atestiguado por el modelo ("esto se repite, confiá en mí")."""
+    fragmentos_todos = [_analysis_text(resultado) for resultado in resultados]
+    patrones_verificados = []
+    for item in raw_patrones if isinstance(raw_patrones, list) else []:
+        if not isinstance(item, dict):
+            continue
+        patron = _clean_note(item.get("patron"))
+        if not patron:
+            continue
+        indice_1 = next(
+            (i for i, frag in enumerate(fragmentos_todos) if _evidence_supported(item.get("evidencia_1"), frag)),
+            None,
+        )
+        indice_2 = next(
+            (
+                i for i, frag in enumerate(fragmentos_todos)
+                if i != indice_1 and _evidence_supported(item.get("evidencia_2"), frag)
+            ),
+            None,
+        )
+        if indice_1 is not None and indice_2 is not None:
+            patrones_verificados.append(patron)
+    return patrones_verificados[:3]
 
 
 class VectorSearchRepository:
@@ -1070,13 +1313,11 @@ class VectorSearchRepository:
             "r.store_name",
             "r.employee_full_name",
             "r.started_at",
-            "cr.data->>'transcribedAudio' AS transcript",
             "conv.conversation_id",
         ]
         joins = [
             "FROM analytics_v2.conversation_embeddings ce",
             "JOIN mart_v2.recordings_enriched r ON r.recording_id = ce.recording_id",
-            "JOIN raw_v2.conversations_raw cr ON cr.recording_id = ce.recording_id",
             """LEFT JOIN LATERAL (
                 SELECT c.conversation_id, c.useful_for_analysis
                 FROM core_v2.conversations c
@@ -1112,6 +1353,9 @@ class VectorSearchRepository:
 
         sql = "SELECT " + ", ".join(select_columns) + "\n" + "\n".join(joins) + "\n"
         sql += "WHERE r.seller_id = %s\n  AND ce.embedding_config_id = %s\n"
+        # Semi-join en vez de JOIN (ver el SELECT exterior más abajo): conserva el mismo criterio de
+        # "sólo conversaciones con transcripción cruda" SIN acarrear la columna JSON gigante.
+        sql += "  AND EXISTS (SELECT 1 FROM raw_v2.conversations_raw cr0 WHERE cr0.recording_id = ce.recording_id)\n"
         # Norma general del proyecto (2026-09-24, decisión de producto explícita): todo se calcula y
         # se muestra sobre conversaciones ANALIZABLES. Antes la búsqueda no filtraba: entre 3% y 19%
         # de los embeddings de cada cliente son de conversaciones no analizables (Steren 5.592 de
@@ -1142,6 +1386,21 @@ class VectorSearchRepository:
             # valor Sí/No va siempre como parámetro.
             sql += f'  AND perf."{criterio}" = %s\n'
         sql += "ORDER BY ce.embedding <=> %s::vector\nLIMIT %s\n"
+        # Transcripción en DOS ETAPAS (2026-09-25, investigación de latencia de la búsqueda: el log de
+        # producción mostraba query_ms con medianas de 10 a 100 s y máximos de 150 s en Farma24, Tigo,
+        # Maga y Mens Fashion). Antes, `cr.data->>'transcribedAudio'` (el JSON de la conversación
+        # completa) estaba en el SELECT de la misma consulta que ordena por distancia: PostgreSQL lo
+        # evalúa por cada fila candidata ANTES del ORDER BY ... LIMIT, o sea decenas de miles de
+        # transcripciones extraídas para quedarse con `candidate_limit` (<= 40). Ahora la consulta
+        # interior sólo ordena por distancia y recorta; la transcripción se une recién para esas filas.
+        sql = (
+            "SELECT top.recording_id, top.chunk_idx, top.store_name, top.employee_full_name, "
+            "top.started_at, cr.data->>'transcribedAudio' AS transcript, top.conversation_id, "
+            "top.resumen_ejecutivo_conversacion, top.distancia\n"
+            "FROM (\n" + sql + ") top\n"
+            "JOIN raw_v2.conversations_raw cr ON cr.recording_id = top.recording_id\n"
+            "ORDER BY top.distancia\n"
+        )
 
         candidate_limit = min(top_k * _CANDIDATE_MULTIPLIER, _MAX_CANDIDATES)
         params: list[object] = [vector_literal]  # distancia (SELECT)
@@ -1230,15 +1489,25 @@ class VectorSearchRepository:
                 continue
             seen_keys.add(dedup_key)
 
+            contexto, total_palabras = (
+                _conversation_context(transcript, chunk_idx) if transcript else (None, 0)
+            )
+            if transcript and total_palabras < _MIN_CONVERSATION_WORDS:
+                # Conversación demasiado corta para aprender algo (un saludo, un "cancelar el
+                # servicio" suelto): no consume un lugar del top_k -ver _conversation_context.
+                continue
+
             distancia = float(distancia)
             if mejor_distancia is None:
                 mejor_distancia = distancia
             fragmento = (
                 _reconstruct_chunk_text(transcript, chunk_idx) if transcript else None
             )
-            posible_instruccion_incrustada = _contains_possible_injection_marker(
-                fragmento
-            ) or _contains_possible_injection_marker(resumen_verificado)
+            posible_instruccion_incrustada = (
+                _contains_possible_injection_marker(fragmento)
+                or _contains_possible_injection_marker(contexto)
+                or _contains_possible_injection_marker(resumen_verificado)
+            )
             resultados.append(
                 {
                     "conversation_id": conversation_id,
@@ -1257,6 +1526,9 @@ class VectorSearchRepository:
                     "distancia_relativa_al_mejor_resultado": round(distancia - mejor_distancia, 4),
                     "resumen_verificado": _sanitize_offensive_language(resumen_verificado),
                     "fragmento_aproximado": _sanitize_offensive_language(fragmento),
+                    # Interno: lo lee el analista y la verificación de citas; se descarta antes de
+                    # devolver el resultado (ver el final de search()), igual que el fragmento.
+                    "contexto_conversacion": _sanitize_offensive_language(contexto),
                     "posible_instruccion_incrustada": posible_instruccion_incrustada,
                 }
             )
@@ -1448,6 +1720,10 @@ class VectorSearchRepository:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("La búsqueda requiere un texto no vacío.")
         top_k = max(_MIN_TOP_K, min(int(top_k), _MAX_TOP_K))
+        if comparar_con_mejores:
+            # Coaching (2026-09-25, costo): la comparación ya suma _PEER_TOP_K conversaciones de compañeros;
+            # con 4 del vendedor alcanza para el contraste y baja el costo de la búsqueda más cara.
+            top_k = min(top_k, _COACHING_MAX_TOP_K)
         store_name = _as_optional_str(store_name)
         employee_name = _as_optional_str(employee_name)
         date_from = _as_optional_str(date_from)
@@ -1667,5 +1943,7 @@ class VectorSearchRepository:
             # modelo no lo pidió esta vez", es una garantía estructural permanente.
             for item in [*payload["resultados"], *payload.get("companeros", [])]:
                 item.pop("fragmento_aproximado", None)
+                item.pop("contexto_conversacion", None)
+                item.pop("_evidencias", None)
                 item.pop("resumen_verificado", None)
         return json.dumps(payload, ensure_ascii=False, default=str)

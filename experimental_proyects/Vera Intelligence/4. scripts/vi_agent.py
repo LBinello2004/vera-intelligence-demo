@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import json
 import os
+import random
 import re
 import sys
 import tempfile
@@ -61,8 +62,20 @@ from vector_search import VectorSearchRepository  # noqa: E402
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-MAX_RETRIES = 5
+# Reintentos de Gemini (2026-09-24, investigación de OperationalUnavailable): el 503 "This model is
+# currently experiencing high demand. Spikes in demand are usually temporary" agotaba los 5 intentos
+# (2+4+8+16 = 30 s) y le mostraba al usuario el error genérico; con 6 procesos en paralelo falló 4 de
+# 12 pedidos. Sube a 6 intentos (~62 s en total) y agrega jitter (`_retry_delay`): sin él, varios
+# procesos que fallan a la vez reintentan sincronizados y vuelven a chocar con el mismo pico.
+MAX_RETRIES = 6
 RETRY_BASE_DELAY_SECONDS = 2
+RETRY_JITTER_FRACTION = 0.25
+
+
+def _retry_delay(attempt: int) -> float:
+    """Backoff exponencial con jitter de +-25%: 2, 4, 8, 16, 32 s nominales."""
+    nominal = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+    return round(nominal * random.uniform(1 - RETRY_JITTER_FRACTION, 1 + RETRY_JITTER_FRACTION), 2)
 MAX_CLIENT_REWRITES = 4
         # SUBIDO de 1 a 2 (2026-09-18): con el trigger de search_conversations mucho más agresivo y
         # el presupuesto por criterio de coaching de equipo (ver _build_extra_tools_section), las
@@ -149,8 +162,6 @@ DEFAULT_TEMPERATURE: float | None = 0.1
 CLIENT_CONFIG: ClientConfig
 DATA_MAP_PATH: Path
 MODEL: str
-FIXED_TENANT: str  # compatibilidad con evaluaciones previas
-ALLOWED_SOURCES: set[str]
 _RULES_REPOSITORY: BusinessRulesRepository
 _RAG_REPOSITORY: RagSourceRepository
 _VECTOR_SEARCH_REPOSITORY: VectorSearchRepository | None
@@ -251,7 +262,7 @@ def configure_client(client_id: str = "mens_fashion_alto", *, model_override: st
     `model_override`: sólo para pruebas manuales (ver AVAILABLE_MODELS) -reemplaza el `model` del
     config.yaml del cliente para esta sesión, sin tocar el archivo ni afectar producción.
     """
-    global CLIENT_CONFIG, DATA_MAP_PATH, MODEL, FIXED_TENANT, ALLOWED_SOURCES
+    global CLIENT_CONFIG, DATA_MAP_PATH, MODEL
     global _RULES_REPOSITORY, _RAG_REPOSITORY, _VECTOR_SEARCH_REPOSITORY
     global _USAGE_RECORDER, _INTERACTION_OUTCOME_RECORDER, _CLIENT_INTERNAL_IDENTIFIERS
 
@@ -260,8 +271,6 @@ def configure_client(client_id: str = "mens_fashion_alto", *, model_override: st
         CLIENT_CONFIG = dataclasses.replace(CLIENT_CONFIG, model=model_override)
     DATA_MAP_PATH = CLIENT_CONFIG.data_map_path
     MODEL = CLIENT_CONFIG.model
-    FIXED_TENANT = CLIENT_CONFIG.tenant
-    ALLOWED_SOURCES = set(CLIENT_CONFIG.sources)
     _RULES_REPOSITORY = BusinessRulesRepository(CLIENT_CONFIG, PROJECT_ROOT)
     _RAG_REPOSITORY = RagSourceRepository(CLIENT_CONFIG, PROJECT_ROOT)
     _USAGE_RECORDER = UsageRecorder(USAGE_LOG_PATH)
@@ -590,7 +599,7 @@ def _build_extra_tools_section() -> str:
             "que el nombre dado es ambiguo entre varios vendedores reales y no lo resolviste, no "
             "busques para esa persona. Con employee_name, si no trae nada, NO saques el filtro para "
             "rellenar con otra persona. store_name y date_from/date_to sólo si la pregunta los "
-            "menciona. Usá top_k=8. 'criterio' y 'resultado' siempre juntos ('Sí' o 'No'); si el "
+            "menciona. Usá top_k=5 (2026-09-25, costo: cada conversación se analiza aparte y 8 costaba más del doble que 5 sin agregar información nueva a la respuesta). 'criterio' y 'resultado' siempre juntos ('Sí' o 'No'); si el "
             "criterio no es válido, el error lista los permitidos. Formulá la query anclada en "
             "situaciones, productos u ocasiones REALES de este negocio (Data Map, rulebooks o "
             f"valores que ya viste en SQL), en el vocabulario de {CLIENT_CONFIG.display_name} -los "
@@ -1737,7 +1746,7 @@ def _send_message_stream_with_retry(
             )
             if not retryable or attempt == MAX_RETRIES:
                 raise
-            delay = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            delay = _retry_delay(attempt)
             if debug:
                 print(
                     f"  [internal] error transitorio {status_code or type(exc).__name__} "
@@ -1800,7 +1809,7 @@ def _send_message_with_retry(
             )
             if not retryable or attempt == MAX_RETRIES:
                 raise
-            delay = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            delay = _retry_delay(attempt)
             if debug:
                 print(
                     f"  [internal] error transitorio {status_code or type(exc).__name__} "

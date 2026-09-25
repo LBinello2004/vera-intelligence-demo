@@ -822,7 +822,7 @@ def _init_client(client_id: str, display_name: str, model_override: str) -> None
         st.session_state["greeted"] = False
 
 
-def _ensure_greeting(display_name: str, *, debug: bool) -> None:
+def _ensure_greeting(display_name: str) -> None:
     if st.session_state.get("greeted"):
         return
     ui_run_id = st.session_state.get("ui_run_id")
@@ -1100,7 +1100,7 @@ def main() -> None:
     if debug:
         st.sidebar.caption("🔧 Trazas internas activas")
 
-    _ensure_greeting(chosen_display_name, debug=debug)
+    _ensure_greeting(chosen_display_name)
 
     previous_question: str | None = None
     for message in st.session_state["messages"]:

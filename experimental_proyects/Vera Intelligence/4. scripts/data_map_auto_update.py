@@ -218,11 +218,9 @@ FORMATO DE RESPUESTA FINAL (exacto, sin texto antes ni después de los delimitad
 
 @dataclass
 class RegenerationResult:
-    changed: bool
     candidate_path: Path | None = None
     changelog: str | None = None
     tool_calls: list[dict] = field(default_factory=list)
-    raw_answer: str | None = None
     error: str | None = None
 
 
@@ -257,7 +255,7 @@ def _extract_delimited(raw_answer: str) -> tuple[str, str]:
 
 def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChange]) -> RegenerationResult:
     if not changes:
-        return RegenerationResult(changed=False)
+        return RegenerationResult()
 
     current_path = client_config.data_map_path
     next_path, next_version_label, next_semver = _next_data_map_path(current_path)
@@ -319,23 +317,18 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
                     )
             except (ValueError, yaml.YAMLError) as exc:
                 return RegenerationResult(
-                    changed=True,
                     tool_calls=tool_calls_log,
-                    raw_answer=raw_answer,
                     error=f"Respuesta de Gemini inválida, no se escribió ningún archivo: {exc}",
                 )
             next_path.write_text(data_map_yaml, encoding="utf-8")
             return RegenerationResult(
-                changed=True,
                 candidate_path=next_path,
                 changelog=changelog,
                 tool_calls=tool_calls_log,
-                raw_answer=raw_answer,
             )
 
         if tool_call_count + len(function_calls) > MAX_REGENERATION_TOOL_CALLS:
             return RegenerationResult(
-                changed=True,
                 tool_calls=tool_calls_log,
                 error="Se agotó el límite de llamadas a run_readonly_sql antes de terminar.",
             )
@@ -358,7 +351,7 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
         message = function_responses
 
     return RegenerationResult(
-        changed=True, tool_calls=tool_calls_log, error="Se agotaron los turnos sin una respuesta final."
+        tool_calls=tool_calls_log, error="Se agotaron los turnos sin una respuesta final."
     )
 
 
@@ -389,10 +382,8 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
 # Comportamiento idéntico; se reimportan acá con los mismos nombres que ya usaba este archivo para
 # no romper nada que los referencie.
 from numeric_text import (  # noqa: E402
-    NUMBER_SPAN_RE,
     close_enough as _close_enough,
     is_float as _is_float,
-    normalize_number as _normalize_number,
     numbers_in as _numbers,
 )
 
@@ -641,7 +632,7 @@ def run_gate(client_config: ClientConfig, candidate_data_map_path: Path, client_
 # --------------------------------------------------------------------------
 
 
-def promote(client_config: ClientConfig, candidate_path: Path, client_folder: str) -> None:
+def promote(candidate_path: Path, client_folder: str) -> None:
     config_path = CLIENTS_ROOT / client_folder / "config.yaml"
     text = config_path.read_text(encoding="utf-8")
     relative_candidate = candidate_path.relative_to(PROJECT_ROOT).as_posix()
@@ -775,7 +766,7 @@ def run_for_client(client_id: str, *, dry_run: bool = False) -> dict:
         summary["column_drift"] = column_drift
         summary["status"] = "deriva_de_columnas_no_promovido"
     elif gate.passed:
-        promote(client_config, regeneration.candidate_path, client_folder)
+        promote(regeneration.candidate_path, client_folder)
         summary["status"] = "promovido"
     else:
         summary["status"] = "gate_fallo_no_promovido"

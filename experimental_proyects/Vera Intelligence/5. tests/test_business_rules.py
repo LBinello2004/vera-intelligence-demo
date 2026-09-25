@@ -113,13 +113,6 @@ class BusinessRulesTests(unittest.TestCase):
         self.assertEqual(payload["rules_version"], "local")
         self.assertIn("coach comercial senior", payload["criteria_text"])
 
-    def test_has_complete_disk_cache_counts_local_rulebooks_as_satisfied(self) -> None:
-        repository = BusinessRulesRepository(self.client, self.project_root)
-        # sales_evaluation/conversation_insights (langfuse) no tienen cache todavía en este
-        # project_root temporal -sólo coaching_playbook (local) debería contar como satisfecho, y
-        # como no son todos, el resultado global sigue siendo False.
-        self.assertFalse(repository.has_complete_disk_cache())
-
     def test_unavailable_rulebook_without_snapshot_is_a_terminal_operational_error(self) -> None:
         repository = BusinessRulesRepository(self.client, self.project_root)
         with patch.object(repository, "_fetch", side_effect=RuntimeError("credenciales secretas")):
