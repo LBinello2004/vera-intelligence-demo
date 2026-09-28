@@ -2707,3 +2707,229 @@ citados en `7. feedback/README.md`), `SheetsLogger.enabled`, el formato viejo de
 devuelve una lista), el parámetro `incluir_fragmentos` (garantía estructural documentada) y los Data Maps de versiones viejas
 (registro histórico, nunca se borran). 573 tests en verde (uno menos: el de `has_complete_disk_cache`).
 
+### Iteración 66 — Multi-query + Reciprocal Rank Fusion (2026-09-28)
+
+Pedido explícito: "quiero que sigamos mejorando Vera Intelligence... idealmente las mejoras son
+significativas en cuanto a búsqueda vectorial". Con el índice vectorial y el modelo juez
+explícitamente fuera de alcance (decisiones ya tomadas en sesiones anteriores), la palanca que
+quedaba sin explorar era la recuperación en sí: hoy cada búsqueda embebe UNA sola formulación de la
+consulta. Un solo embedding es un solo punto del espacio semántico -si esa formulación puntual no
+queda bien ubicada respecto a cómo se habló realmente en las conversaciones reales, una conversación
+relevante puede no entrar nunca al radar, no porque no exista sino porque esa consulta concreta no
+la encuentra.
+
+- **Cambio**: `search()` acepta un `query_alternativa` opcional -una segunda formulación de la MISMA
+  intención, con otras palabras. Si se pasa (y no coincide textualmente con `query`, en cuyo caso se
+  ignora), se embeben AMBAS formulaciones y se recupera con cada una (`top_k*2`, tope `_MAX_TOP_K`,
+  para darle a la fusión algo real que fusionar en vez de dos listas ya recortadas a `top_k`); los
+  dos rankings se funden por Reciprocal Rank Fusion (`_reciprocal_rank_fusion`, `_RRF_K=60`, estándar
+  de motores de búsqueda híbrida) y se recorta a `top_k` antes del juez -que corre una sola vez sobre
+  el resultado ya fusionado, mismo costo de judge que antes. Deduplicado por `conversation_id`: si la
+  misma conversación aparece en ambas formulaciones, se queda con la copia de menor distancia pero
+  ambas apariciones suman al puntaje de fusión (aparecer en las dos es la señal fuerte).
+- **Costo**: NINGUNA llamada extra a Gemini para generar la segunda formulación -la genera el propio
+  modelo principal al armar la tool call, que de todos modos ya reformula la query antes de buscar
+  (ver Iteración 10). El costo real incremental es sólo un segundo embedding (barato) y una segunda
+  consulta SQL (serializada por `_connection_lock`, ver Iteración 13) -no una segunda pasada del
+  analista. `_log_search_event` ahora registra `multi_query_used` para medir con datos reales cuánto
+  se usa y qué impacto real tiene en latencia, igual que el resto de las decisiones de este proyecto.
+- **Prompt** (`vi_agent.py`): nueva sección MULTI-QUERY en las reglas de `search_conversations`,
+  recomendando `query_alternativa` para POR QUÉ/CAUSA RAÍZ y BÚSQUEDA DE PATRONES/EXPLORACIÓN
+  ABIERTA (preguntas donde una sola formulación puede no ser representativa) y explícitamente
+  omitirlo en COACHING (ahí la situación ya está bien anclada por el filtro de checklist, no por la
+  formulación de búsqueda) y en búsquedas ya acotadas por `employee_name`/`store_name`. También se
+  aclaró la regla de reformulación de fallback ante 0 resultados (Iteración 10): sigue existiendo
+  como red de seguridad, pero `query_alternativa` es preferible porque no duplica el costo del juez.
+- **Tests**: `ReciprocalRankFusionTests` (fusión aislada: repetición entre rankings gana sobre un
+  solo mejor puesto, deduplicación por menor distancia, resultado exclusivo de un solo ranking se
+  conserva, rankings vacíos no rompen) y `MultiQuerySearchTests` (integración: dos embeddings y dos
+  queries SQL reales cuando se pasa `query_alternativa`, fusión sin duplicados con datos de SQL
+  distintos por formulación, `query_alternativa` idéntica a `query` se ignora sin duplicar costo, y
+  el camino sin `query_alternativa` sigue haciendo sólo un embed y una query -cero cambio de
+  comportamiento por default). 581/581 tests en verde (8 nuevos).
+- **Verificado en vivo** (2026-09-28, mens_fashion_alto, `debug=True`, 2 preguntas reales): "¿por qué
+  bajó la tasa de cierre este mes?" y "¿qué objeciones de precio se repiten más?" -las dos
+  dispararon `search_conversations` con `query_alternativa` poblado por el propio modelo, sin que la
+  pregunta del usuario lo pidiera explícitamente: el prompt MULTI-QUERY funciona como se diseñó
+  (POR QUÉ/EXPLORACIÓN ABIERTA sí, y en ninguna de las dos había employee_name/store_name que
+  debieran omitirlo). `.runtime/usage/vector_search_calls.jsonl` confirma `multi_query_used: true`
+  en ambas.
+- **Costo/latencia real medido** (mismo log): el embedding extra es barato como se esperaba
+  (+1,4 a +2,5s sobre el embed original). La consulta SQL, en cambio, se DUPLICA en tiempo real
+  -18,0s y 62,0s de `query_ms` en estas dos búsquedas- porque `_connection_lock` serializa las dos
+  consultas dentro del mismo proceso (ver Iteración 13): no corren en paralelo, corren una atrás de
+  la otra. Esto es significativo porque compone con la limitación YA conocida y deliberadamente
+  fuera de alcance (sin índice ANN sobre `analytics_v2.conversation_embeddings`, ver docstring del
+  módulo): una búsqueda que ya era lenta por falta de índice, con multi-query pasa a tardar
+  aproximadamente el doble. El costo de Gemini no cambió como se esperaba: 0 llamadas extra de
+  reformulación (la genera el modelo principal en la misma tool call) y el juez corrió una sola vez
+  sobre el resultado ya fusionado en ambos casos.
+- **2 hallazgos reales, NO causados por este cambio, que aparecieron durante la prueba** (ambos ya
+  cubiertos por el fail-open existente de `_judge_batch`, así que no rompieron la búsqueda, sólo la
+  dejaron sin el filtro del juez en esa llamada puntual): un `JSONDecodeError: Extra data` al parsear
+  la respuesta del juez en modo checklist (el modelo agregó texto después del JSON) y un 503 real de
+  Gemini ("high demand") en la segunda búsqueda -consistente con el `MAX_RETRIES`/jitter ya
+  documentado (Iteración 61), no una regresión de esta iteración. Quedan anotados acá por si se
+  repiten con más frecuencia y ameritan su propia iteración.
+- **Conclusión original**: la mejora de calidad funciona y se dispara donde corresponde, pero el
+  costo real no era sólo "un embedding más barato" como se estimó -ver Iteración 67 para la
+  corrección de la duplicación de latencia.
+
+### Iteración 67 — Multi-query en paralelo + reintento y parseo tolerante en el juez (2026-09-28)
+
+Pedido explícito: "soluciona los problemas registrados [en la Iteración 66]. ¿Se puede hacer en
+paralelo lo que decís?". Los 3 hallazgos de la iteración anterior se atacaron así:
+
+- **Las dos consultas SQL de un multi-query ahora corren en PARALELO, no serializadas.** Motivo de
+  la serialización: las dos usaban la misma `_cached_connection`/`_connection_lock`, y psycopg no
+  garantiza que una misma Connection se pueda usar desde dos threads a la vez sin sincronización
+  externa. Solución: una SEGUNDA conexión reusable dedicada (`_cached_connection_secondary`/
+  `_connection_lock_secondary`/`_get_reusable_connection_secondary`, mismo patrón que la primaria,
+  duplicado a propósito en vez de generalizar con un parámetro -son sólo 2 rutas fijas, y mantener la
+  primaria intacta evita tocar código ya cubierto por `ReusableConnectionTests`). `_retrieve()` suma
+  un parámetro `use_secondary_connection`; la lógica de ejecución-con-reintento-ante-error se extrajo
+  a `_execute_retrieval_sql` (compartida por ambas conexiones, sin duplicar esas ~25 líneas). En
+  `search()`, la pata original (reusa el embedding ya calculado) y la alternativa (embebe + recupera
+  con la conexión secundaria) corren en dos threads vía `ThreadPoolExecutor`, y se fusionan por RRF
+  al terminar las dos. `query_ms` pasa a ser el MÁXIMO de las dos patas (el tiempo real percibido,
+  ya que corren en paralelo), no la suma; `embed_ms` y `candidates_fetched` siguen sumando (trabajo
+  total real, aunque el reloj de pared sea menor).
+  - **Medido en vivo, mismas 2 preguntas que la Iteración 66** (mens_fashion_alto): `query_ms` bajó
+    de 18,0s/62,0s (secuencial) a **15,2s/4,6s** (paralelo) -la mejora es real y sustancial, aunque
+    sigue dependiendo de la latencia base de cada búsqueda individual (la limitación de fondo, sin
+    índice ANN, sigue sin resolverse -esto la mitiga, no la elimina).
+- **Reintento ante 429/5xx transitorios en la llamada del analista/juez.** Antes, un 503 "high
+  demand" de Gemini (visto en vivo en la Iteración 66) se trataba igual que cualquier otro error:
+  fail-open inmediato, notas/patrones perdidos por algo que probablemente se resuelve solo. Nueva
+  `_generate_content_with_retry` (mismo criterio que `_embed_query`, reutiliza
+  `_RETRYABLE_STATUS_CODES`/`_status_code`): hasta `_JUDGE_MAX_RETRIES=2` intentos con backoff corto
+  (`_JUDGE_RETRY_BASE_DELAY_SECONDS=1.5`s) -pocos a propósito, porque esta llamada ya puede correr
+  hasta 8 veces en paralelo por búsqueda (`_JUDGE_MAX_WORKERS`), así que más reintentos por llamada
+  multiplican fácil la latencia total. Un error no retryable se sigue propagando de inmediato, sin
+  gastar reintentos; el fail-open de `_judge_batch`/`_synthesize_across` sigue siendo la red de
+  seguridad final si los reintentos también fallan.
+- **Parseo JSON tolerante a contenido extra.** El `JSONDecodeError: Extra data` visto en vivo pasaba
+  porque el modelo a veces agrega texto después del JSON pedido, y `json.loads` exige que el string
+  completo sea un único JSON válido. Nueva `_parse_leading_json` usa `json.JSONDecoder().raw_decode`
+  para tomar sólo el primer objeto/array JSON válido al principio del texto, ignorando lo que venga
+  después -sigue fallando (mismo fail-open) si ni el prefijo es JSON válido. Reemplaza
+  `json.loads(response.text)` en `_judge_batch` y `_synthesize_across`.
+- **Tests**: `LeadingJsonParseTests` (JSON con contenido extra se parsea igual, JSON simple sin
+  cambios, prefijo inválido sigue fallando) y `JudgeTransientErrorRetryTests` (reintenta una vez ante
+  503 y tiene éxito, no reintenta errores no-retryables, se agota tras `_JUDGE_MAX_RETRIES` y hace
+  fail-open igual que siempre). Los dos tests de integración de multi-query de la Iteración 66 se
+  ajustaron para mockear también la conexión secundaria (antes sólo mockeaban la primaria, y sin
+  querer la pata alternativa llegó a golpear la Postgres REAL en un test -detectado por un
+  `AssertionError` de conteo en vez de un resultado silenciosamente incorrecto, pero igual una fuga
+  de aislamiento que no debía pasar; corregido antes de commitear). 587/587 tests en verde (6 nuevos:
+  3 + 3).
+
+### Iteración 68 — Boost léxico (ILIKE) sin índice propio, sobre las conversaciones ya filtradas por el vector (2026-09-28)
+
+Pedido explícito, retomando la idea del "punto 2" descartada en la Iteración 63 por necesitar un
+índice de trigramas (`pg_trgm`) dedicado: "quiero que hagamos lo de like, por ahora sin ningún
+índice... que el like actúe sobre las conversaciones ya filtradas de la búsqueda vectorial". Motivo
+de fondo: los embeddings son buenos con significado pero malos con términos exactos (nombre de
+producto, marca, SKU) -dos prendas distintas pueden quedar cerca en el espacio semántico aunque la
+pregunta pedía una en particular.
+
+- **Cambio**: `search()` acepta un `termino_literal` opcional. La etapa EXTERNA de la consulta en dos
+  etapas (ver Iteración 63 -la que ya joinea `raw_v2.conversations_raw` sólo para las `candidate_limit`
+  filas que la etapa interior narrowed por distancia) agrega una columna
+  `cr.data->>'transcribedAudio' ILIKE %s AS coincide_termino_literal` cuando se pasa el término. El
+  `ILIKE` corre sobre unas pocas decenas de filas YA elegidas por el vector, nunca sobre la tabla
+  completa -se apoya en el recorte que ya hizo la búsqueda vectorial en vez de necesitar su propio
+  índice, tal como se pidió. `_retrieve()` separa la construcción de candidatos del corte en `top_k`
+  sólo cuando hay `termino_literal` (sin él, el camino es byte-a-byte el de siempre, sin costo extra):
+  arma la lista completa de candidatos deduplicados, ordena de forma ESTABLE por
+  "coincide antes que no coincide" (conserva el orden por distancia DENTRO de cada grupo) y recién ahí
+  recorta a `top_k`. No agrega candidatas nuevas ni cambia el conjunto -sólo puede promover una
+  conversación que la búsqueda vectorial ya había encontrado pero que iba a quedar afuera del
+  `top_k` por distancia.
+- **Prompt** (`vi_agent.py`): nueva sección BOOST LÉXICO en las reglas de `search_conversations`,
+  instruyendo pasar `termino_literal` cuando la pregunta nombra un producto/marca/SKU puntual, y
+  omitirlo en preguntas puramente conceptuales.
+- **Verificado en vivo** (mens_fashion_alto): "¿qué dicen los clientes cuando preguntan por trajes de
+  lana?" disparó `search_conversations` con `termino_literal="lana"` COMBINADO con `query_alternativa`
+  en la misma llamada -las dos mejoras conviven sin conflicto. `.runtime/usage/vector_search_calls.jsonl`
+  confirma `literal_term_used: true` junto a `multi_query_used: true`. Costo: cero -no agrega
+  llamadas a Gemini ni a Postgres, el `ILIKE` viaja como una columna más de una consulta que ya se
+  iba a ejecutar.
+- **Tests**: `LiteralTermBoostTests` -sin `termino_literal` el SQL no cambia; con él, agrega la
+  columna y el término va como PRIMER parámetro (la etapa externa se concatena antes que la
+  interior); un término en blanco se trata como ausente; una conversación con peor distancia pero
+  coincidencia literal se promueve por sobre una sin coincidencia; el boost nunca agrega ni saca
+  conversaciones del conjunto, sólo reordena; y el recorte a `top_k` sigue respetándose después de
+  reordenar. 593/593 tests en verde (6 nuevos).
+- **Fuera de alcance, a propósito**: ningún índice nuevo (ni `pg_trgm` ni otro) -si en el futuro se
+  quiere buscar por término literal MÁS ALLÁ de lo que el vector ya encontró (no sólo reordenar sus
+  candidatas), ahí sí hace falta ese índice dedicado; esta iteración deliberadamente no lo resuelve.
+
+### Iteración 69 — El boost léxico se mueve de SQL a Python, para sobrevivir a la fusión RRF (2026-09-28)
+
+Pedido explícito, tras preguntar "¿se puede mejorar todavía más esta sinergia?": la Iteración 68
+aplicaba el `ILIKE` en SQL DENTRO de cada pata de un multi-query, antes de fusionar por Reciprocal
+Rank Fusion. Problema real encontrado al pensarlo con cuidado (no en vivo esta vez, por análisis):
+RRF fusiona por RANGO sin saber cuáles resultados eran matches literales, así que una conversación
+con el término exacto -bien ubicada en sólo UNA de las dos formulaciones- podía terminar detrás de
+una conversación sin el término que rankeaba decentemente en las DOS formulaciones. La garantía de
+"el match siempre va primero" que valía para una búsqueda simple se rompía justo cuando se combinaba
+con `query_alternativa`.
+
+- **Cambio**: se sacó la columna `ILIKE`/parámetro de `_retrieve()` (vuelve a ser exactamente el SQL
+  de la Iteración 63, sin tocar). Nueva `_apply_literal_term_boost(resultados, termino_literal)`:
+  chequea el término (case-insensitive) contra el texto que `_retrieve` YA trajo (`_analysis_text`:
+  contexto de conversación o fragmento aproximado) -en Python, no contra la base- y reordena con
+  `sorted()` (estable: conserva el orden previo dentro de cada grupo coincide/no-coincide). Se llama
+  UNA sola vez en `search()`, sobre la lista final -después de `_reciprocal_rank_fusion` si hubo
+  multi-query, o directo sobre el resultado de `_retrieve()` si no. Esto garantiza el orden sea cual
+  sea la combinación usada, y de paso simplifica el código (menos parámetros en `_retrieve()`, sin
+  tocar el SQL de dos etapas). `per_query_k` (el sobre-fetch para dejarle margen a la fusión/al
+  boost) pasa a compartirse entre multi-query y boost léxico: `min(top_k*2, _MAX_TOP_K)` si
+  cualquiera de los dos está activo, `top_k` si ninguno -mismo comportamiento de siempre cuando no
+  se usa ninguna de las dos mejoras. La búsqueda de compañeros en coaching (`comparar_con_mejores`)
+  aplica el mismo boost sobre su propio resultado, con el mismo sobre-fetch.
+- **Tests**: `LiteralTermBoostTests` se reescribió para probar `_apply_literal_term_boost` aislada
+  (match se promueve aunque no fuera el primero, case-insensitive, orden estable dentro de cada
+  grupo, nunca agrega/saca candidatas, término en blanco no cambia nada, sin matches conserva el
+  orden original) y se agregó `LiteralTermBoostSurvivesFusionTests` -el test que prueba justo la
+  combinación multi-query + boost léxico: arma dos rankings donde una conversación sin el término
+  gana por RRF puro (aparece bien ubicada en las dos formulaciones) contra una CON el término que
+  sólo aparece en una, y confirma que la que tiene el término termina primera en el resultado final.
+  594/594 tests en verde (1 neto: se sacaron 4 tests del diseño SQL viejo y se agregaron 7 del nuevo
+  más la regresión).
+- **Verificado en vivo** (mens_fashion_alto, misma pregunta de la Iteración 68): sigue funcionando
+  -`termino_literal`+`query_alternativa` en la misma llamada, `literal_term_used: true` en el log.
+  Nota aparte, sin relación con este cambio: esa corrida puntual midió `query_ms=138,8s` (vs. 15-17s
+  de corridas anteriores) -variabilidad real de no tener índice ANN (Postgres sin índice puede tardar
+  mucho más según la carga del momento), no una regresión de esta iteración ni de la 67.
+
+### Iteración 70 — El boost léxico pasa de partición dura a puntaje combinado (2026-09-28)
+
+Pedido explícito, tras preguntar "¿se te ocurre otra forma de mejorar cómo funciona esto?": la
+Iteración 69 dejó `_apply_literal_term_boost` como una partición DURA -TODOS los matches antes que
+TODOS los no-matches, sin importar qué tan débil fuera el match ni qué tan fuerte el no-match-.
+Riesgo real señalado antes de implementar: una conversación que menciona el término de pasada, sin
+relación real con la pregunta, podía terminar por delante de una conversación semánticamente mucho
+más relevante que simplemente no usó esa palabra exacta.
+
+- **Cambio**: `_apply_literal_term_boost` ya no particiona -convierte la posición actual de cada
+  resultado (por distancia, o por fusión RRF si hubo multi-query) en un puntaje `1/(_RRF_K + rango)`
+  -mismo estilo y misma constante `_RRF_K` que ya usa `_reciprocal_rank_fusion`, para que la escala
+  sea consistente venga de donde venga la lista- y a los matches les resta hasta
+  `_LITERAL_MATCH_BONUS_RANKS=5` puestos de ese rango antes de calcular el puntaje. Efecto real: un
+  match cerca del tope (dentro de esos 5 puestos) sigue llegando primero, igual que con la partición
+  dura; un match débil y lejano en la lista ya NO salta al frente, queda mezclado más atrás, detrás
+  de resultados semánticamente mejores. Empate de puntaje (frecuente, porque el bonus satura al rango
+  mínimo 1) se desempata a favor del match; sin empate, respeta el orden previo.
+- **Prompt** (`vi_agent.py`) y docstring de `search()`: se corrigió la descripción de "aparezcan
+  primero" a "ganan prioridad en el orden, no una garantía absoluta" -para que el modelo no asuma que
+  `termino_literal` fuerza un resultado al tope pase lo que pase.
+- **Tests**: se agregaron `test_a_weak_match_far_down_does_not_override_strong_non_matches` (un match
+  10 puestos atrás, con el bonus de 5, no alcanza a ganarle a los mejores no-match) y
+  `test_a_match_near_the_top_still_gets_promoted_to_first` (uno a 2 puestos del tope sigue llegando
+  primero) -la prueba concreta de que el cambio hace lo que se pidió, no sólo que no rompió nada. Los
+  7 tests viejos de la partición dura siguen pasando sin modificarlos: en esos casos simples (listas
+  cortas, matches cerca del tope) el puntaje combinado da el mismo resultado que la partición dura.
+  596/596 tests en verde (2 nuevos).
+

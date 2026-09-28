@@ -501,6 +501,288 @@ class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
         self.assertEqual(payload["resultados"], [])
 
 
+class LiteralTermBoostTests(unittest.TestCase):
+    """`_apply_literal_term_boost` (2026-09-28, boost léxico SIN índice propio, pedido explícito:
+    "que el like actúe sobre las conversaciones ya filtradas de la búsqueda vectorial"): reordena en
+    Python, contra el texto ya recuperado, sin tocar la base ni agregar/sacar candidatas. Combina el
+    match con el orden previo en un puntaje (ver `_LITERAL_MATCH_BONUS_RANKS`) -NO es una partición
+    dura de "todos los matches primero"; ver `test_a_weak_match_far_down_does_not_override_strong_non_matches`
+    para la prueba de esa diferencia."""
+
+    def _item(self, conversation_id: str, texto: str) -> dict:
+        return {
+            "conversation_id": conversation_id,
+            "distancia": 0.2,
+            "fragmento_aproximado": texto,
+        }
+
+    def test_matching_result_is_promoted_even_though_it_was_not_first(self) -> None:
+        primero = self._item("conv1", "no menciona nada puntual")
+        segundo = self._item("conv2", "el cliente pregunta por la Alpina talle L")
+        boosted = vector_search._apply_literal_term_boost([primero, segundo], "Alpina")
+        self.assertEqual([r["conversation_id"] for r in boosted], ["conv2", "conv1"])
+
+    def test_case_insensitive_match(self) -> None:
+        item = self._item("conv1", "EL CLIENTE PREGUNTA POR LA ALPINA")
+        boosted = vector_search._apply_literal_term_boost([item], "alpina")
+        self.assertEqual(boosted[0]["conversation_id"], "conv1")
+
+    def test_stable_order_within_each_group(self) -> None:
+        # Dos matches y dos no-matches: el orden relativo DENTRO de cada grupo no debe cambiar.
+        match_a = self._item("match_a", "menciona Alpina primero")
+        match_b = self._item("match_b", "menciona Alpina segundo")
+        sin_match_a = self._item("sin_a", "sin mención puntual uno")
+        sin_match_b = self._item("sin_b", "sin mención puntual dos")
+        boosted = vector_search._apply_literal_term_boost(
+            [sin_match_a, match_a, sin_match_b, match_b], "Alpina",
+        )
+        self.assertEqual(
+            [r["conversation_id"] for r in boosted],
+            ["match_a", "match_b", "sin_a", "sin_b"],
+        )
+
+    def test_never_adds_or_removes_items(self) -> None:
+        items = [self._item("conv1", "algo"), self._item("conv2", "menciona Alpina")]
+        boosted = vector_search._apply_literal_term_boost(items, "Alpina")
+        self.assertEqual(
+            {r["conversation_id"] for r in boosted},
+            {r["conversation_id"] for r in items},
+        )
+
+    def test_a_weak_match_far_down_does_not_override_strong_non_matches(self) -> None:
+        # Diferencia central con la versión anterior (partición dura): un match muy débil -mencionado
+        # de pasada, mucho más abajo que _LITERAL_MATCH_BONUS_RANKS puestos- NO debe saltar por
+        # delante de resultados semánticamente mucho mejores. Con la partición dura vieja, este match
+        # en la posición 11 hubiera terminado primero igual; con el puntaje combinado, se queda detrás
+        # de los 10 mejores no-match (el bonus de 5 puestos no alcanza para compensar 10 de distancia).
+        fuertes = [self._item(f"fuerte_{i}", f"conversación relevante número {i}") for i in range(10)]
+        match_debil = self._item("match_debil", "menciona Alpina de pasada, sin relación real")
+        boosted = vector_search._apply_literal_term_boost(fuertes + [match_debil], "Alpina")
+        conversation_ids = [r["conversation_id"] for r in boosted]
+        self.assertNotEqual(conversation_ids[0], "match_debil")
+        self.assertIn("match_debil", conversation_ids)
+
+    def test_a_match_near_the_top_still_gets_promoted_to_first(self) -> None:
+        # Un match DENTRO del rango del bonus (acá, a 2 puestos del tope) sigue llegando primero -el
+        # comportamiento "suave" no significa que el boost dejó de tener efecto real.
+        no_match_1 = self._item("no_match_1", "conversación sin mención puntual")
+        no_match_2 = self._item("no_match_2", "otra conversación sin mención puntual")
+        match = self._item("match", "el cliente pregunta por la Alpina talle L")
+        boosted = vector_search._apply_literal_term_boost([no_match_1, no_match_2, match], "Alpina")
+        self.assertEqual(boosted[0]["conversation_id"], "match")
+
+    def test_blank_term_returns_the_list_unchanged(self) -> None:
+        items = [self._item("conv1", "algo"), self._item("conv2", "otra cosa")]
+        boosted = vector_search._apply_literal_term_boost(items, "   ")
+        self.assertEqual(boosted, items)
+
+    def test_no_matches_keeps_original_order(self) -> None:
+        items = [self._item("conv1", "algo"), self._item("conv2", "otra cosa")]
+        boosted = vector_search._apply_literal_term_boost(items, "Alpina")
+        self.assertEqual([r["conversation_id"] for r in boosted], ["conv1", "conv2"])
+
+
+class LiteralTermBoostSurvivesFusionTests(_RedirectsUsageLogTestCase):
+    """Regresión (2026-09-28, encontrado antes de commitear): una primera versión aplicaba el ILIKE
+    en SQL DENTRO de cada pata de un multi-query, antes de fusionar por RRF -la fusión por rango no
+    sabía cuáles eran matches literales, así que un match podía terminar detrás de un no-match que
+    rankeaba bien en las dos formulaciones. Corregido aplicando el boost UNA vez, acá en search(),
+    sobre la lista ya fusionada -este test prueba justamente esa combinación (multi-query +
+    termino_literal), no cada uno por separado."""
+
+    def test_literal_match_stays_first_even_when_rrf_alone_would_not_rank_it_first(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        # rows_a/rows_b: "conv_generico" aparece en LAS DOS formulaciones (rankeando 1° y 2°) -RRF
+        # solo, sin boost, lo pondría primero. "conv_alpina" sólo aparece en una, con peor distancia,
+        # pero menciona el término literal -el boost debe igual ponerlo primero en el resultado final.
+        rows_a = [
+            ("rid1", 0, "Tienda A", "Vendedor A", None, "conversación genérica sin nada puntual", "conv_generico", None, 0.20),
+            ("rid2", 0, "Tienda B", "Vendedor B", None, "el cliente pregunta por la Alpina talle L", "conv_alpina", None, 0.30),
+        ]
+        rows_b = [
+            ("rid1", 0, "Tienda A", "Vendedor A", None, "conversación genérica sin nada puntual", "conv_generico", None, 0.18),
+        ]
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection",
+            return_value=_FakeConnection(_FakeCursor(rows_a)),
+        ), patch.object(
+            vector_search, "_get_reusable_connection_secondary",
+            return_value=_FakeConnection(_FakeCursor(rows_b)),
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search(
+                "consulta original", top_k=2,
+                query_alternativa="consulta alternativa",
+                termino_literal="Alpina",
+            ))
+        conversation_ids = [r["conversation_id"] for r in payload["resultados"]]
+        self.assertEqual(conversation_ids[0], "conv_alpina")
+
+
+class ReciprocalRankFusionTests(unittest.TestCase):
+    """`_reciprocal_rank_fusion` (2026-09-28, multi-query): fusiona 2+ rankings por posición, no por
+    distancia cruda -ver el comentario junto a `_RRF_K`."""
+
+    def test_result_present_in_both_rankings_outranks_one_present_in_only_one(self) -> None:
+        conv_a = {"conversation_id": "conv_a", "distancia": 0.22}
+        conv_b = {"conversation_id": "conv_b", "distancia": 0.10}
+        # conv_b es el MEJOR resultado de una sola formulación (distancia más baja), pero conv_a
+        # aparece bien ubicado en las DOS -RRF por rango debe preferir la repetición.
+        ranking_1 = [conv_a, conv_b]
+        ranking_2 = [conv_a]
+        fused = vector_search._reciprocal_rank_fusion([ranking_1, ranking_2])
+        self.assertEqual([r["conversation_id"] for r in fused], ["conv_a", "conv_b"])
+
+    def test_deduplicates_by_conversation_id_keeping_the_lower_distance_copy(self) -> None:
+        copy_1 = {"conversation_id": "conv_a", "distancia": 0.25, "tienda": "peor"}
+        copy_2 = {"conversation_id": "conv_a", "distancia": 0.12, "tienda": "mejor"}
+        fused = vector_search._reciprocal_rank_fusion([[copy_1], [copy_2]])
+        self.assertEqual(len(fused), 1)
+        self.assertEqual(fused[0]["tienda"], "mejor")
+
+    def test_result_only_in_second_ranking_is_still_included(self) -> None:
+        conv_a = {"conversation_id": "conv_a", "distancia": 0.20}
+        conv_c = {"conversation_id": "conv_c", "distancia": 0.30}
+        fused = vector_search._reciprocal_rank_fusion([[conv_a], [conv_c]])
+        self.assertEqual({r["conversation_id"] for r in fused}, {"conv_a", "conv_c"})
+
+    def test_empty_rankings_produce_no_results(self) -> None:
+        self.assertEqual(vector_search._reciprocal_rank_fusion([[], []]), [])
+
+
+class MultiQuerySearchTests(_RedirectsUsageLogTestCase):
+    """`search(query_alternativa=...)` (2026-09-28, "que la búsqueda vectorial sea aún más útil"):
+    una segunda formulación de la MISMA intención amplía la cobertura semántica -ver
+    ReciprocalRankFusionTests para la fusión en sí, esto prueba la integración dentro de search()."""
+
+    def test_query_alternativa_embeds_both_formulations_and_searches_twice(self) -> None:
+        # Multi-query corre en PARALELO (2026-09-28): la pata original usa la conexión primaria
+        # (_get_reusable_connection) y la alternativa la SECUNDARIA (_get_reusable_connection_
+        # secondary, ver use_secondary_connection en _retrieve) -cada una necesita su propio doble.
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor_primary = _FakeCursor([])
+        cursor_secondary = _FakeCursor([])
+        embed_calls: list[str] = []
+
+        def fake_embed(query: str, api_key: str, **kwargs) -> list[float]:
+            embed_calls.append(query)
+            return [0.0] * vector_search.EMBEDDING_DIMENSION
+
+        with patch.object(
+            vector_search, "_embed_query", side_effect=fake_embed
+        ), patch.object(
+            vector_search, "_get_reusable_connection",
+            return_value=_FakeConnection(cursor_primary),
+        ), patch.object(
+            vector_search, "_get_reusable_connection_secondary",
+            return_value=_FakeConnection(cursor_secondary),
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            repo.search(
+                "cliente pide que le guarden el producto",
+                query_alternativa="cliente pregunta si puede reservarlo",
+            )
+
+        self.assertEqual(
+            sorted(embed_calls),
+            sorted([
+                "cliente pide que le guarden el producto",
+                "cliente pregunta si puede reservarlo",
+            ]),
+        )
+        selects_primary = [sql for sql, _ in cursor_primary.executed if "SELECT" in sql]
+        selects_secondary = [sql for sql, _ in cursor_secondary.executed if "SELECT" in sql]
+        self.assertEqual(len(selects_primary), 1)
+        self.assertEqual(len(selects_secondary), 1)
+
+    def test_query_alternativa_merges_results_from_both_formulations_without_duplicates(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        rows_a = [
+            ("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.20),
+            ("rid2", 0, "Tienda A", "Vendedor B", None, "chau", "conv2", None, 0.24),
+        ]
+        rows_b = [
+            ("rid2", 0, "Tienda A", "Vendedor B", None, "chau", "conv2", None, 0.21),
+            ("rid3", 0, "Tienda B", "Vendedor C", None, "listo", "conv3", None, 0.22),
+        ]
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection",
+            return_value=_FakeConnection(_FakeCursor(rows_a)),
+        ), patch.object(
+            vector_search, "_get_reusable_connection_secondary",
+            return_value=_FakeConnection(_FakeCursor(rows_b)),
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search(
+                "consulta original", top_k=5, query_alternativa="consulta alternativa",
+            ))
+
+        conversation_ids = [r["conversation_id"] for r in payload["resultados"]]
+        # conv2 aparece bien ubicado en las DOS formulaciones -RRF lo debe rankear primero, y
+        # deduplicar (no puede aparecer dos veces en el payload final).
+        self.assertEqual(conversation_ids[0], "conv2")
+        self.assertEqual(len(conversation_ids), len(set(conversation_ids)))
+        self.assertEqual(set(conversation_ids), {"conv1", "conv2", "conv3"})
+
+    def test_query_alternativa_identical_to_query_is_ignored(self) -> None:
+        # Misma consulta dos veces no aporta nada -sólo duplicaría el costo del embedding y de la
+        # consulta SQL sin ampliar la cobertura semántica (ver docstring de search()).
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor([])
+        connection = _FakeConnection(cursor)
+        embed_calls: list[str] = []
+
+        def fake_embed(query: str, api_key: str, **kwargs) -> list[float]:
+            embed_calls.append(query)
+            return [0.0] * vector_search.EMBEDDING_DIMENSION
+
+        with patch.object(
+            vector_search, "_embed_query", side_effect=fake_embed
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            repo.search("misma consulta", query_alternativa="misma consulta")
+
+        self.assertEqual(embed_calls, ["misma consulta"])
+
+    def test_without_query_alternativa_only_embeds_and_searches_once(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor([])
+        connection = _FakeConnection(cursor)
+        embed_calls: list[str] = []
+
+        def fake_embed(query: str, api_key: str, **kwargs) -> list[float]:
+            embed_calls.append(query)
+            return [0.0] * vector_search.EMBEDDING_DIMENSION
+
+        with patch.object(
+            vector_search, "_embed_query", side_effect=fake_embed
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            repo.search("consulta sola")
+
+        self.assertEqual(embed_calls, ["consulta sola"])
+        select_executions = [sql for sql, _ in cursor.executed if "SELECT" in sql]
+        self.assertEqual(len(select_executions), 1)
+
+
 class MandatoryStoreNamesAllowlistTests(_RedirectsUsageLogTestCase):
     """`VectorSearchConfig.store_names` (2026-09-16, habilitación de Huerpel) -allowlist
     OBLIGATORIA para tenants de Postgres compartidos por más de un cliente lógico (hoy sólo
@@ -1023,6 +1305,80 @@ class JudgeRelevanceTests(unittest.TestCase):
         # Fail-open ya cubre esta excepción (mismo try/except que envuelve toda la llamada) -un
         # fallo al loguear no debe tirar abajo la búsqueda en sí.
         self.assertEqual(veredictos, [True])
+
+
+class LeadingJsonParseTests(unittest.TestCase):
+    """`_parse_leading_json` (2026-09-28, encontrado en vivo probando multi-query): un
+    `JSONDecodeError: Extra data` real cuando el modelo agrega texto después del JSON pedido -acá se
+    prueba la función de parseo aislada, sin mockear Gemini."""
+
+    def test_parses_valid_json_with_trailing_extra_content(self) -> None:
+        text = '{"resultados": [{"i": 0, "relevante": true}]}\nNota extra que el modelo no debería agregar.'
+        parsed = vector_search._parse_leading_json(text)
+        self.assertEqual(parsed, {"resultados": [{"i": 0, "relevante": True}]})
+
+    def test_parses_plain_valid_json_unchanged(self) -> None:
+        parsed = vector_search._parse_leading_json('{"patrones": []}')
+        self.assertEqual(parsed, {"patrones": []})
+
+    def test_still_raises_when_the_prefix_itself_is_not_valid_json(self) -> None:
+        with self.assertRaises(json.JSONDecodeError):
+            vector_search._parse_leading_json("esto no es JSON en absoluto")
+
+
+class JudgeTransientErrorRetryTests(unittest.TestCase):
+    """`_generate_content_with_retry` (2026-09-28, encontrado en vivo probando multi-query: un 503
+    "high demand" real hacía fail-open la búsqueda entera) -reintenta 429/5xx transitorios antes de
+    dejar que el fail-open de quien llama se haga cargo."""
+
+    def test_retries_once_on_retryable_error_and_succeeds(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}]
+        transient_error = Exception("high demand")
+        transient_error.status_code = 503
+        success_response = MagicMock()
+        success_response.text = "[true]"
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [transient_error, success_response]
+        with patch.object(
+            vector_search, "_get_reusable_embed_client", return_value=mock_client
+        ), patch.object(vector_search, "wait_before_retry"):
+            veredictos = vector_search._judge_batch(
+                "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
+            )
+        self.assertEqual(veredictos, [True])
+        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+
+    def test_does_not_retry_non_retryable_errors(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}]
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = ValueError("no tiene que ver con la red")
+        with patch.object(
+            vector_search, "_get_reusable_embed_client", return_value=mock_client
+        ), patch.object(vector_search, "wait_before_retry") as mock_wait:
+            # Fail-open: aunque no reintenta, _judge_batch igual devuelve True para todos.
+            veredictos = vector_search._judge_batch(
+                "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
+            )
+        self.assertEqual(veredictos, [True])
+        self.assertEqual(mock_client.models.generate_content.call_count, 1)
+        mock_wait.assert_not_called()
+
+    def test_gives_up_after_max_retries_and_fails_open(self) -> None:
+        resultados = [{"fragmento_aproximado": "a"}]
+        transient_error = Exception("high demand")
+        transient_error.status_code = 503
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [transient_error] * vector_search._JUDGE_MAX_RETRIES
+        with patch.object(
+            vector_search, "_get_reusable_embed_client", return_value=mock_client
+        ), patch.object(vector_search, "wait_before_retry"):
+            veredictos = vector_search._judge_batch(
+                "insultos", resultados, model="gemini-3.7-flash", api_key="fake-key",
+            )
+        self.assertEqual(veredictos, [True])  # fail-open de _judge_batch, no del retry en sí
+        self.assertEqual(
+            mock_client.models.generate_content.call_count, vector_search._JUDGE_MAX_RETRIES
+        )
 
 
 class PerConversationAnalysisTests(unittest.TestCase):

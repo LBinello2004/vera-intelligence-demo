@@ -18,6 +18,7 @@ Dos límites conocidos, deliberadamente no resueltos todavía (ver el README par
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
@@ -92,6 +93,38 @@ def _get_reusable_connection() -> "psycopg.Connection":
             raise OperationalUnavailable() from None
         _cached_connection = psycopg.connect(**kwargs)
         return _cached_connection
+
+
+# Segunda conexión reusable, sólo para la segunda formulación de un multi-query (2026-09-28, ver
+# search(query_alternativa=...)). Medido en vivo: sin esto, las dos búsquedas SQL de un multi-query
+# se serializaban sobre `_connection_lock`/`_cached_connection` -18s y 62s de query_ms reales en dos
+# búsquedas medidas, prácticamente el doble de una búsqueda de una sola formulación-, porque
+# comparten la misma Connection y psycopg no garantiza que una misma Connection se pueda usar desde
+# dos threads a la vez sin sincronización externa (ver el comentario de `_connection_lock`). Una
+# segunda conexión con su propio lock, dedicada a esta segunda pata, permite correr ambas consultas
+# en paralelo de verdad. Duplicado a propósito en vez de generalizar `_get_reusable_connection` con
+# un parámetro -son sólo 2 rutas fijas (nunca más de una formulación alternativa por búsqueda), y
+# mantener la primaria intacta evita tocar el código que ya cubren `ReusableConnectionTests`.
+_cached_connection_secondary: "psycopg.Connection | None" = None
+_connection_lock_secondary = threading.RLock()
+
+
+def _get_reusable_connection_secondary() -> "psycopg.Connection":
+    """Igual que `_get_reusable_connection`, pero para la segunda pata de un multi-query -ver el
+    comentario de `_cached_connection_secondary`."""
+    global _cached_connection_secondary
+    if _cached_connection_secondary is not None and not _cached_connection_secondary.closed:
+        return _cached_connection_secondary
+    with _connection_lock_secondary:
+        if _cached_connection_secondary is not None and not _cached_connection_secondary.closed:
+            return _cached_connection_secondary
+        check_analysis()
+        try:
+            kwargs = postgres_connection_kwargs()
+        except RuntimeError:
+            raise OperationalUnavailable() from None
+        _cached_connection_secondary = psycopg.connect(**kwargs)
+        return _cached_connection_secondary
 
 
 # Retry de _embed_query (2026-09-10) -mismo criterio que _send_message_with_retry en vi_agent.py
@@ -603,6 +636,8 @@ def _log_search_event(
     query_ms: float,
     judge_ms: float | None = None,
     judge_filtered_count: int | None = None,
+    multi_query_used: bool = False,
+    literal_term_used: bool = False,
 ) -> None:
     """Registra metadata de una llamada real a search_conversations. Nunca el texto de la query ni
     el contenido citado -sólo agregados, mismo criterio de privacidad que usage_tracking.py aplica
@@ -630,6 +665,8 @@ def _log_search_event(
         "query_ms": query_ms,
         "judge_ms": judge_ms,
         "judge_filtered_count": judge_filtered_count,
+        "multi_query_used": multi_query_used,
+        "literal_term_used": literal_term_used,
     }
     try:
         VECTOR_SEARCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -838,6 +875,50 @@ def _json_safe(value):
 # verificando mecánicamente contra los textos). Costo: cada texto se lee dos veces en vez de una.
 _JUDGE_MAX_WORKERS = 8
 
+# Reintento ante 429/5xx transitorios en la llamada del analista/juez (2026-09-28, encontrado en
+# vivo probando multi-query: un 503 "high demand" real de Gemini hacía fail-open la búsqueda entera
+# -mismo tratamiento que un error real de parseo-, perdiendo notas/patrones por algo que un
+# reintento corto resuelve la mayoría de las veces (mismo criterio ya aplicado a `_embed_query`,
+# ver `_RETRYABLE_STATUS_CODES`/`_status_code` arriba). Pocos reintentos a propósito -no los
+# `_MAX_EMBED_RETRIES` del embedding-: esta llamada ya puede correr hasta `_JUDGE_MAX_WORKERS` veces
+# en paralelo por búsqueda, así que más reintentos por llamada multiplican fácil la latencia total.
+_JUDGE_MAX_RETRIES = 2
+_JUDGE_RETRY_BASE_DELAY_SECONDS = 1.5
+
+
+def _generate_content_with_retry(
+    client: "genai.Client", *, model: str, contents: str, config: "types.GenerateContentConfig"
+):
+    """Reintenta la llamada de `generate_content` del analista/juez ante errores transitorios -ver
+    el comentario de `_JUDGE_MAX_RETRIES`. Un error no retryable (ej. de parseo/validación propio)
+    se propaga de inmediato, sin gastar reintentos -el try/except fail-open que envuelve a quien
+    llama (`_judge_batch`/`_synthesize_across`) sigue siendo la red de seguridad final."""
+    last_error: Exception | None = None
+    for attempt in range(1, _JUDGE_MAX_RETRIES + 1):
+        check_analysis()
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as exc:  # noqa: BLE001
+            status_code = _status_code(exc)
+            retryable = (
+                status_code in _RETRYABLE_STATUS_CODES
+                or isinstance(exc, (errors.ServerError, httpx.TransportError))
+            )
+            if not retryable or attempt == _JUDGE_MAX_RETRIES:
+                raise
+            last_error = exc
+            wait_before_retry(_JUDGE_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+    raise last_error  # pragma: no cover
+
+
+def _parse_leading_json(text: str) -> object:
+    """Parsea el primer objeto/array JSON válido al principio de `text`, ignorando cualquier
+    contenido extra después -encontrado en vivo (2026-09-28, multi-query): a veces el modelo agrega
+    texto o un segundo bloque después del JSON pedido, y `json.loads` falla con "Extra data" aunque
+    el JSON en sí es válido y completo. Sigue fallando (propaga `JSONDecodeError`, mismo fail-open de
+    quien llama) si ni el prefijo es JSON válido."""
+    return json.JSONDecoder().raw_decode(text.strip())[0]
+
 
 def _judge_relevance(
     query: str,
@@ -970,7 +1051,8 @@ def _synthesize_across(
     )
     try:
         client = _get_reusable_embed_client(api_key)
-        response = client.models.generate_content(
+        response = _generate_content_with_retry(
+            client,
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -984,7 +1066,7 @@ def _synthesize_across(
                 response, client_id=client_id, model=model, session_id="",
                 interaction_id=uuid.uuid4().hex, call_index=1, call_kind="search_judge", attempts=1,
             )
-        parsed = json.loads(response.text)
+        parsed = _parse_leading_json(response.text)
         if not isinstance(parsed, dict):
             return
         analysis_out["patrones"] = _verify_patrones(parsed.get("patrones"), resultados)
@@ -1072,7 +1154,8 @@ def _judge_batch(
     )
     try:
         client = _get_reusable_embed_client(api_key)
-        response = client.models.generate_content(
+        response = _generate_content_with_retry(
+            client,
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -1100,7 +1183,7 @@ def _judge_batch(
                 call_kind="search_judge",
                 attempts=1,
             )
-        parsed = json.loads(response.text)
+        parsed = _parse_leading_json(response.text)
         if isinstance(parsed, list):
             # Formato viejo (sólo veredictos) -sigue aceptado.
             if len(parsed) != len(resultados):
@@ -1220,6 +1303,86 @@ def _verify_contraste(raw_contraste: object, resultados: list[dict]) -> list[dic
     return pares[:3]
 
 
+_RRF_K = 60
+
+
+def _dedup_key(resultado: dict) -> object:
+    """Misma conversación entre dos rankings -ver _reciprocal_rank_fusion. `conversation_id` es
+    None sólo si el LATERAL de `_retrieve` no lo resolvió (caso raro); en ese caso cada aparición
+    se trata como distinta en vez de arriesgar una deduplicación falsa entre conversaciones no
+    relacionadas."""
+    return resultado.get("conversation_id") or id(resultado)
+
+
+def _reciprocal_rank_fusion(rankings: list[list[dict]]) -> list[dict]:
+    """Fusiona 2+ rankings de resultados (mismo formato que devuelve `_retrieve`, ya ordenados por
+    distancia ascendente) por Reciprocal Rank Fusion: cada conversación suma 1/(_RRF_K + rango) por
+    cada ranking donde aparece (rango 1-based, no la distancia cruda) -una conversación bien ubicada
+    en varios rankings gana sobre una que sólo aparece bien ubicada en uno solo. Si la misma
+    conversación aparece en más de un ranking, se conserva la copia de MENOR distancia (la de la
+    formulación que mejor la encontró) para mostrar el dato más favorable, aunque el puntaje de
+    fusión ya sume el aporte de ambas apariciones."""
+    scores: dict[object, float] = {}
+    best_copy: dict[object, dict] = {}
+    for ranking in rankings:
+        for rank, resultado in enumerate(ranking, start=1):
+            key = _dedup_key(resultado)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (_RRF_K + rank)
+            if key not in best_copy or resultado["distancia"] < best_copy[key]["distancia"]:
+                best_copy[key] = resultado
+    ordered_keys = sorted(scores, key=lambda k: scores[k], reverse=True)
+    return [best_copy[key] for key in ordered_keys]
+
+
+# Cuántos PUESTOS "vale" una coincidencia literal en el puntaje de ranking (2026-09-28, pedido
+# explícito tras preguntar "¿se puede mejorar todavía más esta sinergia?"): la primera versión de
+# `_apply_literal_term_boost` era una partición dura -TODOS los matches antes que TODOS los
+# no-matches, sin importar qué tan débil fuera el match ni qué tan fuerte el no-match-. Eso podía
+# poner una conversación que menciona el término de pasada, sin relación real con la pregunta, por
+# delante de una conversación semánticamente mucho más relevante que simplemente no usó esa palabra
+# exacta. `_LITERAL_MATCH_BONUS_RANKS` en cambio SUMA una ventaja equivalente a "subir 5 puestos" en
+# el mismo puntaje 1/(_RRF_K + rango) que ya usa `_reciprocal_rank_fusion` -un match cerca del tope
+# (dentro de esos 5 puestos) sube al primer lugar igual que antes, pero un match muy débil, lejos en
+# la lista, sigue detrás de resultados semánticamente mucho mejores en vez de saltar al frente sin
+# más. Reusa `_RRF_K` (no un valor propio) para que la escala del puntaje sea la misma tanto si el
+# resultado viene de una búsqueda simple como de una ya fusionada por RRF.
+_LITERAL_MATCH_BONUS_RANKS = 5
+
+
+def _apply_literal_term_boost(resultados: list[dict], termino_literal: str) -> list[dict]:
+    """Reordena `resultados` (ya recuperados por la búsqueda vectorial, con o sin multi-query)
+    combinando su orden actual con una coincidencia literal de `termino_literal` (sin distinguir
+    mayúsculas) -sin agregar ni sacar ninguna, sólo reordenar. Corre en Python contra el texto que
+    `_retrieve` ya trajo (`_analysis_text`), NO contra la base -no necesita índice propio ni columna
+    SQL nueva, sólo mira las pocas decenas de candidatas que la búsqueda vectorial ya encontró.
+
+    Convierte la posición actual de cada resultado (por distancia, o por fusión RRF si hubo
+    multi-query) en un puntaje 1/(_RRF_K + rango) -mismo estilo que `_reciprocal_rank_fusion`- y a
+    los matches les resta hasta `_LITERAL_MATCH_BONUS_RANKS` posiciones de ese rango antes de
+    calcular el puntaje (ver el comentario de esa constante para el motivo: no es una partición dura,
+    es una ventaja acotada). Empate de puntaje -típico cuando el bonus satura al rango mínimo (1)-
+    se desempata a favor del match, y sólo después por el orden original (estable).
+
+    Se aplica UNA sola vez, acá en `search()`, sobre la lista final -nunca dentro de `_retrieve()`
+    por pata. Motivo (encontrado en vivo, 2026-09-28): una primera versión hacía el `ILIKE` en SQL
+    dentro de cada pata de un multi-query, antes de fusionar por RRF -pero la fusión por rango no
+    sabe cuáles eran matches literales, así que una conversación con el término exacto podía terminar
+    detrás de una sin el término si ésta rankeaba bien en las dos formulaciones. Aplicarlo acá, sobre
+    la lista YA fusionada (o la de una búsqueda simple, da lo mismo), garantiza el mismo tratamiento
+    sea cual sea la combinación de multi-query que se haya usado."""
+    termino_normalizado = termino_literal.strip().lower()
+    if not termino_normalizado:
+        return resultados
+    puntuados = []
+    for rango_original, resultado in enumerate(resultados, start=1):
+        coincide = termino_normalizado in _analysis_text(resultado).lower()
+        rango_efectivo = max(1, rango_original - _LITERAL_MATCH_BONUS_RANKS) if coincide else rango_original
+        puntaje = 1.0 / (_RRF_K + rango_efectivo)
+        puntuados.append((puntaje, coincide, rango_original, resultado))
+    puntuados.sort(key=lambda item: (-item[0], not item[1], item[2]))
+    return [resultado for _puntaje, _coincide, _rango, resultado in puntuados]
+
+
 def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
     """Verificación mecánica de "patrones" (2026-09-22): un patrón afirma una REPETICIÓN, así que
     exige dos citas reales en DOS conversaciones DISTINTAS, no sólo una cita cualquiera. Sin esto,
@@ -1248,6 +1411,61 @@ def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
     return patrones_verificados[:3]
 
 
+def _reset_primary_connection() -> None:
+    global _cached_connection
+    _cached_connection = None
+
+
+def _reset_secondary_connection() -> None:
+    global _cached_connection_secondary
+    _cached_connection_secondary = None
+
+
+def _execute_retrieval_sql(
+    sql: str,
+    params: tuple,
+    *,
+    lock: threading.RLock,
+    get_connection: "Callable[[], psycopg.Connection]",
+    reset_connection: "Callable[[], None]",
+) -> tuple[list[tuple], float]:
+    """Ejecuta la consulta de recuperación de `_retrieve` contra la conexión que indiquen
+    `lock`/`get_connection` -extraído (2026-09-28) para que la segunda formulación de un multi-query
+    pueda correr en una conexión y un lock DISTINTOS (`_get_reusable_connection_secondary`) y así las
+    dos consultas SQL de una búsqueda con `query_alternativa` corran en paralelo, no una atrás de la
+    otra. Misma lógica de reconexión-ante-error que tenía `_retrieve` antes de esta extracción, sin
+    cambios de comportamiento para la conexión primaria (los tests existentes la siguen usando vía
+    `_get_reusable_connection`/`_connection_lock`, sin tocar)."""
+    query_start = time.perf_counter()
+    with lock:
+        check_analysis()
+        try:
+            connection = get_connection()
+            with connection.cursor() as cursor:
+                cursor.execute("SET search_path = analytics_v2, public")
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+        except psycopg.OperationalError as exc:
+            # La conexión cacheada se rompió (ej. idle timeout del lado del server) -forzar una
+            # reconexión y reintentar una sola vez, no reintentos infinitos.
+            if getattr(exc, "sqlstate", None) in {"28P01", "28000"}:
+                raise OperationalUnavailable() from None
+            state = getattr(exc, "sqlstate", None)
+            if state is not None and not state.startswith(("08", "28")) and state not in {"57P01", "57P02", "57P03", "53300"}:
+                if not connection.closed:
+                    connection.rollback()
+                raise
+            check_analysis()
+            reset_connection()
+            connection = get_connection()
+            with connection.cursor() as cursor:
+                cursor.execute("SET search_path = analytics_v2, public")
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+    query_ms = round((time.perf_counter() - query_start) * 1000, 1)
+    return rows, query_ms
+
+
 class VectorSearchRepository:
     """Búsqueda semántica aislada por tenant sobre conversaciones vectorizadas."""
 
@@ -1271,13 +1489,26 @@ class VectorSearchRepository:
         criterio: str | None,
         resultado_filtro: str | None,
         performance_source: "SourceConfig | None",
+        use_secondary_connection: bool = False,
     ) -> tuple[list[dict], int, float, int]:
         """Recuperación de UN grupo de conversaciones (SQL vectorial + deduplicación por
         conversación). Extraído de `search()` (2026-09-21) para poder correrlo dos veces -las del
         vendedor y las de los mejores del criterio- con UN solo análisis después. `employee_name`
         es coincidencia parcial (ILIKE); `employee_exact` una lista de nombres exactos (los mejores
         del criterio, ver `_top_performers`). Devuelve (resultados, filas_candidatas, query_ms,
-        candidate_limit)."""
+        candidate_limit).
+
+        `use_secondary_connection` (2026-09-28): la segunda formulación de un multi-query
+        (`search(query_alternativa=...)`) corre acá con su PROPIA conexión/lock
+        (`_get_reusable_connection_secondary`) en vez de la primaria, para que las dos consultas SQL
+        de esa búsqueda corran en paralelo de verdad -ver `_execute_retrieval_sql`.
+
+        El boost léxico (`search(termino_literal=...)`) NO vive acá -ver `_apply_literal_term_boost`
+        en `search()`: se probó como columna SQL (`ILIKE`) primero, pero eso reordenaba DENTRO de
+        cada pata de un multi-query, antes de fusionar por RRF, sin garantizar que un match quedara
+        primero DESPUÉS de la fusión (encontrado en vivo 2026-09-28). Ahora es un chequeo de texto en
+        Python sobre el resultado ya armado, aplicado una sola vez sobre la lista final -sigue sin
+        necesitar índice propio (corre sobre las mismas pocas decenas de candidatas de siempre)."""
         # El tipo `vector` y el operador `<=>` de pgvector viven en el schema analytics_v2 (no en
         # public/search_path default) -confirmado por SQL directo el 2026-09-10: sin agregar
         # analytics_v2 al search_path de la sesión, psycopg tira `UndefinedObject: type "vector"
@@ -1425,42 +1656,26 @@ class VectorSearchRepository:
             params.append(resultado_filtro)  # WHERE perf.<criterio>
         params += [vector_literal, candidate_limit]  # ORDER BY, LIMIT
 
-        query_start = time.perf_counter()
-        # _connection_lock serializa también la EJECUCIÓN acá, no sólo la creación de la conexión
-        # (2026-09-11, ver run_tool_loop en vi_agent.py -on_tool_call permite paralelizar tool
-        # calls con ThreadPoolExecutor). psycopg no garantiza que una misma Connection pueda
-        # usarse desde dos threads en simultáneo sin sincronización externa -sin este lock, dos
-        # search_conversations() concurrentes sobre la conexión cacheada compartida (_cached_connection)
-        # podrían interleavear cursor.execute/fetchall entre threads. El lock sólo serializa la
-        # query de vector search entre sí -sigue corriendo en paralelo con run_readonly_sql, que
-        # abre su propia conexión nueva por llamada (get_postgres_connection).
-        with _connection_lock:
-            check_analysis()
-            try:
-                connection = _get_reusable_connection()
-                with connection.cursor() as cursor:
-                    cursor.execute("SET search_path = analytics_v2, public")
-                    cursor.execute(sql, tuple(params))
-                    rows = cursor.fetchall()
-            except psycopg.OperationalError as exc:
-                # La conexión cacheada se rompió (ej. idle timeout del lado del server) -forzar una
-                # reconexión y reintentar una sola vez, no reintentos infinitos.
-                if getattr(exc, "sqlstate", None) in {"28P01", "28000"}:
-                    raise OperationalUnavailable() from None
-                state = getattr(exc, "sqlstate", None)
-                if state is not None and not state.startswith(("08", "28")) and state not in {"57P01", "57P02", "57P03", "53300"}:
-                    if not connection.closed:
-                        connection.rollback()
-                    raise
-                check_analysis()
-                global _cached_connection
-                _cached_connection = None
-                connection = _get_reusable_connection()
-                with connection.cursor() as cursor:
-                    cursor.execute("SET search_path = analytics_v2, public")
-                    cursor.execute(sql, tuple(params))
-                    rows = cursor.fetchall()
-        query_ms = round((time.perf_counter() - query_start) * 1000, 1)
+        # _connection_lock (o _connection_lock_secondary, ver use_secondary_connection) serializa
+        # también la EJECUCIÓN, no sólo la creación de la conexión (2026-09-11, ver run_tool_loop en
+        # vi_agent.py -on_tool_call permite paralelizar tool calls con ThreadPoolExecutor). psycopg
+        # no garantiza que una misma Connection pueda usarse desde dos threads en simultáneo sin
+        # sincronización externa -sin este lock, dos search_conversations() concurrentes sobre la
+        # misma conexión cacheada podrían interleavear cursor.execute/fetchall entre threads. Sigue
+        # corriendo en paralelo con run_readonly_sql, que abre su propia conexión nueva por llamada
+        # (get_postgres_connection).
+        if use_secondary_connection:
+            rows, query_ms = _execute_retrieval_sql(
+                sql, tuple(params), lock=_connection_lock_secondary,
+                get_connection=_get_reusable_connection_secondary,
+                reset_connection=_reset_secondary_connection,
+            )
+        else:
+            rows, query_ms = _execute_retrieval_sql(
+                sql, tuple(params), lock=_connection_lock,
+                get_connection=_get_reusable_connection,
+                reset_connection=_reset_primary_connection,
+            )
 
         # Deduplicación por conversación -ver nota junto a _CANDIDATE_MULTIPLIER. `rows` ya viene
         # ordenado por distancia ascendente (ORDER BY del SQL), así que la primera vez que se ve
@@ -1613,10 +1828,32 @@ class VectorSearchRepository:
         resultado: str | None = None,
         comparar_con_mejores: bool = False,
         incluir_fragmentos: bool = False,
+        query_alternativa: str | None = None,
+        termino_literal: str | None = None,
     ) -> str:
         """Busca conversaciones semánticamente similares a `query` para el tenant activo.
 
         Args:
+            termino_literal: (2026-09-28, boost léxico sin índice propio) opcional -un nombre de
+                producto, marca o SKU que aparece literal en la pregunta. Los embeddings son buenos
+                con significado pero malos con términos exactos: dos prendas distintas (ej. "buzo
+                azul talle L" y "campera negra talle M") pueden quedar cerca en el espacio semántico
+                aunque la pregunta pedía una en particular. Esto reordena las conversaciones que la
+                búsqueda vectorial YA encontró (nunca busca de nuevo ni agrega candidatas nuevas): un
+                match literal suma una ventaja acotada al puntaje de ranking (no una partición dura
+                -ver `_LITERAL_MATCH_BONUS_RANKS`), así que un match cerca del tope sube al primer
+                lugar pero un match débil muy lejos en la lista no salta por delante de resultados
+                semánticamente mucho mejores. Se apoya en el mismo recorte de la búsqueda vectorial
+                (`candidate_limit`, unas pocas decenas de filas), no necesita su propio índice.
+            query_alternativa: (2026-09-28, "que la búsqueda sea aún más útil") opcional -una
+                segunda formulación de la MISMA intención, con otras palabras. Un solo embedding es
+                un solo punto del espacio semántico: si la formulación no queda bien ubicada
+                respecto a cómo se habló realmente en las conversaciones reales, una conversación
+                relevante puede no entrar nunca al radar. Con esto, se buscan ambas formulaciones y
+                se funden por Reciprocal Rank Fusion antes del juez -sin llamada extra a Gemini
+                (sólo un embedding y una consulta SQL más). Omitir en la mayoría de las búsquedas;
+                usar quien llama cuando la pregunta es abierta/ambigua y una sola formulación puede
+                no alcanzar. Si coincide textualmente con `query`, se ignora (no aporta nada).
             incluir_fragmentos: (2026-09-21, costo) por default el texto crudo
                 (`fragmento_aproximado`, ~1.000 tokens por resultado al precio del modelo
                 principal) se OMITE en los resultados que ya traen `notas` del analista: el insight
@@ -1784,6 +2021,13 @@ class VectorSearchRepository:
         api_key = os.getenv("VERA_AI_API_KEY")
         if not api_key:
             raise OperationalUnavailable()
+        query_alternativa = _as_optional_str(query_alternativa)
+        if query_alternativa and query_alternativa.strip() == query.strip():
+            # Misma consulta dos veces no aporta nada -sólo duplicaría el costo del embedding y de
+            # la consulta SQL sin ampliar la cobertura semántica.
+            query_alternativa = None
+        termino_literal = _as_optional_str(termino_literal)
+
         embed_start = time.perf_counter()
         vector_literal = _vector_literal(_embed_query(
             query.strip(), api_key,
@@ -1791,9 +2035,7 @@ class VectorSearchRepository:
         ))
         embed_ms = round((time.perf_counter() - embed_start) * 1000, 1)
 
-        resultados, candidates_fetched, query_ms, candidate_limit = self._retrieve(
-            vector_literal=vector_literal,
-            top_k=top_k,
+        retrieve_kwargs = dict(
             store_name=store_name,
             employee_name=employee_name,
             employee_exact=None,
@@ -1803,6 +2045,64 @@ class VectorSearchRepository:
             resultado_filtro=resultado_filtro,
             performance_source=performance_source,
         )
+        # `per_query_k` (multi-query) y el sobre-fetch del boost léxico comparten la misma necesidad:
+        # recuperar MÁS candidatas de las que se van a devolver, para que haya margen real para
+        # fusionar/reordenar antes de cortar a `top_k` -si ya viniera recortado a `top_k`, ni la
+        # fusión RRF ni el boost de `termino_literal` (ver _apply_literal_term_boost, aplicado más
+        # abajo sobre la lista final) tendrían nada de sobra para promover.
+        per_query_k = min(top_k * 2, _MAX_TOP_K) if (query_alternativa or termino_literal) else top_k
+        if query_alternativa:
+            # Multi-query + RRF (ver _reciprocal_rank_fusion), en PARALELO (2026-09-28, medido en
+            # vivo: corridas secuenciales duplicaban query_ms -18s y 62s reales en dos búsquedas
+            # medidas- porque compartían conexión/lock). La pata original reusa el embedding ya
+            # calculado arriba (no se re-embebe); la alternativa embebe + recupera con su PROPIA
+            # conexión (`use_secondary_connection`, ver `_get_reusable_connection_secondary`), las
+            # dos en threads separados -el tiempo real percibido es el de la pata más lenta, no la
+            # suma de las dos.
+            def _primary_leg() -> dict:
+                r, c, q, cl = self._retrieve(
+                    vector_literal=vector_literal, top_k=per_query_k, **retrieve_kwargs,
+                )
+                return {"resultados": r, "candidates_fetched": c, "query_ms": q, "candidate_limit": cl}
+
+            def _alternate_leg() -> dict:
+                leg_embed_start = time.perf_counter()
+                alt_vector_literal = _vector_literal(_embed_query(
+                    query_alternativa.strip(), api_key,
+                    usage_recorder=self._usage_recorder, client_id=self.client.client_id,
+                ))
+                leg_embed_ms = round((time.perf_counter() - leg_embed_start) * 1000, 1)
+                r, c, q, cl = self._retrieve(
+                    vector_literal=alt_vector_literal, top_k=per_query_k,
+                    use_secondary_connection=True, **retrieve_kwargs,
+                )
+                return {
+                    "resultados": r, "candidates_fetched": c, "query_ms": q,
+                    "candidate_limit": cl, "embed_ms": leg_embed_ms,
+                }
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_primary = pool.submit(_primary_leg)
+                future_alternate = pool.submit(_alternate_leg)
+                leg_a = future_primary.result()
+                leg_b = future_alternate.result()
+
+            embed_ms += leg_b["embed_ms"]
+            candidates_fetched = leg_a["candidates_fetched"] + leg_b["candidates_fetched"]
+            # Corren en paralelo: el tiempo real de la pareja es el de la más lenta, no la suma -a
+            # diferencia de embed_ms/candidates_fetched, que sí son trabajo total acumulado.
+            query_ms = max(leg_a["query_ms"], leg_b["query_ms"])
+            candidate_limit = leg_a["candidate_limit"]
+            resultados = _reciprocal_rank_fusion([leg_a["resultados"], leg_b["resultados"]])
+        else:
+            resultados, candidates_fetched, query_ms, candidate_limit = self._retrieve(
+                vector_literal=vector_literal, top_k=per_query_k, **retrieve_kwargs,
+            )
+        if termino_literal:
+            # Acá, sobre la lista final (fusionada por RRF si hubo multi-query) -ver el docstring de
+            # _apply_literal_term_boost para el motivo de por qué NO vive dentro de _retrieve().
+            resultados = _apply_literal_term_boost(resultados, termino_literal)
+        resultados = resultados[:top_k]
 
         # Ambigüedad de employee_name (2026-09-23): el filtro es ILIKE '%employee_name%" -coincidencia
         # PARCIAL, ya advertida en el docstring de arriba ("un nombre de pila puede matchear a otra
@@ -1831,9 +2131,12 @@ class VectorSearchRepository:
                 exclude_employee=employee_name,
             )
             if peers:
+                # Mismo sobre-fetch que el resto (ver `per_query_k` arriba) cuando hay boost léxico,
+                # para que _apply_literal_term_boost tenga margen real para promover.
+                peer_fetch_k = min(_PEER_TOP_K * 2, _MAX_TOP_K) if termino_literal else _PEER_TOP_K
                 peer_resultados, _, _, _ = self._retrieve(
                     vector_literal=vector_literal,
-                    top_k=_PEER_TOP_K,
+                    top_k=peer_fetch_k,
                     store_name=store_name,
                     employee_name=None,
                     employee_exact=peers,
@@ -1843,6 +2146,9 @@ class VectorSearchRepository:
                     resultado_filtro="Sí",
                     performance_source=performance_source,
                 )
+                if termino_literal:
+                    peer_resultados = _apply_literal_term_boost(peer_resultados, termino_literal)
+                peer_resultados = peer_resultados[:_PEER_TOP_K]
                 for peer_item in peer_resultados:
                     peer_item["grupo"] = "companeros"
                     peer_item["vendedor"] = "compañero con mejor resultado"
@@ -1884,6 +2190,8 @@ class VectorSearchRepository:
             query_ms=query_ms,
             judge_ms=judge_ms,
             judge_filtered_count=judge_filtered_count,
+            multi_query_used=bool(query_alternativa),
+            literal_term_used=bool(termino_literal),
         )
         aviso = "los fragmentos son una reconstrucción aproximada"
         if judge_filtered_count > 0:

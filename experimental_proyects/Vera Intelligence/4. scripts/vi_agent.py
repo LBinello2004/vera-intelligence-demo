@@ -484,7 +484,7 @@ def _build_extra_tools_section() -> str:
     if CLIENT_CONFIG.vector_search:
         items.append(
             "search_conversations(query, top_k, store_name, employee_name, date_from, date_to, "
-            "criterio, resultado, comparar_con_mejores): lee conversaciones reales y devuelve, por cada una, NOTAS "
+            "criterio, resultado, comparar_con_mejores, query_alternativa, termino_literal): lee conversaciones reales y devuelve, por cada una, NOTAS "
             "observables de lo que pasó ('notas': situacion / que_hizo / como_termino), 'patrones' "
             "que se repiten entre las leídas -nunca texto crudo de la conversación (ver NUNCA CITES TEXTUAL). Es la única fuente de "
             "lo que el SQL NO tiene: CÓMO lo hizo alguien, en qué situación y con qué resultado -el "
@@ -604,7 +604,29 @@ def _build_extra_tools_section() -> str:
             "situaciones, productos u ocasiones REALES de este negocio (Data Map, rulebooks o "
             f"valores que ya viste en SQL), en el vocabulario de {CLIENT_CONFIG.display_name} -los "
             "ejemplos de moda de este texto son sólo de estructura- y no como paráfrasis abstracta "
-            "del criterio. Máximo una reformulación más amplia si no trae nada.\n"
+            "del criterio. Si no trae nada, repetí UNA vez con una reformulación más amplia antes de "
+            "resignarte.\n"
+            "  - MULTI-QUERY (2026-09-28, pedido explícito de mejorar la calidad de la búsqueda): "
+            "para POR QUÉ/CAUSA RAÍZ y BÚSQUEDA DE PATRONES/EXPLORACIÓN ABIERTA -donde una sola "
+            "formulación puede no ser la única forma en que se habló de eso en las conversaciones "
+            "reales-, pasá también `query_alternativa` con la MISMA intención en otras palabras (ej. "
+            "query='cliente pide que le guarden el producto', query_alternativa='cliente pregunta si "
+            "puede reservarlo'). Internamente se buscan ambas formulaciones y se combinan -no "
+            "cuenta como una segunda llamada, no dupliques el costo de la tool con dos "
+            "search_conversations separadas para variar la redacción-. Omitilo en COACHING (la "
+            "situación típica del criterio ya está bien anclada por el filtro de checklist, no por "
+            "la formulación) y en cualquier búsqueda ya acotada por employee_name/store_name.\n"
+            "  - BOOST LÉXICO (2026-09-28): si la pregunta nombra literal un producto, marca, modelo "
+            "o SKU puntual, pasá `termino_literal` con ESA palabra o frase exacta (ej. pregunta sobre "
+            "'la campera Alpina talle L' -> termino_literal='Alpina'). Los embeddings son buenos con "
+            "significado pero malos con nombres propios/términos exactos -dos productos distintos "
+            "pueden quedar cerca en la búsqueda semántica aunque la pregunta pedía uno en particular. "
+            "Esto NO busca de nuevo ni agrega conversaciones nuevas: sólo les da prioridad, dentro de "
+            "las que la misma búsqueda ya encontró, a las que mencionan ese término literal -una "
+            "ventaja en el orden, no una garantía absoluta de ir primero, así una coincidencia débil "
+            "no tapa un resultado semánticamente mucho más relevante. Omitilo si la pregunta es "
+            "puramente conceptual/cualitativa sin un nombre propio puntual -usarlo sin necesidad no "
+            "aporta nada, sólo reordena sin motivo.\n"
             "  - LEER LOS RESULTADOS: 'notas' y 'patrones' son la sustancia del consejo. Lo "
             "observado es una MUESTRA de las conversaciones leídas: presentalo como 'en las "
             "conversaciones revisadas se ve que...', nunca como estadística: sin cifras ni "
@@ -946,6 +968,8 @@ def search_conversations(
     criterio: str = "",
     resultado: str = "",
     comparar_con_mejores: bool = False,
+    query_alternativa: str = "",
+    termino_literal: str = "",
 ) -> str:
     """Busca conversaciones semánticamente similares a `query` para el cliente activo.
 
@@ -959,6 +983,14 @@ def search_conversations(
         comparar_con_mejores: opcional, sólo con `criterio` + resultado='No': además trae, en la
             misma llamada, conversaciones de los vendedores con mejor resultado en ese criterio (sin
             nombres) y un `contraste` por situación entre ambos grupos.
+        query_alternativa: opcional -una segunda formulación de la MISMA intención que `query`, con
+            otras palabras. Amplía la cobertura semántica de la búsqueda (ver MULTI-QUERY en las
+            reglas de esta tool) sin una llamada extra a Gemini. Omitir salvo que corresponda.
+        termino_literal: opcional -un nombre de producto, marca o SKU mencionado literal en la
+            pregunta. Reordena las conversaciones que la búsqueda YA encontró para que las que
+            contienen ese término exacto suban antes que las que no (ver BOOST LÉXICO en las reglas
+            de esta tool). No agrega candidatas nuevas ni necesita índice propio. Omitir salvo que la
+            pregunta nombre algo puntual que valga la pena priorizar así.
         query: texto de búsqueda en lenguaje natural (español).
         top_k: cantidad máxima de conversaciones distintas a devolver (1-20, default 5).
         store_name: nombre (o parte del nombre) de una tienda/sucursal para limitar la búsqueda a
@@ -997,6 +1029,8 @@ def search_conversations(
         criterio=criterio,
         resultado=resultado,
         comparar_con_mejores=bool(comparar_con_mejores) if isinstance(comparar_con_mejores, bool) else False,
+        query_alternativa=query_alternativa,
+        termino_literal=termino_literal,
         # incluir_fragmentos ya no es controlable por el modelo (2026-09-22, pedido explícito: nunca
         # mostrar citas textuales al usuario, ni siquiera si las pide). Forzado en False: el texto
         # crudo de la transcripción nunca llega al modelo principal, así que no puede copiarlo -no
