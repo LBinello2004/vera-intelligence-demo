@@ -2933,3 +2933,49 @@ más relevante que simplemente no usó esa palabra exacta.
   cortas, matches cerca del tope) el puntaje combinado da el mismo resultado que la partición dura.
   596/596 tests en verde (2 nuevos).
 
+### Iteración 71 — Primer intento de evaluación real de calidad, con una falla metodológica encontrada (2026-09-28)
+
+Pedido explícito tras cinco iteraciones seguidas sin medir más que "¿dispara donde corresponde?":
+antes de seguir agregando mecanismos, armar una evaluación real -ground truth verificado a mano
+leyendo transcripciones reales (mismo criterio que el resto del proyecto: "verificado por Claude
+contra Postgres, no por el agente"), no contra el juicio del propio agente.
+
+- **Método**: 2 casos contra `mens_fashion_alto`, cada uno mide UN mecanismo. Caso A (multi-query):
+  ground truth = 4 conversaciones sobre "reservar/apartar el producto mientras se confirma el pago",
+  encontradas con una búsqueda exploratoria amplia (top_k=15) y leídas a mano (notas + fragmento) para
+  confirmar que eran genuinamente relevantes. Caso B (boost léxico): ground truth = 1 conversación que
+  menciona "traje de lana gris" literalmente, vista en una búsqueda exploratoria distinta. Para cada
+  caso se corrió `search()` con y sin el mecanismo (mismo `top_k=5`), y se midió si las conversaciones
+  de referencia aparecían en el resultado final.
+- **Resultado real, sin maquillar**: Caso A -recall 0.25 en AMBAS corridas (con y sin
+  `query_alternativa`), idéntico resultado, misma conversación en el mismo puesto. Caso B -recall 0.0
+  en AMBAS corridas (con y sin `termino_literal`), la conversación de referencia no apareció en
+  ninguna. Esta primera corrida no muestra una mejora medible de ninguno de los dos mecanismos.
+- **Pero la medición en sí tiene una falla real, encontrada al analizar el resultado**: (1) el ground
+  truth se construyó con una búsqueda exploratoria usando una redacción de la pregunta, pero el caso
+  de prueba usó redacciones DISTINTAS -como el embedding depende de las palabras exactas, el ranking
+  de esas mismas conversaciones con la redacción de prueba puede no parecerse en nada al de la
+  búsqueda exploratoria, invalidando la comparación. (2) El "puesto" de la conversación de referencia
+  del Caso B se estimó a partir de una lista YA filtrada por el juez, no por el orden real de
+  distancia -el puesto real pre-juez pudo estar más allá de `per_query_k` (10, para `top_k=5`), fuera
+  del alcance de cualquier boost por diseño (el boost sólo reordena candidatas ya recuperadas, nunca
+  busca más lejos -ver Iteración 69).
+- **Conclusión**: esta corrida ni confirma ni refuta que los mecanismos ayuden -el problema está en
+  cómo se armó la medición, no necesariamente en el código. Decisión explícita (con el usuario): no
+  volver a armar el ground truth ahora mismo -cuesta minutos reales de Gemini/Postgres por vuelta para
+  una ganancia que hoy es sobre todo tranquilidad, no reducción de riesgo real (cada mecanismo nuevo
+  ya es fail-open y no rompe nada si no ayuda). Se commiteó igual, apoyado en: 596 tests unitarios en
+  verde, verificación en vivo de que cada mecanismo dispara donde corresponde, y `multi_query_used`/
+  `literal_term_used` ya quedan registrados en `.runtime/usage/vector_search_calls.jsonl` para medir
+  con datos reales de producción más adelante -más confiable que un ground truth armado a mano en una
+  sesión, si se junta volumen suficiente.
+- **Verificado además en el demo desplegado** (Streamlit Cloud, post-reboot con el commit de esta
+  sesión): "¿qué dicen los clientes que preguntan por trajes Super 100?" contra `mens_fashion_alto`
+  disparó `search_conversations` (63,0s, dentro de la variabilidad ya documentada sin índice) y la
+  respuesta nombró "Super 100"/"Super 120" específicamente con patrones concretos (no genéricos),
+  con el panel de audio mostrando 5 conversaciones reales como base -confirma que el mecanismo
+  funciona end-to-end en producción, aunque siga sin medirse con rigor estadístico.
+- **Si se retoma esta evaluación más adelante**: usar la MISMA redacción para descubrir ground truth
+  y para testear (no dos preguntas distintas), y medir el puesto pre-juez directamente por SQL
+  (`ORDER BY ce.embedding <=> %s::vector`) en vez de inferirlo de una lista ya filtrada.
+
