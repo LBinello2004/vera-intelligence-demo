@@ -3217,3 +3217,38 @@ ningún bug, pero la combinación no estaba cubierta y el orden de params entre 
 exactamente el tipo de cosa que ya rompió antes en este archivo (ver el comentario "IMPORTANTE" sobre
 el orden de `%s` en `_retrieve`). 620 tests totales en verde (antes 619).
 
+### Iteración 79 — `comparar_con_mejores` se generaliza a CUALQUIER causa raíz que mapee a un criterio, no sólo coaching explícito (2026-09-29)
+
+Pedido explícito tras ver en vivo un resultado real de coaching de un vendedor ("dame coaching para
+el peor vendedor... por qué no cierra cuando el cliente pide azul"): la respuesta trajo diagnóstico
+por situación + comparación contra los mejores + plan de acción concreto -mucho más valioso que el
+"patrón cualitativo" genérico que traía `search_conversations` en preguntas de causa raíz que no
+pedían coaching explícitamente-. Pedido: "que funcione así... para el resto de preguntas sin que
+tenga que pedírselo".
+
+- **Diagnóstico**: la estructura rica (`'Cuando [situación]: qué hace el segmento débil. Un
+  compañero/tienda con mejor resultado, en esa situación, qué hace. → Qué probar: ...'`) estaba
+  atada específicamente a `comparar_con_mejores=true`, que sólo se ofrecía en tres casos: coaching de
+  un vendedor, varios vendedores a la vez, y equipo en un período. La sección POR QUÉ / CAUSA RAÍZ
+  (la que dispara para "por qué bajó X", "la tienda con peor desempeño y por qué") usaba una
+  `search_conversations` simple, sin comparación -mismo mecanismo, resultado mucho más pobre.
+- **Fix**: POR QUÉ / CAUSA RAÍZ ahora se bifurca: SI el segmento débil que el número señaló
+  corresponde a un criterio del checklist de rendimiento (tasa de cierre, manejo de objeciones,
+  etc.), usa el mismo patrón que coaching -`criterio`+`resultado='No'`+`comparar_con_mejores=true`,
+  acotado al segmento exacto (vendedor, tienda o período)- y arma la respuesta con la MISMA
+  estructura rica. SI el segmento débil NO mapea a ningún criterio (ej. una caída en ventas totales
+  sin comportamiento puntual identificado), sigue usando una búsqueda simple -ahí no hay un grupo de
+  "mejores" con quién comparar, forzarlo sería inventar una comparación sin sentido.
+- **Verificado en vivo** contra `mens_fashion_alto`, sin pedir coaching ni nombrar ningún vendedor:
+  "¿cuál es la tienda con peor tasa de cierre de ventas y por qué?" -el modelo identificó por SQL que
+  "tasa de cierre" mapea a `vendedorrealizocierrecompra`, usó `comparar_con_mejores=True` con
+  `store_name='Mens Fashion Bolivar'` en vez de una búsqueda simple, y la respuesta trajo la
+  comparación por situación completa ("el vendedor se limita a informar el precio... un compañero
+  vincula la promoción con el conjunto y propone avanzar... → Qué probar: ..."), mismo nivel que el
+  ejemplo de coaching que motivó el pedido.
+- **Alcance**: sólo cambia el prompt de `vi_agent.py` (POR QUÉ/CAUSA RAÍZ), ningún código de
+  `vector_search.py` -el mecanismo (`comparar_con_mejores`) ya existía, sólo se amplió CUÁNDO se
+  usa. No se tocó BÚSQUEDA DE PATRONES/EXPLORACIÓN ABIERTA (sin vendedor/criterio puntual, no hay
+  con qué comparar). 622 tests siguen en verde (cambio de prompt, ningún test fija ese texto
+  exacto).
+
