@@ -3252,3 +3252,34 @@ tenga que pedírselo".
   con qué comparar). 622 tests siguen en verde (cambio de prompt, ningún test fija ese texto
   exacto).
 
+### Iteración 80 — Patrones profundos y anclados para causas raíz de negocio sin criterio de checklist (2026-09-29, dos vueltas)
+
+Pedido explícito tras revisar en vivo una respuesta real de "¿qué objeciones se repiten en los que no
+compran?": el modelo hacía dos desgloses SQL grandes (`objecion_principal`, `motivo_principal_
+venta_perdida`) y recién al final agregaba 2-3 bullets de una línea con una `search_conversations`
+de query GENÉRICA sobre todo el tema -sin anclar en la categoría #1 que el propio SQL señaló como
+dominante-, terminando en algo decorativo en vez del cuerpo principal cualitativo de la respuesta.
+
+- **Vuelta 1**: instruir anclar la query específicamente en el valor #1 de la categoría dominante
+  (ej. si `inventario` es la causa \#1, la query es sobre falta de talla/color puntual, no una mezcla
+  de varias razones). Verificado en vivo: mejoró la especificidad de los patrones (de genéricos a
+  "cortes con pinzas vs. cortes lisos", "tonalidades particulares de verde o azul"), pero seguían
+  siendo 3 bullets cortos, más breves que los desgloses numéricos de arriba.
+- **Vuelta 2**: `top_k=8` en vez de 5 para este caso puntual (más candidatas = más materia prima para
+  desarrollar varios patrones distintos -única excepción a "top_k=5 siempre" del resto del prompt,
+  justificada porque acá el costo se paga con una sección que reemplaza lo que antes era decorativo),
+  requisito mínimo explícito de 4 patrones de 2-3 oraciones cada uno (no 2-3 líneas sueltas), y
+  regla de paridad: la sección cualitativa tiene que ocupar tanto o más que los desgloses numéricos.
+- **Verificado en vivo, misma pregunta, ambas vueltas comparadas**: la vuelta 2 devolvió 4 patrones
+  desarrollados (confirmación pasiva de falta de stock, tallas inadecuadas sin ofrecer sastrería,
+  modelos agotados sin alternativa equivalente, acuerdos de apartado informales sin registrar pedido)
+  -extensión comparable a los desgloses SQL, cada uno accionable y específico. Como efecto colateral
+  positivo no buscado: el modelo combinó esto con `campo_estructurado='motivo_principal_venta_
+  perdida'`/`valor_estructurado='inventario'` (Iteración 72) por su cuenta, además de `top_k=8` y
+  `query_alternativa` -la primera vez que se ve un uso espontáneo combinando tres mecanismos
+  distintos de esta sesión en una sola búsqueda.
+- **Alcance**: sólo prompt de `vi_agent.py` (la rama de POR QUÉ/CAUSA RAÍZ para categorías de negocio
+  sin criterio de checklist detrás, ej. motivos de venta perdida, no comportamientos Sí/No del
+  vendedor). Ningún código de `vector_search.py` tocado -`top_k=8` es un valor que el modelo ya podía
+  pasar, sólo se le indicó cuándo conviene. 622 tests en verde (cambio de prompt).
+
