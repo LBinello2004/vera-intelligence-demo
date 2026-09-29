@@ -43,7 +43,11 @@ from dotenv import load_dotenv  # noqa: E402
 
 import vi_agent  # noqa: E402
 import audio_playback  # noqa: E402
-from client_config import available_clients_with_display_names, load_client_config  # noqa: E402
+from client_config import (  # noqa: E402
+    DEFAULT_CLIENT_ID,
+    available_clients_with_display_names,
+    load_client_config,
+)
 from feedback_tracking import FEEDBACK_LOG_PATH, FeedbackRecorder  # noqa: E402
 from question_tracking import QuestionRecorder  # noqa: E402
 from sheets_logging import SheetsLogger  # noqa: E402
@@ -1033,14 +1037,20 @@ def main() -> None:
     launch_args = _launch_args()
     preselected_client_id = launch_args.client
     debug = launch_args.internal_debug
-    # Default explícito a mens_fashion (2026-09-29, pedido explícito: antes de esto no había ningún
-    # default deliberado -el índice 0 caía en el primero alfabéticamente entre `ordered`, que pasó a
-    # ser "Agrosuper" por casualidad el mismo día en que se le habilitó búsqueda vectorial, no porque
-    # alguien lo hubiera elegido como piloto-. Se mantiene con fallback a 0 por si "mens_fashion" no
-    # está configurado en el entorno (ej. un checkout parcial), y sigue respetando --client si se pasó.
+    # Default explícito a mens_fashion, SÓLO en este repo -el demo desplegado- a pedido explícito
+    # (2026-09-29): antes de esto no había ningún default deliberado -el índice 0 caía en el primero
+    # alfabéticamente entre `ordered`, que pasó a ser "Agrosuper" por casualidad el mismo día en que
+    # se le habilitó búsqueda vectorial, no porque alguien lo hubiera elegido como piloto-. BUG REAL
+    # en el primer intento (probado en vivo tras un reboot -no cambió nada): acá "client_id" es el
+    # nombre de CARPETA (ver DEFAULT_CLIENT_ID en client_config.py, "mens_fashion_alto"), no el campo
+    # `client_id:` de adentro de config.yaml ("mens_fashion") -son dos identificadores distintos con
+    # el mismo nombre confuso. Buscar "mens_fashion" en `display_names_by_client_id` nunca matcheaba,
+    # así que el default caía siempre al `else: 0`. Usa la constante ya existente en vez de repetir
+    # el string a mano. Fallback a 0 por si esa carpeta no está en el entorno, y sigue respetando
+    # --client si se pasó.
     default_index = (
-        display_names.index(display_names_by_client_id["mens_fashion"])
-        if "mens_fashion" in display_names_by_client_id
+        display_names.index(display_names_by_client_id[DEFAULT_CLIENT_ID])
+        if DEFAULT_CLIENT_ID in display_names_by_client_id
         else 0
     )
     if preselected_client_id and preselected_client_id in display_names_by_client_id:
