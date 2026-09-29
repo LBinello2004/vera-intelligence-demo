@@ -3283,3 +3283,45 @@ dominante-, terminando en algo decorativo en vez del cuerpo principal cualitativ
   vendedor). Ningún código de `vector_search.py` tocado -`top_k=8` es un valor que el modelo ya podía
   pasar, sólo se le indicó cuándo conviene. 622 tests en verde (cambio de prompt).
 
+### Iteración 81 — Cuatro correcciones sobre la Iteración 80, todas verificadas en vivo (2026-09-29)
+
+Pedido explícito de seguir iterando sobre "que encuentre patrones valiosos", con una condición
+explícita: "tienen que ser reales, no puede inventar por inventar". Cuatro ajustes, cada uno
+verificado en vivo contra `mens_fashion_alto` antes de aceptarlo:
+
+1. **Diversidad de vendedor en `_verify_patrones` (código, no sólo prompt)**: la verificación
+   mecánica exigía 2 citas reales en 2 conversaciones distintas, pero no en 2 VENDEDORES distintos
+   -un patrón podía citar dos conversaciones del mismo vendedor y presentarse como "del negocio"
+   cuando era una costumbre personal de esa persona. Ahora, si los resultados incluyen más de un
+   vendedor, las 2 citas tienen que venir de vendedores distintos; no se exige cuando todos los
+   resultados son de un único vendedor (coaching individual, donde el patrón es a propósito sobre esa
+   persona). De paso, `_PATRONES_MAX` subido de 3 a 5 -un bug real encontrado en el camino: la
+   Iteración 80 pedía "al menos 4 patrones" pero el límite de verificación seguía en 3, recortando en
+   silencio un 4to patrón ya verificado. 6 tests nuevos (`PatronesVendorDiversityTests`).
+2. **"Al menos 4" dejó de ser un piso obligatorio**: la propia Iteración 80 podía presionar a forzar
+   un 4to patrón débil (conectando dos citas reales con un vínculo forzado) sólo para cumplir la
+   cuota -la verificación mecánica confirma que las CITAS son reales, no que la CONEXIÓN entre ambas
+   sea genuina, eso queda a criterio del modelo. Reescrito: apuntar a 4-5, pero 2 o 3 patrones bien
+   sostenidos son preferibles a uno de más que estire el material. Verificado en vivo: la misma
+   pregunta que antes forzaba a 4 ahora devolvió 3 patrones igual de específicos, sin rellenar.
+3. **Frase suelta de "base evaluada" eliminada en secciones cualitativas**: hallazgo real en vivo -el
+   modelo agregaba "no se informó la base evaluada; no se puede determinar la solidez" al final de
+   una sección de patrones, confundiendo la regla general de tasas/porcentajes (que si exige declarar
+   la base) con esta sección cualitativa, que por diseño nunca da un número que necesite esa base.
+   Agregada una excepción explícita en BÚSQUEDA DE PATRONES y en la rama de causa raíz. Verificado en
+   vivo con la misma pregunta exacta: la frase ya no aparece.
+4. **Tarjetas de sugerencia ahora empujan a preguntas de patrones** (pedido explícito: "que las
+   tarjetas... intenten llevar a hacer preguntas de búsqueda de patrones también"): si la respuesta
+   fue puramente numérica y el número tiene un "por qué" cualitativo genuino sin explorar todavía, una
+   de las 2-3 sugerencias de seguimiento tiene que ser una pregunta de patrones real (ej. "¿qué pasa
+   cuando falta la talla?"), no una reformulación del número. Bug real encontrado y
+   corregido en el camino: la primera versión escribió el nombre literal `search_conversations` en el
+   prompt BASE (compartido por todos los clientes, incluso sin la tool habilitada) -un test lo
+   detectó de inmediato; corregido usando la descripción genérica "herramienta de búsqueda semántica"
+   que ya usa el resto del prompt para esto. Verificado en vivo: una pregunta puramente numérica
+   ("motivo #1 de venta perdida") devolvió 2 de 3 sugerencias como preguntas de patrones genuinas
+   ("¿qué pasa en las conversaciones cuando falta la talla o el color?", "¿qué conductas explican las
+   pérdidas por ejecución del vendedor?").
+5. **Alcance**: puntos 2-4 son sólo prompt (`vi_agent.py`); el punto 1 es el único cambio de código
+   (`vector_search.py`, `_verify_patrones`/`_PATRONES_MAX`). 627 tests totales en verde (antes 622).
+

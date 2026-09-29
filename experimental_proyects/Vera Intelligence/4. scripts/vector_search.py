@@ -1609,11 +1609,26 @@ def _apply_literal_term_boost(resultados: list[dict], termino_literal: str) -> l
     return [resultado for _puntaje, _coincide, _rango, resultado in puntuados]
 
 
+_PATRONES_MAX = 5
+
+
 def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
     """Verificación mecánica de "patrones" (2026-09-22): un patrón afirma una REPETICIÓN, así que
     exige dos citas reales en DOS conversaciones DISTINTAS, no sólo una cita cualquiera. Sin esto,
-    "patrones" era un campo puramente atestiguado por el modelo ("esto se repite, confiá en mí")."""
+    "patrones" era un campo puramente atestiguado por el modelo ("esto se repite, confiá en mí").
+
+    Exige además (2026-09-29, "que encuentre patrones valiosos") que esas dos citas vengan de
+    VENDEDORES DISTINTOS cuando los resultados incluyen más de un vendedor -si no, un patrón podría
+    citar dos conversaciones del MISMO vendedor y presentarse como algo del negocio cuando en
+    realidad es una costumbre personal de esa persona, no algo generalizable. No se exige cuando
+    todos los resultados son de un único vendedor (coaching individual: ahí el patrón SÍ es sobre
+    esa persona puntual a propósito).
+
+    `_PATRONES_MAX` subido de 3 a 5 el mismo día: el prompt de POR QUÉ/CAUSA RAÍZ ahora pide un
+    mínimo de 4 patrones para ciertos casos -un límite de 3 acá recortaría en silencio un 4to
+    patrón ya verificado."""
     fragmentos_todos = [_analysis_text(resultado) for resultado in resultados]
+    vendedores_distintos = {r.get("vendedor") for r in resultados if r.get("vendedor")}
     patrones_verificados = []
     for item in raw_patrones if isinstance(raw_patrones, list) else []:
         if not isinstance(item, dict):
@@ -1632,9 +1647,15 @@ def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
             ),
             None,
         )
-        if indice_1 is not None and indice_2 is not None:
-            patrones_verificados.append(patron)
-    return patrones_verificados[:3]
+        if indice_1 is None or indice_2 is None:
+            continue
+        if len(vendedores_distintos) > 1:
+            vendedor_1 = resultados[indice_1].get("vendedor")
+            vendedor_2 = resultados[indice_2].get("vendedor")
+            if vendedor_1 and vendedor_1 == vendedor_2:
+                continue
+        patrones_verificados.append(patron)
+    return patrones_verificados[:_PATRONES_MAX]
 
 
 def _reset_primary_connection() -> None:

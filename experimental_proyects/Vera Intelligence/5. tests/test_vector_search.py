@@ -1772,7 +1772,9 @@ class AnalystNotesTests(unittest.TestCase):
         self.assertEqual(notas["situacion"], "x y")
         self.assertEqual(len(notas["que_hizo"]), vector_search._NOTE_MAX_CHARS)
         self.assertEqual(notas["como_termino"], "")
-        self.assertEqual(analysis["patrones"], ["p1", "p2", "p3"])
+        # _PATRONES_MAX subido de 3 a 5 (2026-09-29): las 4 entradas con "patron" no vacío pasan
+        # (la 5ta del payload tiene "patron": "" y se descarta antes del cupo, no por el límite).
+        self.assertEqual(analysis["patrones"], ["p1", "p2", "p3", "p4"])
 
     def test_que_hizo_discarded_when_evidence_is_not_in_the_fragment(self) -> None:
         # El caso real que motivó esto (auditoría manual de Ubaldo Ramos, 2026-09-21): el analista
@@ -1979,6 +1981,86 @@ class PatronesEvidenceTests(unittest.TestCase):
         analysis: dict = {}
         self._judge(payload, resultados, analysis_out=analysis)
         self.assertEqual(analysis["patrones"], [])
+
+
+class PatronesVendorDiversityTests(unittest.TestCase):
+    """Exigir vendedores distintos en las 2 citas de un patrón (2026-09-29, "que encuentre patrones
+    valiosos"): sin esto, un patrón podía citar dos conversaciones del MISMO vendedor y presentarse
+    como algo del negocio cuando en realidad es una costumbre personal de esa persona. No se exige
+    cuando TODOS los resultados son de un único vendedor (coaching individual: ahí el patrón es a
+    propósito sobre esa persona)."""
+
+    def _item(self, patron: str, evidencia_1: str, evidencia_2: str) -> dict:
+        return {"patron": patron, "evidencia_1": evidencia_1, "evidencia_2": evidencia_2}
+
+    def test_discarded_when_both_citations_are_the_same_vendor_and_others_exist(self) -> None:
+        resultados = [
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana menciona el precio y se queda esperando"},
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana informa la promocion sin invitar a pasar a caja"},
+            {"vendedor": "Luis", "fragmento_aproximado": "Luis propone directamente pasar a caja"},
+        ]
+        item = self._item(
+            "Informa pero no propone avanzar",
+            "menciona el precio y se queda esperando",
+            "informa la promocion sin invitar a pasar a caja",
+        )
+        self.assertEqual(vector_search._verify_patrones([item], resultados), [])
+
+    def test_kept_when_citations_come_from_different_vendors(self) -> None:
+        resultados = [
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana menciona el precio y se queda esperando"},
+            {"vendedor": "Luis", "fragmento_aproximado": "Luis informa la promocion sin invitar a pasar a caja"},
+        ]
+        item = self._item(
+            "Informa pero no propone avanzar",
+            "menciona el precio y se queda esperando",
+            "informa la promocion sin invitar a pasar a caja",
+        )
+        self.assertEqual(
+            vector_search._verify_patrones([item], resultados), ["Informa pero no propone avanzar"]
+        )
+
+    def test_not_required_when_all_results_are_the_same_single_vendor(self) -> None:
+        # Coaching individual: todos los resultados son de la misma persona a propósito -el patrón
+        # SÍ es sobre ese vendedor puntual, no se le puede pedir diversidad que no existe.
+        resultados = [
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana menciona el precio y se queda esperando"},
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana informa la promocion sin invitar a pasar a caja"},
+        ]
+        item = self._item(
+            "Informa pero no propone avanzar",
+            "menciona el precio y se queda esperando",
+            "informa la promocion sin invitar a pasar a caja",
+        )
+        self.assertEqual(
+            vector_search._verify_patrones([item], resultados), ["Informa pero no propone avanzar"]
+        )
+
+    def test_not_required_when_vendor_field_is_missing_entirely(self) -> None:
+        # Sin dato de vendedor en ningún resultado -no hay forma de exigir diversidad, no bloquear.
+        resultados = [
+            {"fragmento_aproximado": "menciona el precio y se queda esperando"},
+            {"fragmento_aproximado": "informa la promocion sin invitar a pasar a caja"},
+        ]
+        item = self._item(
+            "Informa pero no propone avanzar",
+            "menciona el precio y se queda esperando",
+            "informa la promocion sin invitar a pasar a caja",
+        )
+        self.assertEqual(
+            vector_search._verify_patrones([item], resultados), ["Informa pero no propone avanzar"]
+        )
+
+    def test_patrones_max_raised_to_five(self) -> None:
+        resultados = [
+            {"vendedor": "Ana", "fragmento_aproximado": "Ana dice el texto primero completo"},
+            {"vendedor": "Luis", "fragmento_aproximado": "Luis dice el texto segundo completo"},
+        ]
+        items = [
+            self._item(f"patron{i}", "el texto primero completo", "el texto segundo completo")
+            for i in range(7)
+        ]
+        self.assertEqual(len(vector_search._verify_patrones(items, resultados)), 5)
 
 
 class ContrasteEvidenceTests(unittest.TestCase):
