@@ -1033,7 +1033,16 @@ def main() -> None:
     launch_args = _launch_args()
     preselected_client_id = launch_args.client
     debug = launch_args.internal_debug
-    default_index = 0
+    # Default explícito a mens_fashion (2026-09-29, pedido explícito: antes de esto no había ningún
+    # default deliberado -el índice 0 caía en el primero alfabéticamente entre `ordered`, que pasó a
+    # ser "Agrosuper" por casualidad el mismo día en que se le habilitó búsqueda vectorial, no porque
+    # alguien lo hubiera elegido como piloto-. Se mantiene con fallback a 0 por si "mens_fashion" no
+    # está configurado en el entorno (ej. un checkout parcial), y sigue respetando --client si se pasó.
+    default_index = (
+        display_names.index(display_names_by_client_id["mens_fashion"])
+        if "mens_fashion" in display_names_by_client_id
+        else 0
+    )
     if preselected_client_id and preselected_client_id in display_names_by_client_id:
         default_index = display_names.index(display_names_by_client_id[preselected_client_id])
     default_model_index = (
