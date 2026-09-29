@@ -28,3 +28,11 @@ business_rulebooks:
 
 # Agrosuper no tiene RAG: su prompt de checklist no declara geminiFileSearchStoreName -el
 # store de clientes/Agrosuper/feedback es de otro producto/feature, no de Vera Intelligence-.
+
+# Búsqueda vectorial habilitada (2026-09-29) -verificado por SQL directo: 11 de 14 grabaciones
+# tienen embedding (13 filas, una conversación con más de un chunk), cobertura real 79%. Volumen
+# chico pero real -mismo criterio que Hyundai (151 embeddings, cliente inactivo, habilitado igual
+# "la búsqueda tiene valor sobre el histórico ya vectorizado")-. Sin insights_descriptivos_generales
+# (schema delgado) -resumen_verificado sale None, degradación normal.
+vector_search:
+  top_k: 5

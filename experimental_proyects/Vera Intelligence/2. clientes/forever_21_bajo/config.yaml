@@ -2,7 +2,7 @@ client_id: forever_21
 display_name: "Forever 21"
 tenant: "Forever 21"
 model: gemini-3.7-flash
-data_map: "2. clientes/forever_21_bajo/data_map/VI Data Map Forever21 V1.yaml"
+data_map: "2. clientes/forever_21_bajo/data_map/VI Data Map Forever21 V2.yaml"
 
 sources:
   dashboard_v2.vw_forever_21_demografia:
@@ -41,3 +41,11 @@ business_rulebooks:
 # confirmado en Langfuse (fileSearchStores/centralfeedbackcanaimafried-nrhv7ua1e53n, compartido con
 # Shoe Box) pertenece al prompt "clientes/Canaima/Forever 21/feedback", un feature de coaching
 # separado de este agente — no aplicable a VI en este MVP (mismo criterio que Shoe Box).
+
+# Búsqueda vectorial deliberadamente NO habilitada (2026-09-29, a diferencia de Agrosuper/Shoe Box,
+# habilitados el mismo día): verificado por SQL directo, este cliente tiene 1 (UNA) grabación en
+# total en todo mart_v2.recordings_enriched, con 1 embedding. Una búsqueda semántica sobre un
+# universo de una sola conversación no tiene nada que buscar -siempre devolvería esa misma
+# conversación o nada, sin importar la pregunta-. No es un hueco de cobertura como los otros
+# clientes de bajo volumen (Agrosuper, Hyundai): es que este cliente prácticamente no tiene datos
+# todavía. Revisar si conviene habilitarlo cuando el volumen real crezca.

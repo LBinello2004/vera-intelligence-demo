@@ -342,6 +342,23 @@ REGLAS INTERNAS PARA CONSULTAS:
 - Población de conversaciones: COUNT(DISTINCT conversation_id).
 - Población de producto: COUNT(DISTINCT (conversation_id, producto_index)).
 - Tasas de cumplimiento: cumplimientos / base evaluada, excluyendo N/A y null.
+- DENOMINADOR EN DESGLOSES ANIDADOS (2026-09-29, hallazgo en vivo: preguntado por trajes para boda,
+  el modelo calculó "motivo de venta perdida" -ej. falta_talla- como porcentaje del TOTAL de trajes
+  evaluados en vez de sobre los NO comprados, dando una cifra que no coincidía con el cálculo
+  verificado y disparando un reintento completo). Cuando un desglose describe una categoría DENTRO
+  de un subconjunto ya filtrado (ej. motivos de pérdida dentro de "no comprados", factores de cierre
+  dentro de "comprados"), el denominador de ESE porcentaje es el tamaño de ESE subconjunto -nunca el
+  total general de la consulta padre-.
+- EL TOTAL DE UN SUBCONJUNTO ES UNA COLUMNA DE SQL, NUNCA UNA SUMA MENTAL (mismo hallazgo en vivo,
+  segunda vuelta: corregido el denominador de arriba, el modelo sumó a mano las filas de categorías
+  -ej. 88+76+53+... = 354- para usarlo como base del porcentaje; esa suma no es una celda real del
+  resultado, así que vera-evidence no tuvo nada concreto para respaldarla y disparó otro reintento
+  completo). Cuando necesites el total de un subconjunto para usarlo como base de un porcentaje
+  (denominador) o para reportarlo tal cual, pedíselo a SQL como su PROPIA columna en la MISMA
+  consulta o una CTE (ej. `SUM(cantidad) AS total` sobre la agregación por categoría, o un
+  `COUNT(...)` aparte con el mismo WHERE del subconjunto) -nunca sumes filas del resultado por tu
+  cuenta para después citar ese número: si no existe como celda, no podés declararlo con evidencia
+  real y la respuesta se recalcula entera por eso.
 - Respetá configured_values, nullable, semantic_dependencies, joins y reglas de taxonomía del mapa.
 - Los textos descriptivos pueden aportar contexto cualitativo, pero no deben contarse, agruparse ni rankearse como categorías.
 - Si una herramienta falla o la información es insuficiente, no adivines.
@@ -484,7 +501,8 @@ def _build_extra_tools_section() -> str:
     if CLIENT_CONFIG.vector_search:
         items.append(
             "search_conversations(query, top_k, store_name, employee_name, date_from, date_to, "
-            "criterio, resultado, comparar_con_mejores, query_alternativa, termino_literal): lee conversaciones reales y devuelve, por cada una, NOTAS "
+            "criterio, resultado, comparar_con_mejores, query_alternativa, termino_literal, "
+            "campo_estructurado, valor_estructurado): lee conversaciones reales y devuelve, por cada una, NOTAS "
             "observables de lo que pasó ('notas': situacion / que_hizo / como_termino), 'patrones' "
             "que se repiten entre las leídas -nunca texto crudo de la conversación (ver NUNCA CITES TEXTUAL). Es la única fuente de "
             "lo que el SQL NO tiene: CÓMO lo hizo alguien, en qué situación y con qué resultado -el "
@@ -627,6 +645,22 @@ def _build_extra_tools_section() -> str:
             "no tapa un resultado semánticamente mucho más relevante. Omitilo si la pregunta es "
             "puramente conceptual/cualitativa sin un nombre propio puntual -usarlo sin necesidad no "
             "aporta nada, sólo reordena sin motivo.\n"
+            "  - FILTRO ESTRUCTURADO (2026-09-29, ampliado el mismo día a atributos de la conversación "
+            "completa además de los de producto): si la pregunta nombra un atributo -de un producto "
+            "(color, tipo de prenda, motivo de venta perdida) o de la conversación en general (tipo "
+            "de interacción, resultado general)- que el Data Map ya modela como campo categórico "
+            "verificado (consultá el Data Map para ver qué campos y valores existen para este "
+            "cliente), pasá `campo_estructurado` (nombre exacto de la columna) y "
+            "`valor_estructurado` (uno de sus valores configurados). A diferencia de `termino_literal` "
+            "(reordena lo que la búsqueda YA trajo), esto filtra ANTES de buscar por significado: "
+            "asegura que sólo entren conversaciones donde ese atributo esté confirmado, en vez de "
+            "confiar en que el embedding o una coincidencia de texto lo hayan capturado -útil "
+            "especialmente cuando `termino_literal` no alcanzaría porque el atributo casi nunca se "
+            "menciona con esa palabra exacta en la transcripción (ej. el color se dice de muchas "
+            "formas distintas, pero el campo ya lo normalizó). Usalo SÓLO para atributos que el Data "
+            "Map ya modela así -para cualquier otro matiz de texto libre seguí usando "
+            "`termino_literal` o la búsqueda semántica sola. Un campo o valor inválido tira error con "
+            "las opciones permitidas: volvé a llamar con una de esas.\n"
             "  - LEER LOS RESULTADOS: 'notas' y 'patrones' son la sustancia del consejo. Lo "
             "observado es una MUESTRA de las conversaciones leídas: presentalo como 'en las "
             "conversaciones revisadas se ve que...', nunca como estadística: sin cifras ni "
@@ -970,10 +1004,20 @@ def search_conversations(
     comparar_con_mejores: bool = False,
     query_alternativa: str = "",
     termino_literal: str = "",
+    campo_estructurado: str = "",
+    valor_estructurado: str = "",
 ) -> str:
     """Busca conversaciones semánticamente similares a `query` para el cliente activo.
 
     Args:
+        campo_estructurado, valor_estructurado: opcionales, SIEMPRE juntos -filtro EXACTO por un
+            atributo ya verificado por el pipeline de extracción, de un producto (ej. color, tipo de
+            prenda, motivo de venta perdida) o de la conversación completa (ej. tipo de interacción,
+            resultado general), en vez del match fuzzy de `termino_literal` contra texto libre (ver
+            FILTRO ESTRUCTURADO en las reglas de esta tool). Usar SÓLO cuando la
+            pregunta nombra un atributo que el Data Map ya modela como campo categórico -para
+            cualquier otro matiz de texto libre seguí usando `termino_literal`. Un campo o valor
+            fuera de lo permitido para este cliente es ValueError con las opciones válidas.
         criterio: opcional, SIEMPRE junto con `resultado` -nombre de una columna del checklist de
             rendimiento del Data Map (ej. la del cierre de compra). Con `resultado` filtra por el
             resultado automático del checklist en vez de sólo por parecido: sirve para coaching
@@ -1031,6 +1075,8 @@ def search_conversations(
         comparar_con_mejores=bool(comparar_con_mejores) if isinstance(comparar_con_mejores, bool) else False,
         query_alternativa=query_alternativa,
         termino_literal=termino_literal,
+        campo_estructurado=campo_estructurado,
+        valor_estructurado=valor_estructurado,
         # incluir_fragmentos ya no es controlable por el modelo (2026-09-22, pedido explícito: nunca
         # mostrar citas textuales al usuario, ni siquiera si las pide). Forzado en False: el texto
         # crudo de la transcripción nunca llega al modelo principal, así que no puede copiarlo -no

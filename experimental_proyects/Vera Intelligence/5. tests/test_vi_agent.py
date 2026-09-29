@@ -1415,16 +1415,18 @@ class VectorSearchToolExposureTests(unittest.TestCase):
 
     def test_client_without_vector_search_does_not_expose_the_tool(self) -> None:
         # Ampliación a (casi) todos los clientes (2026-09-16): salomon_alto pasó a tener
-        # vector_search habilitado -ver "8. README.md". agrosuper_bajo sigue sin el bloque a
-        # propósito (13 embeddings verificados, volumen insuficiente), control válido acá.
-        vi_agent.configure_client("agrosuper_bajo")
+        # vector_search habilitado -ver "8. README.md". agrosuper_bajo/shoe_box_bajo también se
+        # habilitaron después (2026-09-29, ver sus config.yaml). forever_21_bajo sigue sin el
+        # bloque a propósito (1 sola conversación en todo el histórico, no 1-y-le-caen-otras-de-a-
+        # poco): control válido acá porque es el único de bajo volumen deliberadamente excluido.
+        vi_agent.configure_client("forever_21_bajo")
         self.assertIsNone(vi_agent._VECTOR_SEARCH_REPOSITORY)
         tool_names = {getattr(tool, "__name__", None) for tool in vi_agent._build_tools_list()}
         self.assertNotIn("search_conversations", tool_names)
         self.assertNotIn("search_conversations", vi_agent._build_extra_tools_section())
 
     def test_calling_the_tool_without_configuration_raises(self) -> None:
-        vi_agent.configure_client("agrosuper_bajo")
+        vi_agent.configure_client("forever_21_bajo")
         with self.assertRaises(RuntimeError):
             vi_agent.search_conversations("cualquier consulta")
 

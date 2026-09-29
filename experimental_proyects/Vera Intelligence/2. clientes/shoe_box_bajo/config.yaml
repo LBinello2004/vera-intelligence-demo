@@ -2,7 +2,7 @@ client_id: shoe_box
 display_name: "Shoe Box"
 tenant: "Shoe Box"
 model: gemini-3.7-flash
-data_map: "2. clientes/shoe_box_bajo/data_map/VI Data Map Shoe Box V1.yaml"
+data_map: "2. clientes/shoe_box_bajo/data_map/VI Data Map Shoe Box V2.yaml"
 
 sources:
   dashboard_v2.vw_shoe_box_demografia:
@@ -37,3 +37,10 @@ business_rulebooks:
     business_scope: "Recomendaciones de coaching y desarrollo de vendedores según su desempeño (bajo o alto)"
 
 # Shoe Box no tiene RAG: su prompt de checklist no declara geminiFileSearchStoreName.
+
+# Búsqueda vectorial habilitada (2026-09-29) -verificado por SQL directo: 223 de 567 grabaciones
+# tienen embedding (228 filas), cobertura real ~39% -backfill parcial, mismo patrón desparejo que
+# Salomon (ya habilitado con cobertura similar). El cliente SÍ tiene insights_descriptivos_generales
+# -resumen_verificado va a estar disponible, a diferencia de Agrosuper/Hyundai (schema delgado).
+vector_search:
+  top_k: 5

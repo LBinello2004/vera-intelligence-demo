@@ -501,6 +501,56 @@ class SearchStoreFilterAndRelativeDistanceTests(_RedirectsUsageLogTestCase):
         self.assertEqual(payload["resultados"], [])
 
 
+class RecencyTiebreakTests(unittest.TestCase):
+    """`_apply_recency_tiebreak` (2026-09-29): desempata por fecha SÓLO entre resultados casi
+    empatados en distancia (redondeada a 3 decimales, ver `_RECENCY_TIEBREAK_DECIMALS` -umbral
+    calibrado con el gap real entre puestos consecutivos en el log de producción, no a ojo). Nunca
+    cambia el orden entre resultados con distancia realmente distinta."""
+
+    def _item(self, conversation_id: str, distancia: float, fecha: str | None) -> dict:
+        return {"conversation_id": conversation_id, "distancia": distancia, "fecha": fecha}
+
+    def test_breaks_a_genuine_tie_by_most_recent_first(self) -> None:
+        viejo = self._item("viejo", 0.2001, "2026-01-01T00:00:00+00:00")
+        nuevo = self._item("nuevo", 0.2002, "2026-09-01T00:00:00+00:00")
+        ordered = vector_search._apply_recency_tiebreak([viejo, nuevo])
+        self.assertEqual([r["conversation_id"] for r in ordered], ["nuevo", "viejo"])
+
+    def test_does_not_touch_a_real_distance_difference(self) -> None:
+        # 0.05 de diferencia está MUY por encima del umbral de empate (3 decimales) -el orden de
+        # entrada (ya correcto: mejor distancia primero, aunque sea el más viejo) se preserva.
+        mejor_pero_viejo = self._item("mejor_viejo", 0.20, "2020-01-01T00:00:00+00:00")
+        peor_pero_nuevo = self._item("peor_nuevo", 0.25, "2026-09-01T00:00:00+00:00")
+        ordered = vector_search._apply_recency_tiebreak([mejor_pero_viejo, peor_pero_nuevo])
+        self.assertEqual([r["conversation_id"] for r in ordered], ["mejor_viejo", "peor_nuevo"])
+
+    def test_does_not_reorder_non_adjacent_items_even_if_their_bucket_repeats(self) -> None:
+        # Ver el docstring de _apply_recency_tiebreak: NO es un sort global por distancia -sólo
+        # tramos ya CONTIGUOS se tocan. Acá el bucket 0.20 aparece dos veces pero separado por un
+        # 0.21 en el medio -no son un tramo contiguo, así que el orden de entrada se conserva tal
+        # cual, aunque un sort global los hubiera agrupado.
+        a = self._item("a", 0.20, "2020-01-01T00:00:00+00:00")
+        b = self._item("b", 0.21, "2026-01-01T00:00:00+00:00")
+        c = self._item("c", 0.2001, "2026-09-01T00:00:00+00:00")
+        ordered = vector_search._apply_recency_tiebreak([a, b, c])
+        self.assertEqual([r["conversation_id"] for r in ordered], ["a", "b", "c"])
+
+    def test_missing_or_unparseable_date_goes_last_within_its_tie_group_without_crashing(self) -> None:
+        con_fecha = self._item("con_fecha", 0.21, "2026-05-01T00:00:00+00:00")
+        sin_fecha = self._item("sin_fecha", 0.2101, None)
+        mal_formada = self._item("mal_formada", 0.2102, "no-es-una-fecha")
+        ordered = vector_search._apply_recency_tiebreak([sin_fecha, mal_formada, con_fecha])
+        self.assertEqual(ordered[0]["conversation_id"], "con_fecha")
+        self.assertEqual(
+            {r["conversation_id"] for r in ordered[1:]}, {"sin_fecha", "mal_formada"}
+        )
+
+    def test_never_adds_or_removes_items(self) -> None:
+        items = [self._item("a", 0.2, "2026-01-01T00:00:00+00:00"), self._item("b", 0.3, None)]
+        ordered = vector_search._apply_recency_tiebreak(items)
+        self.assertEqual({r["conversation_id"] for r in ordered}, {"a", "b"})
+
+
 class LiteralTermBoostTests(unittest.TestCase):
     """`_apply_literal_term_boost` (2026-09-28, boost léxico SIN índice propio, pedido explícito:
     "que el like actúe sobre las conversaciones ya filtradas de la búsqueda vectorial"): reordena en
@@ -920,6 +970,40 @@ class ConversationIdAndVerifiedSummaryTests(_RedirectsUsageLogTestCase):
         self.assertNotIn("di.resumen_ejecutivo_conversacion ", sql)
         self.assertEqual(payload["resultados"][0]["resumen_verificado"], "un resumen")
 
+    def test_query_uses_tenant_specific_resumen_column_for_shoe_box(self) -> None:
+        # Regresión del bug real encontrado en vivo (2026-09-29) al habilitar vector_search para
+        # shoe_box_bajo: su vista insights_descriptivos_generales existe y matchea el sufijo, pero
+        # la columna se llama resumen_conversacion, no resumen_ejecutivo_conversacion -tiraba
+        # "column di.resumen_ejecutivo_conversacion does not exist" (UndefinedColumn real de
+        # Postgres, no un fallo silencioso) antes de este mapeo.
+        rows = [
+            ("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", "un resumen", 0.20),
+        ]
+        payload, cursor = self._run_search("shoe_box_bajo", rows, incluir_fragmentos=True)
+        sql, _params = cursor.executed[-1]
+        self.assertIn("resumen_conversacion AS resumen_ejecutivo_conversacion", sql)
+        self.assertNotIn("di.resumen_ejecutivo_conversacion ", sql)
+        self.assertEqual(payload["resultados"][0]["resumen_verificado"], "un resumen")
+
+    def test_find_descriptivos_source_absent_for_steren_and_tigo_despite_bare_suffix(self) -> None:
+        # Auditoría (2026-09-29) del mismo bug real de Farma24/Maga: Steren y Tigo declaran su
+        # fuente de resumen con sufijo BARE ("_insights_descriptivos", sin "_generales"), así que
+        # _find_descriptivos_source ya las ignoraba por casualidad de nombre -documentadas
+        # explícitamente en _DESCRIPTIVOS_UNSUPPORTED_TENANTS para que una futura corrección de
+        # nomenclatura no las habilite por accidente con un JOIN roto (Steren: la vista ni siquiera
+        # tiene conversation_id) o un campo semánticamente equivocado (Tigo: sólo tiene detalles de
+        # un criterio puntual del checklist, no un resumen general).
+        for client_id, expected_suffix in (
+            ("steren_alto", "insights_descriptivos"),
+            ("tigo_alto", "insights_descriptivos"),
+        ):
+            client = load_client_config(client_id)
+            self.assertTrue(
+                any(name.endswith(expected_suffix) for name in client.sources),
+                f"la fuente debe existir en config.yaml de {client_id} para que el test sea significativo",
+            )
+            self.assertIsNone(vector_search._find_descriptivos_source(client))
+
     def test_query_skips_descriptivos_join_for_thin_schema_client(self) -> None:
         rows = [
             ("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.20),
@@ -1089,6 +1173,32 @@ class DateFilterSanitizationAndLoggingTests(_RedirectsUsageLogTestCase):
             dumped = json.dumps(event)
             self.assertNotIn("consulta de prueba", dumped)
             self.assertNotIn("un fragmento cualquiera", dumped)
+
+    def test_logs_recency_tiebreak_triggered_when_a_genuine_tie_happens(self) -> None:
+        # Dos filas con distancia empatada a 3 decimales (0.2001 y 0.2002) -mismo bucket, debe
+        # activar el desempate por fecha (ver Iteración 74 del README).
+        rows = [
+            ("rid1", 0, "Tienda A", "Vendedor A", "2026-01-01", "algo", "conv1", None, 0.2001),
+            ("rid2", 0, "Tienda A", "Vendedor B", "2026-09-01", "otra cosa", "conv2", None, 0.2002),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "vector_search_calls.jsonl"
+            with patch.object(vector_search, "VECTOR_SEARCH_LOG_PATH", log_path):
+                self._run_search(rows, top_k=2)
+            event = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[0])
+            self.assertTrue(event["recency_tiebreak_triggered"])
+
+    def test_does_not_log_recency_tiebreak_triggered_without_a_tie(self) -> None:
+        rows = [
+            ("rid1", 0, "Tienda A", "Vendedor A", "2026-01-01", "algo", "conv1", None, 0.20),
+            ("rid2", 0, "Tienda A", "Vendedor B", "2026-09-01", "otra cosa", "conv2", None, 0.25),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "vector_search_calls.jsonl"
+            with patch.object(vector_search, "VECTOR_SEARCH_LOG_PATH", log_path):
+                self._run_search(rows, top_k=2)
+            event = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[0])
+            self.assertFalse(event["recency_tiebreak_triggered"])
 
     def test_logging_failure_never_breaks_the_search(self) -> None:
         # Un directorio inexistente y no creable (ruta con un archivo en el medio en vez de un
@@ -1534,6 +1644,25 @@ class SearchAppliesJudgeFilteringTests(_RedirectsUsageLogTestCase):
             vector_search, "_judge_relevance", return_value=[True]
         ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
             payload = json.loads(repo.search("conversaciones con insultos"))
+        self.assertIn("cobertura de embeddings", payload["aviso"])
+
+    def test_aviso_includes_low_coverage_note_for_newly_audited_tenants(self) -> None:
+        # Auditoría 2026-09-29: Dalton/GAC/Shoe Box tenían cobertura real baja (39%-56%, verificado
+        # por SQL directo) sin advertencia -mismo hueco que ya se había cerrado para Atlas/Salomon,
+        # nunca re-auditado contra el resto de los clientes habilitados hasta ahora.
+        client = load_client_config("shoe_box_bajo")
+        repo = vector_search.VectorSearchRepository(client)
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola, buen día", "conv1", None, 0.20)]
+        cursor = _FakeCursor(rows)
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", return_value=[True]
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("conversaciones con reclamos"))
         self.assertIn("cobertura de embeddings", payload["aviso"])
 
     def test_aviso_has_no_coverage_note_for_tenant_not_in_the_known_list(self) -> None:
@@ -2025,6 +2154,33 @@ class ChecklistFilterTests(_RedirectsUsageLogTestCase):
         without_rows, _ = self._search([], judge=judge)
         self.assertNotIn("patrones", without_rows)
 
+    def test_logs_employee_name_checklist_and_compare_usage(self) -> None:
+        # 2026-09-29, pregunta real: "¿se puede medir si la búsqueda se usa de forma específica?".
+        # Antes de esto, una búsqueda de coaching con employee_name+criterio+comparar_con_mejores
+        # -de las más específicas que existen- se registraba en el log igual que una genérica sin
+        # ningún filtro, subestimando la especificidad real de uso.
+        rows = [("rid1", 0, "Tienda A", "Ubaldo Ramos", None, "hola", "conv1", None, 0.2)]
+        self._search(
+            rows, employee_name="Ubaldo Ramos",
+            criterio="vendedorrealizocierrecompra", resultado="No", comparar_con_mejores=True,
+        )
+        event = json.loads(
+            vector_search.VECTOR_SEARCH_LOG_PATH.read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        self.assertTrue(event["employee_name_used"])
+        self.assertTrue(event["checklist_filter_used"])
+        self.assertTrue(event["comparar_con_mejores_used"])
+
+    def test_does_not_log_employee_name_or_checklist_usage_without_them(self) -> None:
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.2)]
+        self._search(rows)
+        event = json.loads(
+            vector_search.VECTOR_SEARCH_LOG_PATH.read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        self.assertFalse(event["employee_name_used"])
+        self.assertFalse(event["checklist_filter_used"])
+        self.assertFalse(event["comparar_con_mejores_used"])
+
     def test_invalid_criterio_is_rejected_and_lists_the_valid_ones(self) -> None:
         with self.assertRaises(ValueError) as caught:
             self._search(criterio="employee_full_name; DROP TABLE x", resultado="No")
@@ -2047,6 +2203,184 @@ class ChecklistFilterTests(_RedirectsUsageLogTestCase):
     def test_without_the_filter_nothing_changes_in_the_sql(self) -> None:
         _, cursor = self._search()
         self.assertNotIn(" perf ON ", cursor.executed[-1][0])
+
+
+class StructuredFieldFilterTests(_RedirectsUsageLogTestCase):
+    """Filtro EXACTO por campo/valor estructurado (2026-09-29): pre-filtra el POOL de candidatas por
+    un atributo de producto ya verificado (ej. color), a diferencia de termino_literal que sólo
+    reordena candidatas ya traídas."""
+
+    def _search(self, rows: list[tuple] | None = None, judge=_all_relevant, **kwargs):
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor(rows or [])
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=judge
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("cliente busca un buzo", **kwargs))
+        return payload, cursor
+
+    def test_fields_and_values_come_from_the_data_map(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        source = vector_search._find_product_insights_source(client)
+        self.assertTrue(source.name.endswith("_insights_categoricos_por_producto"))
+        fields = vector_search._product_insights_fields(str(client.data_map_path), source.name)
+        self.assertIn("color_solicitado_producto", fields)
+        self.assertIn("azul", fields["color_solicitado_producto"]["configured_values"])
+        # Columnas de sólo join (sin enum de al menos 2 valores útil para filtrar) quedan afuera.
+        self.assertNotIn("producto_index", fields)
+
+    def test_filter_adds_exists_semijoin_and_params_in_order(self) -> None:
+        _, cursor = self._search(
+            campo_estructurado="color_solicitado_producto", valor_estructurado="azul"
+        )
+        sql, params = cursor.executed[-1]
+        self.assertIn(
+            "EXISTS (SELECT 1 FROM dashboard_v2.vw_mens_fashion_insights_categoricos_por_producto pi",
+            sql,
+        )
+        self.assertIn('AND pi."color_solicitado_producto" = %s', sql)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertIn("azul", params)
+        self.assertNotIn("color_solicitado_producto", "".join(str(p) for p in params))
+
+    def test_value_matching_is_case_insensitive_against_the_real_enum(self) -> None:
+        _, cursor = self._search(
+            campo_estructurado="color_solicitado_producto", valor_estructurado="Azul"
+        )
+        _, params = cursor.executed[-1]
+        self.assertIn("azul", params)  # normalizado al valor real del enum, no "Azul" literal
+
+    def test_invalid_field_is_rejected_and_lists_the_valid_ones(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._search(campo_estructurado="employee_full_name; DROP TABLE x", valor_estructurado="azul")
+        self.assertIn("color_solicitado_producto", str(caught.exception))
+
+    def test_invalid_value_for_a_valid_field_is_rejected_and_lists_the_valid_ones(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._search(campo_estructurado="color_solicitado_producto", valor_estructurado="marron")
+        self.assertIn("azul", str(caught.exception))
+
+    def test_field_and_value_must_come_together(self) -> None:
+        with self.assertRaises(ValueError):
+            self._search(campo_estructurado="color_solicitado_producto")
+        with self.assertRaises(ValueError):
+            self._search(valor_estructurado="azul")
+
+    def test_without_the_filter_nothing_changes_in_the_sql(self) -> None:
+        _, cursor = self._search()
+        self.assertNotIn(" pi ", cursor.executed[-1][0])
+
+    def test_combines_with_literal_term_boost(self) -> None:
+        rows = [
+            ("rid1", 0, "Tienda A", "Vendedor A", None, "el cliente pidio un buzo azul de lana", "conv1", None, 0.2),
+        ]
+        payload, cursor = self._search(
+            rows, campo_estructurado="color_solicitado_producto", valor_estructurado="azul",
+            termino_literal="lana",
+        )
+        # Ambos filtros conviven: el semi-join sigue en el SQL y el resultado sigue devolviéndose.
+        self.assertIn(" pi ", cursor.executed[-1][0])
+        self.assertEqual(len(payload["resultados"]), 1)
+
+    def test_combines_with_criterio_resultado_and_params_stay_in_order(self) -> None:
+        # Nunca antes probado: campo_estructurado (JOIN/EXISTS de vector_search.py) y
+        # criterio/resultado (JOIN de performance_source) arman SQL de forma independiente -acá se
+        # verifica que conviven sin pisarse el orden de params (la regla de psycopg es de izquierda
+        # a derecha en el TEXTO final, no en el orden de .append() en Python).
+        rows = [("rid1", 0, "Tienda A", "Vendedor A", None, "hola", "conv1", None, 0.2)]
+        payload, cursor = self._search(
+            rows, criterio="vendedorrealizocierrecompra", resultado="No",
+            campo_estructurado="color_solicitado_producto", valor_estructurado="azul",
+        )
+        sql, params = cursor.executed[-1]
+        self.assertIn(" perf ON perf.recording_id = ce.recording_id", sql)
+        self.assertIn("EXISTS (SELECT 1 FROM", sql)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertEqual(len(payload["resultados"]), 1)
+
+
+class GeneralInsightsFallbackTests(_RedirectsUsageLogTestCase):
+    """`campo_estructurado` contra la fuente GENERAL (2026-09-29, "alguna mejora de producto"):
+    fallback para clientes SIN vista por producto -ej. huerpel_hostess_alto-, que antes no tenían
+    ningún campo estructurado disponible. Grano una fila por conversación: JOIN normal, no semi-join
+    EXISTS como en la vista por producto."""
+
+    def _search(self, rows: list[tuple] | None = None, judge=_all_relevant, **kwargs):
+        client = load_client_config("huerpel_hostess_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor(rows or [])
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=judge
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            payload = json.loads(repo.search("cliente visita el showroom", **kwargs))
+        return payload, cursor
+
+    def test_client_without_a_product_source_still_has_general_fields_available(self) -> None:
+        client = load_client_config("huerpel_hostess_alto")
+        self.assertIsNone(vector_search._find_product_insights_source(client))
+        general = vector_search._find_general_insights_source(client)
+        self.assertIsNotNone(general)
+        self.assertTrue(general.name.endswith("_insights_categoricos"))
+        fields = vector_search._product_insights_fields(str(client.data_map_path), general.name)
+        self.assertIn("tipo_visita", fields)
+
+    def test_filter_adds_a_plain_join_not_a_semijoin_and_params_in_order(self) -> None:
+        _, cursor = self._search(campo_estructurado="tipo_visita", valor_estructurado="Fresh Up")
+        sql, params = cursor.executed[-1]
+        self.assertIn(
+            "JOIN dashboard_v2.vw_huerpel_hostess_insights_categoricos gi "
+            "ON gi.conversation_id = conv.conversation_id",
+            sql,
+        )
+        self.assertNotIn("EXISTS (SELECT 1 FROM dashboard_v2.vw_huerpel_hostess_insights_categoricos", sql)
+        self.assertIn('AND gi."tipo_visita" = %s', sql)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertIn("Fresh Up", params)
+
+    def test_invalid_field_lists_only_general_fields_when_there_is_no_product_source(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._search(campo_estructurado="no_existe_este_campo", valor_estructurado="x")
+        self.assertIn("tipo_visita", str(caught.exception))
+
+    def test_without_the_filter_nothing_changes_in_the_sql(self) -> None:
+        _, cursor = self._search()
+        self.assertNotIn(" gi ", cursor.executed[-1][0])
+
+
+class ProductSourceTakesPrecedenceOverGeneralTests(_RedirectsUsageLogTestCase):
+    """Cuando un cliente tiene AMBAS fuentes (producto + general), un campo que existe en la de
+    producto usa esa -más específica- y nunca la general, aunque las dos estén disponibles."""
+
+    def test_mens_fashion_field_that_only_exists_in_product_source_uses_the_semijoin(self) -> None:
+        client = load_client_config("mens_fashion_alto")
+        repo = vector_search.VectorSearchRepository(client)
+        cursor = _FakeCursor([])
+        connection = _FakeConnection(cursor)
+        with patch.object(
+            vector_search, "_embed_query", return_value=[0.0] * vector_search.EMBEDDING_DIMENSION
+        ), patch.object(
+            vector_search, "_get_reusable_connection", return_value=connection
+        ), patch.object(
+            vector_search, "_judge_relevance", side_effect=_all_relevant
+        ), patch.dict(os.environ, {"VERA_AI_API_KEY": "test-key"}):
+            repo.search(
+                "cliente busca un buzo", campo_estructurado="color_solicitado_producto",
+                valor_estructurado="azul",
+            )
+        sql, _params = cursor.executed[-1]
+        self.assertIn("EXISTS (SELECT 1 FROM", sql)
+        self.assertNotIn(" gi ", sql)
 
 
 class CompareWithBestTests(_RedirectsUsageLogTestCase):
@@ -2291,11 +2625,11 @@ class VectorSearchConfigParsingTests(unittest.TestCase):
         self.assertEqual(client.vector_search.top_k, 5)
 
     def test_client_without_the_block_has_it_disabled(self) -> None:
-        # Ampliación a (casi) todos los clientes (2026-09-16): salomon_alto, junto con la mayoría
-        # del resto, pasó a tener vector_search habilitado -ver "8. README.md". agrosuper_bajo
-        # sigue sin el bloque a propósito (sólo 13 embeddings verificados por SQL directo, volumen
-        # insuficiente para que la tool aporte valor real), control válido para este test.
-        client = load_client_config("agrosuper_bajo")
+        # Ampliación a (casi) todos los clientes (2026-09-16, y agrosuper_bajo/shoe_box_bajo el
+        # 2026-09-29): la mayoría de los clientes tiene vector_search habilitado -ver
+        # "8. README.md". forever_21_bajo sigue sin el bloque a propósito (1 sola conversación en
+        # todo su histórico, verificado por SQL directo -no hay nada que buscar-), control válido.
+        client = load_client_config("forever_21_bajo")
         self.assertIsNone(client.vector_search)
 
 

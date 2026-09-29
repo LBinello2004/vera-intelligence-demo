@@ -13,6 +13,23 @@ Dos límites conocidos, deliberadamente no resueltos todavía (ver el README par
    todavía — la búsqueda es un scan secuencial. Con ~720k filas y creciendo, esto puede volverse
    lento; no se optimiza acá porque crear el índice es una decisión de la persona que administra
    esa tabla, no de este proyecto.
+
+Dos ideas más (2026-09-29, brainstorm posterior a la Iteración 73), anotadas pero NO exploradas
+todavía porque las dos requieren infraestructura fuera de este archivo, a diferencia de todos los
+mecanismos de búsqueda agregados hasta ahora (multi-query, boost léxico, filtro estructurado), que
+sólo tocan cómo se USA la señal ya existente, no la señal en sí:
+
+3. Subir la dimensionalidad del embedding (hoy 768, truncado deliberadamente -ver
+   EMBEDDING_CONFIG_ID- de los hasta 3072 que soporta gemini-embedding-001 vía Matryoshka). Más
+   dimensiones = más capacidad semántica real, a diferencia de todo lo hecho hasta ahora. Requiere
+   re-vectorizar TODA la tabla existente con un nuevo config y convivir con ambos durante la
+   transición -mismo tipo de esfuerzo que el punto 2, pero con upside en calidad, no sólo velocidad.
+4. Convertir `termino_literal` (boost léxico, ver 6. busqueda_vectorial/README.md, Iteraciones
+   68-70) en una PATA de recuperación real (ILIKE fusionado por RRF, como el multi-query), no un
+   reordenamiento posterior -así deja de depender de que el término ya haya entrado al
+   `candidate_limit` semántico. Requiere un índice de texto (`pg_trgm`/GIN) sobre el transcript
+   crudo: sin eso, reintroduce el problema de latencia que la "transcripción en dos etapas" ya
+   resolvió (ILIKE sobre el JSON completo antes de poder recortar a `candidate_limit`).
 """
 
 from __future__ import annotations
@@ -174,6 +191,11 @@ _DESCRIPTIVOS_GENERALES_SUFFIX = "insights_descriptivos_generales"
 # cuya columna no se llame igual que la de mens_fashion_alto.
 _RESUMEN_COLUMN_BY_TENANT: dict[str, str] = {
     "Farma 24": "descriptivos_generales_tipo_interaccion_detalle",
+    # "Shoe Box" agregado 2026-09-29, encontrado por un crash real en vivo al habilitar
+    # vector_search para este cliente (ValueError silencioso hubiera sido preferible, pero esto ni
+    # siquiera degradaba: tiraba UndefinedColumn porque la columna sí matchea el sufijo de fuente
+    # pero no el nombre de columna default) -ver Data Map, la columna se llama resumen_conversacion.
+    "Shoe Box": "resumen_conversacion",
 }
 _DEFAULT_RESUMEN_COLUMN = "resumen_ejecutivo_conversacion"
 
@@ -194,7 +216,29 @@ _DEFAULT_RESUMEN_COLUMN = "resumen_ejecutivo_conversacion"
 # un resumen ejecutivo de la conversación completa como en mens_fashion_alto/farma24_alto, así que
 # ni valdría la pena mapear un nombre de columna distinto (a diferencia del caso Farma24 en
 # _RESUMEN_COLUMN_BY_TENANT) -directamente no hay resumen_verificado equivalente para este cliente.
-_DESCRIPTIVOS_UNSUPPORTED_TENANTS: frozenset[str] = frozenset({"Maga", "Atlas"})
+#
+# "Steren" agregado acá (2026-09-29, revisando por qué su fuente `insights_descriptivos` no se
+# encontraba): a diferencia de Maga/Atlas, acá NO es un problema de nomenclatura -el sufijo de esa
+# fuente ni siquiera matchea `_DESCRIPTIVOS_GENERALES_SUFFIX` (se llama `vw_steren_insights_
+# descriptivos`, sin "_generales"), así que `_find_descriptivos_source` ya la ignoraba por
+# casualidad. Se agrega igual, de forma EXPLÍCITA: el propio Data Map de Steren documenta que esa
+# fuente "no tiene conversation_id ni seller_id, no se puede cruzar con las otras 3 fuentes" -si en
+# el futuro alguien "corrige" el nombre para que matchee el sufijo (mismo tipo de fix que ya se hizo
+# para el filtro estructurado en _find_general_insights_source), el JOIN fallaría en producción con
+# "column does not exist" en vez de degradar en silencio. Esta entrada existe para que esa
+# corrección futura no rompa nada sin que quede claro por qué.
+# "Tigo" agregado acá (2026-09-29, misma auditoría que encontró el caso Steren): su fuente
+# `vw_tigo_insights_descriptivos` también tiene sufijo bare (sin "_generales"), así que
+# `_find_descriptivos_source` ya la ignoraba por casualidad -pero a diferencia de Steren, acá el
+# problema NO es la ausencia de conversation_id (el Data Map sugiere grano "una fila por
+# conversación", como los que sí funcionan), sino que sus únicos campos de texto libre
+# (i07_detalle_causa_de_no_retencion, i09_detalle_causa_principal_de_retiro,
+# i22_detalle_dolor_o_molestia_principal, i32_detalle_causa_de_demora) son detalles de UN criterio
+# puntual del checklist cada uno, no un resumen general de la conversación completa -mismo motivo
+# que ya excluye a Atlas (su voice_of_customer tampoco es un resumen ejecutivo real). Documentado
+# para que una futura corrección de nomenclatura no la habilite con un campo semánticamente
+# equivocado.
+_DESCRIPTIVOS_UNSUPPORTED_TENANTS: frozenset[str] = frozenset({"Maga", "Atlas", "Steren", "Tigo"})
 
 # Cobertura real de backfill de embeddings por tenant (analytics_v2.conversation_embeddings vs
 # mart_v2.recordings_enriched), verificada por SQL directo el 2026-09-22 (ver "6. busqueda_vectorial/
@@ -217,6 +261,28 @@ _LOW_EMBEDDING_COVERAGE_TENANTS: dict[str, str] = {
         "este cliente tiene cobertura de embeddings despareja por tienda (41%-90% según la tienda) "
         "-las notas y patrones pueden sobrerrepresentar a las tiendas con mejor cobertura de "
         "backfill, no asumir que reflejan por igual a todas las tiendas"
+    ),
+    # Dalton/GAC/Shoe Box agregados 2026-09-29: mismo chequeo de cobertura que ya se hacía para
+    # Atlas/Salomon, corrido sobre TODOS los clientes con vector_search habilitado -no sólo se hace
+    # una vez por cliente al habilitarlo, hacía falta re-auditar a los ya habilitados. Cobertura
+    # verificada por SQL directo (snapshot puntual, no una serie temporal como la de Atlas/Salomon,
+    # así que no se afirma si es un hueco estructural o backfill simplemente atrasado -de cualquier
+    # forma, el modelo no debe asumir que ve todas las conversaciones). Los tres son de una sola
+    # tienda (o casi), así que no aplica la distinción "pareja/despareja por tienda" de los otros dos.
+    "Dalton": (
+        "este cliente tiene cobertura de embeddings de aproximadamente 56% de sus conversaciones "
+        "-las notas y patrones observados vienen de una muestra parcial, no de todas las "
+        "conversaciones del período"
+    ),
+    "GAC": (
+        "este cliente tiene cobertura de embeddings de aproximadamente 52% de sus conversaciones "
+        "-las notas y patrones observados vienen de una muestra parcial, no de todas las "
+        "conversaciones del período"
+    ),
+    "Shoe Box": (
+        "este cliente tiene cobertura de embeddings de aproximadamente 39% de sus conversaciones "
+        "-las notas y patrones observados vienen de una muestra parcial, no de todas las "
+        "conversaciones del período"
     ),
 }
 
@@ -541,6 +607,96 @@ def _normalize_resultado(value: object) -> str | None:
     return None
 
 
+# Filtro exacto por campo estructurado del Data Map (2026-09-29, "que la búsqueda vectorial
+# funcione más como un dios todopoderoso"): a diferencia de `termino_literal` (fuzzy, ILIKE-style
+# contra texto libre ya recuperado), esto filtra el POOL de candidatas ANTES de rankear por
+# distancia, usando un campo categórico ya verificado por el pipeline de extracción (ej.
+# color_solicitado_producto='azul') en vez de esperar que el embedding o un ILIKE lo capten. Mismo
+# patrón que `_find_performance_source`/`_performance_criteria`, pero la fuente vive a nivel
+# conversation_id + producto_index (no una fila por conversación) -ver el semi-join en `_retrieve`-
+# y cada campo tiene su PROPIO enum (no un Sí/No fijo), así que hace falta validar campo Y valor.
+_PRODUCT_INSIGHTS_SOURCE_SUFFIX = "_insights_categoricos_por_producto"
+
+
+def _find_product_insights_source(client: ClientConfig) -> SourceConfig | None:
+    for name, source in client.sources.items():
+        if name.endswith(_PRODUCT_INSIGHTS_SOURCE_SUFFIX):
+            return source
+    return None
+
+
+# Fallback GENERAL del filtro estructurado (2026-09-29, "alguna mejora de producto"): la vista por
+# producto no existe para todos los clientes -huerpel_hostess_alto/seminuevos_medio, por ejemplo,
+# sólo tienen la vista categórica GENERAL (una fila por conversación, sin desglose por producto), lo
+# que antes los dejaba directamente sin este filtro. Mismo formato de campos en el Data Map
+# (configured_values/operations/description), así que `_product_insights_fields` sirve sin cambios
+# para esta fuente también -sólo cambia el nombre físico que se le pasa. El nombre de sufijo NO es
+# uniforme entre clientes: unos la declaran "_insights_categoricos_generales" (ej. Mens Fashion),
+# otros sólo "_insights_categoricos" a secas (ej. Huerpel Hostess, Tigo) -se prueban ambos sufijos en
+# ese orden; ninguno de los dos puede confundirse con la vista por producto porque esa siempre
+# termina en "_por_producto", nunca coincide con ningún sufijo de acá.
+_GENERAL_INSIGHTS_SOURCE_SUFFIXES = ("_insights_categoricos_generales", "_insights_categoricos")
+
+
+def _find_general_insights_source(client: ClientConfig) -> SourceConfig | None:
+    for suffix in _GENERAL_INSIGHTS_SOURCE_SUFFIXES:
+        for name, source in client.sources.items():
+            if name.endswith(suffix):
+                return source
+    return None
+
+
+@lru_cache(maxsize=64)
+def _product_insights_fields(data_map_path: str, source_name: str) -> dict[str, dict]:
+    """{columna: {"description": str, "configured_values": [str, ...]}} de los campos filtrables
+    (``operations`` incluye ``filter``) de la vista categórica por producto, según el Data Map.
+    Excluye columnas de sólo join (ej. producto_index, sin configured_values de tipo enum) y
+    cualquier columna que no pueda interpolarse de forma segura. Vacío si el archivo no se puede
+    leer o no declara esa fuente -la tool degrada a búsqueda normal, nunca falla por esto."""
+    try:
+        with open(data_map_path, encoding="utf-8") as handle:
+            parsed = yaml.safe_load(handle)
+        sources = parsed.get("sources", {}) if isinstance(parsed, dict) else {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    fields: dict[str, dict] = {}
+    for source in sources.values():
+        if not isinstance(source, dict) or source.get("source") != source_name:
+            continue
+        source_fields = source.get("fields")
+        if not isinstance(source_fields, dict):
+            continue
+        for column, spec in source_fields.items():
+            if not isinstance(spec, dict):
+                continue
+            operations = spec.get("operations")
+            values = spec.get("configured_values")
+            if not (
+                isinstance(column, str)
+                and re.fullmatch(r"[a-z][a-z0-9_]*", column)
+                and isinstance(operations, list)
+                and "filter" in operations
+                and isinstance(values, list)
+                and len(values) >= 2
+            ):
+                continue
+            fields[column] = {
+                "description": str(spec.get("description") or ""),
+                "configured_values": [str(v) for v in values],
+            }
+    return fields
+
+
+def _normalize_valor_estructurado(valor: str, configured_values: list[str]) -> str | None:
+    """Matchea `valor` contra el enum real del campo sin distinguir mayúsculas/acentos triviales
+    -el modelo puede mandar "Azul" para un enum configurado como "azul". None si no matchea nada."""
+    normalized = valor.strip().lower()
+    for candidate in configured_values:
+        if candidate.strip().lower() == normalized:
+            return candidate
+    return None
+
+
 def _parse_date_arg(value: str | None, *, arg_name: str) -> str | None:
     """Valida date_from/date_to (YYYY-MM-DD) antes de mandarlos a Postgres -falla rápido con un
     mensaje claro en vez de dejar que psycopg tire un error de casteo menos legible para el modelo,
@@ -638,6 +794,11 @@ def _log_search_event(
     judge_filtered_count: int | None = None,
     multi_query_used: bool = False,
     literal_term_used: bool = False,
+    structured_field_used: bool = False,
+    recency_tiebreak_triggered: bool = False,
+    employee_name_used: bool = False,
+    checklist_filter_used: bool = False,
+    comparar_con_mejores_used: bool = False,
 ) -> None:
     """Registra metadata de una llamada real a search_conversations. Nunca el texto de la query ni
     el contenido citado -sólo agregados, mismo criterio de privacidad que usage_tracking.py aplica
@@ -648,7 +809,16 @@ def _log_search_event(
     de Postgres -sin índice vectorial todavía (ver docstring del módulo, punto 2), así que
     ``query_ms`` es la señal real para decidir cuándo el índice deja de ser opcional. Medir acá en
     vez de suponer no agrega costo: es sólo `time.perf_counter()` alrededor de llamadas que ya se
-    hacían."""
+    hacían.
+
+    ``employee_name_used``/``checklist_filter_used``/``comparar_con_mejores_used`` (2026-09-29,
+    pregunta real: "¿se puede mejorar que la búsqueda se use más específicamente?"): antes de esto
+    era IMPOSIBLE responder esa pregunta con datos reales -una búsqueda de coaching con
+    `employee_name` + `criterio`/`resultado` es de las más específicas que existen, pero no quedaba
+    registrada como tal, así que un cálculo de "% de búsquedas específicas" a partir del log
+    subestimaba fuerte la especificidad real (todo el uso de coaching contaba como "genérico").
+    Estos tres campos cierran ese hueco de medición -mismo criterio de privacidad que el resto:
+    nunca el nombre del vendedor ni el criterio en sí, sólo si se usó alguno."""
     event = {
         "schema_version": 1,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
@@ -667,6 +837,11 @@ def _log_search_event(
         "judge_filtered_count": judge_filtered_count,
         "multi_query_used": multi_query_used,
         "literal_term_used": literal_term_used,
+        "structured_field_used": structured_field_used,
+        "recency_tiebreak_triggered": recency_tiebreak_triggered,
+        "employee_name_used": employee_name_used,
+        "checklist_filter_used": checklist_filter_used,
+        "comparar_con_mejores_used": comparar_con_mejores_used,
     }
     try:
         VECTOR_SEARCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1334,6 +1509,57 @@ def _reciprocal_rank_fusion(rankings: list[list[dict]]) -> list[dict]:
     return [best_copy[key] for key in ordered_keys]
 
 
+# Desempate por fecha entre resultados casi empatados en distancia (2026-09-29, "otra cosa para que
+# sea más dios"): un patrón de hace 2 días es más accionable para el negocio que uno de hace 6
+# meses, así que ante un empate genuino en relevancia semántica, preferir el más reciente. El umbral
+# de "empate" se definió con datos reales del log de producción (`.runtime/usage/`), no a ojo: el
+# gap de distancia entre puestos CONSECUTIVOS en 388 búsquedas reales con >=3 resultados tiene
+# mediana 0.0021 y p25 0.0008 -mucho más chico que el rango absoluto ya documentado (~0.20-0.27,
+# ver docstring del módulo)-, así que un umbral amplio de "empate" terminaría dominando el orden en
+# CASI cualquier búsqueda, no sólo en empates genuinos, traicionando el propósito de la búsqueda
+# semántica. Por eso el empate se define ACOTADO: sólo entre resultados cuya distancia coincide
+# redondeada a 3 decimales (por debajo de ese p25 real), nunca cruzando un grupo con diferencia real
+# de distancia -mismo aprendizaje que el boost léxico (partición dura → blend acotado, Iteración 70
+# del README): un tie-break débil no puede pisotear una diferencia semántica real.
+_RECENCY_TIEBREAK_DECIMALS = 3
+
+
+def _recency_sort_value(resultado: dict) -> float:
+    """Epoch (mayor = más reciente) a partir de `fecha` (ISO-8601, ver _json_safe). -inf si falta o
+    no se puede parsear -esos resultados quedan al FINAL de su grupo de empate, nunca rompen nada."""
+    fecha = resultado.get("fecha")
+    if not isinstance(fecha, str):
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(fecha).timestamp()
+    except ValueError:
+        return float("-inf")
+
+
+def _apply_recency_tiebreak(resultados: list[dict]) -> list[dict]:
+    """Reordena SÓLO tramos CONTIGUOS ya empatados en distancia (ver constante de arriba): dentro de
+    cada tramo, el más reciente primero. Deliberadamente NO es un sort global por
+    (distancia, fecha) -el orden de entrada puede venir de _reciprocal_rank_fusion, que promueve por
+    diseño una conversación con distancia levemente peor pero presente en más de una formulación
+    (ver Iteración 66 del README); un sort global por distancia como clave primaria pisaría esa
+    decisión (encontrado por un test real: RRF ordenaba conv2 [distancia 0.21] antes que conv1
+    [distancia 0.20] a propósito, y el sort global los volvía a invertir). Agrupando sólo tramos ya
+    ADYACENTES con el mismo bucket de distancia, nunca se toca el orden entre resultados que RRF (o
+    la búsqueda simple) ya decidió poner en posiciones no contiguas o con distancia distinta."""
+    ordenado = list(resultados)
+    total = len(ordenado)
+    i = 0
+    while i < total:
+        bucket = round(ordenado[i]["distancia"], _RECENCY_TIEBREAK_DECIMALS)
+        j = i + 1
+        while j < total and round(ordenado[j]["distancia"], _RECENCY_TIEBREAK_DECIMALS) == bucket:
+            j += 1
+        if j - i > 1:
+            ordenado[i:j] = sorted(ordenado[i:j], key=_recency_sort_value, reverse=True)
+        i = j
+    return ordenado
+
+
 # Cuántos PUESTOS "vale" una coincidencia literal en el puntaje de ranking (2026-09-28, pedido
 # explícito tras preguntar "¿se puede mejorar todavía más esta sinergia?"): la primera versión de
 # `_apply_literal_term_boost` era una partición dura -TODOS los matches antes que TODOS los
@@ -1489,6 +1715,10 @@ class VectorSearchRepository:
         criterio: str | None,
         resultado_filtro: str | None,
         performance_source: "SourceConfig | None",
+        campo_estructurado: str | None = None,
+        valor_estructurado: str | None = None,
+        product_insights_source: "SourceConfig | None" = None,
+        general_insights_source: "SourceConfig | None" = None,
         use_secondary_connection: bool = False,
     ) -> tuple[list[dict], int, float, int]:
         """Recuperación de UN grupo de conversaciones (SQL vectorial + deduplicación por
@@ -1508,7 +1738,14 @@ class VectorSearchRepository:
         cada pata de un multi-query, antes de fusionar por RRF, sin garantizar que un match quedara
         primero DESPUÉS de la fusión (encontrado en vivo 2026-09-28). Ahora es un chequeo de texto en
         Python sobre el resultado ya armado, aplicado una sola vez sobre la lista final -sigue sin
-        necesitar índice propio (corre sobre las mismas pocas decenas de candidatas de siempre)."""
+        necesitar índice propio (corre sobre las mismas pocas decenas de candidatas de siempre).
+
+        `campo_estructurado`/`valor_estructurado` (2026-09-29) SÍ vive acá, a diferencia del boost
+        léxico: filtra el POOL de candidatas ANTES de ordenar por distancia (semi-join EXISTS contra
+        `product_insights_source`, ver más abajo), no reordena una lista ya traída -por eso no tiene
+        el problema de sincronización con RRF que tiene el boost léxico (un EXISTS en el WHERE de
+        cada pata de un multi-query sigue siendo válido después de fusionar, porque ambas patas ya
+        vienen pre-filtradas al mismo subconjunto)."""
         # El tipo `vector` y el operador `<=>` de pgvector viven en el schema analytics_v2 (no en
         # public/search_path default) -confirmado por SQL directo el 2026-09-10: sin agregar
         # analytics_v2 al search_path de la sesión, psycopg tira `UndefinedObject: type "vector"
@@ -1580,6 +1817,16 @@ class VectorSearchRepository:
                 f"ON perf.recording_id = ce.recording_id "
                 f"AND perf.{performance_source.tenant_field} = %s"
             )
+        if general_insights_source is not None:
+            # JOIN normal, no semi-join: a diferencia de la vista por producto, ésta tiene grano una
+            # fila por conversación (mismo criterio que `di`/`perf`, join por conversation_id igual
+            # que `di` -confirmado contra el Data Map, ver "ocasion_uso_dual_source"/
+            # "confeccion_medida_dual_source": ambos cruces se hacen por conversation_id).
+            joins.append(
+                f"JOIN {general_insights_source.name} gi "
+                f"ON gi.conversation_id = conv.conversation_id "
+                f"AND gi.{general_insights_source.tenant_field} = %s"
+            )
         select_columns.append("ce.embedding <=> %s::vector AS distancia")
 
         sql = "SELECT " + ", ".join(select_columns) + "\n" + "\n".join(joins) + "\n"
@@ -1616,6 +1863,22 @@ class VectorSearchRepository:
             # (regex [a-z][a-z0-9_]*), así que interpolarlo entre comillas dobles es seguro; el
             # valor Sí/No va siempre como parámetro.
             sql += f'  AND perf."{criterio}" = %s\n'
+        if general_insights_source is not None:
+            # Mismo criterio de seguridad que product_insights_source/performance_source:
+            # `campo_estructurado` validado por pertenencia exacta, el valor siempre como parámetro.
+            sql += f'  AND gi."{campo_estructurado}" = %s\n'
+        if product_insights_source is not None:
+            # EXISTS/semi-join, no JOIN plano: la fuente tiene grano conversation_id + producto_index
+            # (varias filas por conversación), un JOIN normal multiplicaría filas de `ce`/`r` por
+            # cada producto que matchee -mismo criterio que el semi-join de raw_v2.conversations_raw
+            # más abajo. `campo_estructurado` ya se validó por pertenencia exacta al Data Map (regex
+            # [a-z][a-z0-9_]*); el valor siempre va como parámetro.
+            sql += (
+                f'  AND EXISTS (SELECT 1 FROM {product_insights_source.name} pi '
+                f"WHERE pi.conversation_id = conv.conversation_id "
+                f"AND pi.{product_insights_source.tenant_field} = %s "
+                f'AND pi."{campo_estructurado}" = %s)\n'
+            )
         sql += "ORDER BY ce.embedding <=> %s::vector\nLIMIT %s\n"
         # Transcripción en DOS ETAPAS (2026-09-25, investigación de latencia de la búsqueda: el log de
         # producción mostraba query_ms con medianas de 10 a 100 s y máximos de 150 s en Farma24, Tigo,
@@ -1639,6 +1902,8 @@ class VectorSearchRepository:
             params.append(self.client.tenant)  # di (JOIN)
         if performance_source is not None:
             params.append(self.client.tenant)  # perf (JOIN)
+        if general_insights_source is not None:
+            params.append(self.client.tenant)  # gi (JOIN)
         params += [self.client.tenant, EMBEDDING_CONFIG_ID]  # WHERE
         if self.client.vector_search is not None and self.client.vector_search.store_names:
             params.append(list(self.client.vector_search.store_names))  # WHERE store_names allowlist
@@ -1654,6 +1919,11 @@ class VectorSearchRepository:
             params.append(date_to)  # WHERE date_to
         if performance_source is not None:
             params.append(resultado_filtro)  # WHERE perf.<criterio>
+        if general_insights_source is not None:
+            params.append(valor_estructurado)  # WHERE gi.<campo_estructurado>
+        if product_insights_source is not None:
+            params.append(self.client.tenant)  # WHERE pi (tenant)
+            params.append(valor_estructurado)  # WHERE pi.<campo_estructurado>
         params += [vector_literal, candidate_limit]  # ORDER BY, LIMIT
 
         # _connection_lock (o _connection_lock_secondary, ver use_secondary_connection) serializa
@@ -1830,10 +2100,34 @@ class VectorSearchRepository:
         incluir_fragmentos: bool = False,
         query_alternativa: str | None = None,
         termino_literal: str | None = None,
+        campo_estructurado: str | None = None,
+        valor_estructurado: str | None = None,
     ) -> str:
         """Busca conversaciones semánticamente similares a `query` para el tenant activo.
 
         Args:
+            campo_estructurado, valor_estructurado: (2026-09-29, ampliado el mismo día) filtro EXACTO
+                por un atributo ya verificado por el pipeline de extracción -de un producto (ej.
+                color, tipo de prenda, motivo de venta perdida) o de la conversación completa (ej.
+                tipo de interacción, resultado general)-, en vez del match fuzzy de `termino_literal`
+                contra texto libre. A diferencia de `termino_literal` (reordena candidatas ya
+                traídas), `campo_estructurado` filtra el POOL de candidatas ANTES de rankear por
+                distancia: si el embedding nunca trae ninguna conversación sobre "azul" a las
+                primeras ~40 candidatas (porque el resto de la conversación es semánticamente
+                distinto entre sí), `termino_literal` no tiene nada para promover, pero
+                `campo_estructurado="color_..."`, `valor_estructurado="azul"` sí encuentra esas
+                conversaciones porque no depende de la cercanía semántica para esa dimensión. Prueba
+                primero el campo contra la fuente POR PRODUCTO del Data Map y, si no está ahí, contra
+                la fuente GENERAL (una fila por conversación) como fallback -así cubre también a
+                clientes que sólo tienen la fuente general (ver `_find_general_insights_source`).
+                Usar SÓLO cuando la pregunta nombra un atributo que el Data Map ya modela como campo
+                categórico (no cualquier matiz de texto libre -para eso sigue estando
+                `termino_literal`). Se pasan juntos; un `campo_estructurado` fuera de los permitidos
+                para este cliente, o un `valor_estructurado` fuera del enum de ese campo, es
+                ValueError con las opciones válidas. Si este cliente no tiene ninguna de las dos
+                fuentes declaradas, ValueError lo dice explícitamente (no degrada en silencio: un
+                filtro que el modelo cree aplicado pero que en realidad no corrió sería peor que un
+                error claro).
             termino_literal: (2026-09-28, boost léxico sin índice propio) opcional -un nombre de
                 producto, marca o SKU que aparece literal en la pregunta. Los embeddings son buenos
                 con significado pero malos con términos exactos: dos prendas distintas (ej. "buzo
@@ -2017,6 +2311,54 @@ class VectorSearchRepository:
                 + ". Volvé a llamar con esos dos parámetros completos."
             )
 
+        campo_estructurado = _as_optional_str(campo_estructurado)
+        valor_estructurado = _as_optional_str(valor_estructurado)
+        product_insights_source = None
+        general_insights_source = None
+        if campo_estructurado or valor_estructurado:
+            if not campo_estructurado or not valor_estructurado:
+                raise ValueError(
+                    "campo_estructurado y valor_estructurado se pasan juntos -o ninguno de los dos."
+                )
+            campo_estructurado = campo_estructurado.strip()
+            # Se prueba primero la fuente por PRODUCTO y, si el campo no está ahí, la GENERAL como
+            # fallback (2026-09-29, "alguna mejora de producto": antes esta última no existía, así
+            # que un cliente sin vista por producto -ej. huerpel_hostess_alto- no tenía ningún campo
+            # estructurado disponible). Un mismo nombre de campo en ambas fuentes es
+            # extremadamente improbable (son vistas de grano y contenido distintos: por producto vs.
+            # de la conversación completa), pero de darse, gana la de producto -es la más específica.
+            candidate_product_source = _find_product_insights_source(self.client)
+            product_fields = (
+                _product_insights_fields(str(self.client.data_map_path), candidate_product_source.name)
+                if candidate_product_source is not None
+                else {}
+            )
+            candidate_general_source = _find_general_insights_source(self.client)
+            general_fields = (
+                _product_insights_fields(str(self.client.data_map_path), candidate_general_source.name)
+                if candidate_general_source is not None
+                else {}
+            )
+            if campo_estructurado in product_fields:
+                product_insights_source = candidate_product_source
+                configured_values = product_fields[campo_estructurado]["configured_values"]
+            elif campo_estructurado in general_fields:
+                general_insights_source = candidate_general_source
+                configured_values = general_fields[campo_estructurado]["configured_values"]
+            else:
+                allowed_fields = sorted(set(product_fields) | set(general_fields))
+                raise ValueError(
+                    "campo_estructurado inválido para este cliente. Campos permitidos: "
+                    + (", ".join(allowed_fields) or "(ninguno: este cliente no lo soporta)")
+                )
+            valor_normalizado = _normalize_valor_estructurado(valor_estructurado, configured_values)
+            if valor_normalizado is None:
+                raise ValueError(
+                    f"valor_estructurado inválido para campo_estructurado={campo_estructurado!r}. "
+                    "Valores permitidos: " + ", ".join(configured_values)
+                )
+            valor_estructurado = valor_normalizado
+
         check_analysis()
         api_key = os.getenv("VERA_AI_API_KEY")
         if not api_key:
@@ -2044,6 +2386,10 @@ class VectorSearchRepository:
             criterio=criterio,
             resultado_filtro=resultado_filtro,
             performance_source=performance_source,
+            campo_estructurado=campo_estructurado,
+            valor_estructurado=valor_estructurado,
+            product_insights_source=product_insights_source,
+            general_insights_source=general_insights_source,
         )
         # `per_query_k` (multi-query) y el sobre-fetch del boost léxico comparten la misma necesidad:
         # recuperar MÁS candidatas de las que se van a devolver, para que haya margen real para
@@ -2098,6 +2444,21 @@ class VectorSearchRepository:
             resultados, candidates_fetched, query_ms, candidate_limit = self._retrieve(
                 vector_literal=vector_literal, top_k=per_query_k, **retrieve_kwargs,
             )
+        # Desempate por fecha (ver _apply_recency_tiebreak) ANTES del boost léxico: es una señal
+        # débil que sólo actúa dentro de empates genuinos de distancia, así que corre primero -el
+        # boost léxico, más fuerte y deliberado, tiene la última palabra y hereda el orden de
+        # recencia como su propio desempate (`original_rank`) para los casos que no toca.
+        #
+        # `recency_tiebreak_triggered` (2026-09-29): el umbral de empate (_RECENCY_TIEBREAK_DECIMALS)
+        # se calibró con una ESTIMACIÓN sobre gaps de distancia agregados del log -no con la
+        # frecuencia real de empates genuinos, que es lo que este flag mide directamente. Mismo
+        # patrón que multi_query_used/literal_term_used/structured_field_used: dato real de
+        # producción para poder ajustar el umbral más adelante en vez de a ojo.
+        ids_antes_de_recencia = [r.get("conversation_id") for r in resultados]
+        resultados = _apply_recency_tiebreak(resultados)
+        recency_tiebreak_triggered = (
+            [r.get("conversation_id") for r in resultados] != ids_antes_de_recencia
+        )
         if termino_literal:
             # Acá, sobre la lista final (fusionada por RRF si hubo multi-query) -ver el docstring de
             # _apply_literal_term_boost para el motivo de por qué NO vive dentro de _retrieve().
@@ -2145,7 +2506,12 @@ class VectorSearchRepository:
                     criterio=criterio,
                     resultado_filtro="Sí",
                     performance_source=performance_source,
+                    campo_estructurado=campo_estructurado,
+                    valor_estructurado=valor_estructurado,
+                    product_insights_source=product_insights_source,
+                    general_insights_source=general_insights_source,
                 )
+                peer_resultados = _apply_recency_tiebreak(peer_resultados)
                 if termino_literal:
                     peer_resultados = _apply_literal_term_boost(peer_resultados, termino_literal)
                 peer_resultados = peer_resultados[:_PEER_TOP_K]
@@ -2192,6 +2558,11 @@ class VectorSearchRepository:
             judge_filtered_count=judge_filtered_count,
             multi_query_used=bool(query_alternativa),
             literal_term_used=bool(termino_literal),
+            structured_field_used=bool(campo_estructurado),
+            recency_tiebreak_triggered=recency_tiebreak_triggered,
+            employee_name_used=bool(employee_name and employee_name.strip()),
+            checklist_filter_used=bool(criterio),
+            comparar_con_mejores_used=bool(comparar_con_mejores),
         )
         aviso = "los fragmentos son una reconstrucción aproximada"
         if judge_filtered_count > 0:

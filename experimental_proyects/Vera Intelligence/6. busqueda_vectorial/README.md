@@ -2979,3 +2979,241 @@ contra Postgres, no por el agente"), no contra el juicio del propio agente.
   y para testear (no dos preguntas distintas), y medir el puesto pre-juez directamente por SQL
   (`ORDER BY ce.embedding <=> %s::vector`) en vez de inferirlo de una lista ya filtrada.
 
+### Iteración 72 — Filtro estructurado exacto (`campo_estructurado`/`valor_estructurado`) sobre atributos ya verificados del Data Map (2026-09-29)
+
+Pedido explícito tras la Iteración 71 ("¿se te ocurre alguna forma de que la búsqueda vectorial
+funcione más todavía como un dios todopoderoso?"): `termino_literal` (Iteración 68-70) reordena lo
+que la búsqueda vectorial YA trajo, pero no puede arreglar un pool de candidatas que ya viene mal
+armado -si el embedding nunca mete ninguna conversación sobre "azul" entre las primeras ~40
+candidatas (porque el resto de la conversación es semánticamente distinto entre sí), no hay nada
+para que el boost léxico promueva.
+
+- **Mecanismo**: en vez de reordenar, filtrar el POOL de candidatas ANTES de ordenar por distancia,
+  usando un campo categórico ya verificado por el pipeline de extracción (ej.
+  `color_solicitado_producto='azul'`) en vez de esperar que el embedding o un ILIKE lo capten. SQL:
+  semi-join `EXISTS` contra la vista `*_insights_categoricos_por_producto` del Data Map (grano
+  `conversation_id + producto_index`, así que un `JOIN` plano multiplicaría filas -mismo criterio que
+  el semi-join ya usado para `raw_v2.conversations_raw`), nunca un `JOIN` normal. `campo_estructurado`
+  se valida por pertenencia exacta a los campos `filter` del Data Map activo (mismo patrón que
+  `criterio`/`_performance_criteria`, ver Iteración previa a la 62); a diferencia de `criterio`
+  (enum fijo Sí/No/N-A), acá cada campo tiene su PROPIO enum, así que también se valida
+  `valor_estructurado` contra el `configured_values` real de ESE campo (`_product_insights_fields`,
+  `_normalize_valor_estructurado` -matchea sin distinguir mayúsculas). Un campo o valor inválido es
+  `ValueError` con las opciones permitidas, igual que `criterio` inválido.
+- **Por qué convive bien con multi-query y boost léxico, sin el problema de sincronización de la
+  Iteración 69**: al ser un filtro SQL previo (no un reordenamiento posterior), ambas patas de un
+  multi-query quedan pre-filtradas al mismo subconjunto antes de fusionar por RRF -no hay ventana en
+  la que una pata "vea" candidatas que la otra no filtró. Verificado en vivo combinado con
+  `query_alternativa` sin conflicto.
+- **Verificado en vivo** contra `mens_fashion_alto` (Gemini + Postgres reales, sin mocks): (1)
+  "¿qué se repite en las objeciones de los clientes que pidieron azul?" -el modelo eligió solo
+  `campo_estructurado='color_solicitado_producto'`, `valor_estructurado='azul'`, combinado con
+  `query_alternativa`, y trajo una conversación real donde el cliente pedía "prenda azul" y el
+  vendedor mostraba tonos disponibles. (2) "¿qué pasa con los que buscan un traje para una boda?"
+  -el modelo usó `campo_estructurado='producto'`, `valor_estructurado='traje'` (un campo DISTINTO al
+  del primer caso, confirma que generaliza a cualquier campo del Data Map, no sólo al probado). El
+  semi-join corrió sin error contra Postgres real en ambos casos.
+- **Alcance ya cubierto sin código nuevo, verificado campo por campo (2026-09-29)**: el helper busca
+  la fuente por sufijo (`_insights_categoricos_por_producto`) en `client.sources`, así que cualquier
+  cliente que ya tenga esa vista dada de alta en su `config.yaml` queda cubierto automáticamente. Se
+  verificó contra los Data Maps reales de los 9 clientes con esa fuente: `atlas_alto` (14 campos
+  filtrables), `boggi_alto` (23), `farma24_alto` (5), `high_life_alto` (23), `maga_alto` (5),
+  `mens_fashion_alto` (23), `roberts_alto` (23), `steren_alto` (4), `tigo_alto` (5). Los clientes con
+  `vector_search` habilitado pero SIN esa fuente (`dalton_medio`, `gac_medio`, `huerpel_ventas_alto`,
+  `hyundai_bajo`, `salomon_alto`, y los dos Huerpel Hostess -cuya `insights_categoricos` es grano
+  "una fila por conversación", no por producto-) degradan igual que `criterio` sin
+  `performance_source`: `ValueError` explícito si el modelo intenta usarlo, nunca un filtro que
+  aparente aplicarse pero no corra. No es una limitación de código, es que esos clientes no tienen
+  todavía esa granularidad de dato -no hay nada para "implementar" ahí sin antes construir la vista.
+- **Cero cambios de infraestructura**: todo corre de sólo lectura contra vistas ya existentes y ya
+  declaradas en `config.yaml` para otros usos (SQL de negocio). Sin columna, tabla ni índice nuevo.
+- **Tests**: `StructuredFieldFilterTests` (8 tests) -extracción de campos/enum del Data Map, SQL/params
+  del semi-join en el orden correcto, normalización de valor sin distinguir mayúsculas, campo/valor
+  inválido rechazados con las opciones válidas, obligación de pasarlos juntos, combinación con
+  `termino_literal`. 604 tests totales en verde (antes 596).
+
+### Iteración 73 — Denominador de desgloses anidados: dos hallazgos reales de sobrecosto por reintento, mismo día (2026-09-29)
+
+Verificando en vivo la Iteración 72 con una pregunta de desglose ("¿qué pasa con los que buscan un
+traje para boda?"), aparecieron DOS causas de reintento completo -ninguna relacionada con el filtro
+estructurado en sí, ambas preexistentes en cualquier pregunta con desgloses anidados (motivo de
+pérdida dentro de "no comprados", factor de cierre dentro de "comprados"):
+
+1. **Denominador equivocado**: el modelo calculó "motivo de venta perdida" (ej. `falta_talla`) como
+   porcentaje del TOTAL de trajes evaluados en vez de sobre el subconjunto de NO comprados -la única
+   regla de denominador que existía en el prompt (`Tasas de cumplimiento: cumplimientos / base
+   evaluada`) es específica del checklist Sí/No, no cubre desgloses de categorías dentro de un
+   subconjunto. `answer_verification.py` lo detectó (`cálculo incorrecto`) y forzó un reintento
+   completo (segunda llamada a Gemini) antes de poder responder.
+2. **Suma mental sin respaldo** (encontrado corrigiendo el punto 1): con el denominador ya correcto,
+   el modelo sumó a mano las filas de categorías (`88+76+53+...=354`) para usarlo como base del
+   porcentaje -esa suma no es una celda real de ningún resultado de SQL, así que `vera-evidence` no
+   tuvo nada concreto para respaldarla (`cifra sin respaldo`) y disparó OTRO reintento completo.
+- **Fix**: dos reglas nuevas en `SYSTEM_INSTRUCTION_TEMPLATE` (mismo patrón que las reglas
+  anti-alucinación existentes -hallazgo real fechado + regla concreta): (a) el denominador de un
+  desglose dentro de un subconjunto ya filtrado es el tamaño de ESE subconjunto, nunca el total
+  general de la consulta padre; (b) ese total se pide a SQL como su PROPIA columna (`SUM`/`COUNT` en
+  la misma consulta o una CTE), nunca sumado a mano por el modelo -si no existe como celda real, no
+  hay evidencia que declarar y la respuesta se recalcula entera por eso.
+- **Verificado en vivo, la misma pregunta repetida 3 veces**: sin el fix, reintento por cálculo
+  incorrecto. Con sólo la regla (a), el cálculo ya daba bien pero apareció la causa (b) -otro
+  reintento. Con (a) y (b) juntas, una sola pasada de Gemini, cero reintentos, todas las bases
+  correctas y respaldadas por columnas reales de SQL (788 no comprados, 715 comprados, cada % sobre
+  su base correspondiente).
+- **Alcance**: ninguna de las dos reglas es específica de `campo_estructurado` ni de búsqueda
+  vectorial -viven en el prompt general de `vi_agent.py`, así que el ahorro de reintentos aplica a
+  CUALQUIER pregunta futura con un desglose anidado, para cualquier cliente, no sólo a las que usan
+  el filtro estructurado nuevo.
+- 604 tests siguen en verde (el cambio es sólo de prompt, ningún test fija ese texto exacto).
+
+### Iteración 74 — Desempate por fecha entre empates genuinos de distancia, acotado con datos reales (2026-09-29)
+
+Pedido explícito tras la Iteración 72, con dos ideas más grandes (subir dimensionalidad del
+embedding, boost léxico como pata real de recuperación) anotadas en el docstring del módulo por
+requerir infraestructura fuera de alcance de este archivo (re-vectorizar la tabla, índice de texto).
+Esta tercera idea sí se pudo hacer sin tocar Postgres: cuando dos resultados quedan empatados en
+relevancia semántica, preferir el más reciente -un patrón de hace 2 días es más accionable para el
+negocio que uno de hace 6 meses.
+
+- **El dato que obligó a acotar el diseño**: antes de escribir código, se midió el gap de distancia
+  real entre puestos CONSECUTIVOS en 388 búsquedas del log de producción (`.runtime/usage/`):
+  mediana 0.0021, p25 0.0008 -mucho más chico que el rango absoluto ya documentado (~0.20-0.27). Un
+  umbral de "empate" amplio hubiera dominado el orden en CASI cualquier búsqueda, no sólo en empates
+  genuinos, traicionando el propósito de la búsqueda semántica. Se eligió un umbral bien por debajo
+  de ese p25: sólo empatan resultados cuya distancia coincide redondeada a 3 decimales
+  (`_RECENCY_TIEBREAK_DECIMALS`).
+- **Bug real encontrado por un test, antes de commitear**: la primera versión de
+  `_apply_recency_tiebreak` hacía un `sorted()` global con `(distancia, fecha)` como clave -esto
+  pisaba el orden que ya arma `_reciprocal_rank_fusion` (Iteración 66), que a propósito puede poner
+  una conversación con distancia levemente peor (0.21) antes que otra con distancia mejor (0.20)
+  porque apareció bien rankeada en DOS formulaciones. `MultiQuerySearchTests` lo detectó de
+  inmediato (esperaba `conv2` primero, el sort global devolvía `conv1`). Fix: `_apply_recency_tiebreak`
+  ya NO es un sort global -recorre la lista y sólo reordena TRAMOS YA CONTIGUOS con el mismo bucket
+  de distancia, dejando intacto el orden entre resultados no adyacentes o con distancia distinta,
+  venga ese orden de distancia pura o de una fusión RRF.
+- **Dónde se aplica**: sobre la lista final, ANTES del boost léxico (`termino_literal`) -es una
+  señal débil que sólo actúa dentro de empates genuinos; el boost léxico, más fuerte y deliberado,
+  corre después y hereda el orden de recencia como su propio desempate (`original_rank`) para los
+  casos que no toca. Se aplica igual al grupo `companeros` de `comparar_con_mejores`.
+- **Tests**: `RecencyTiebreakTests` (6 tests) -desempate real por fecha, distancia realmente distinta
+  intacta, fecha faltante o mal formada sin romper (va al final de su grupo), nunca agrega/saca
+  ítems, y el caso que probó el bug (bucket repetido pero NO contiguo, no debe tocarse). 609 tests
+  totales en verde (antes 604).
+- **Verificado en vivo** contra `mens_fashion_alto`: búsqueda real sin empates en este caso puntual
+  (distancias con más de 3 decimales de diferencia entre sí), orden por distancia intacto, sin
+  errores -confirma que el camino común (sin empates) no cambia en nada.
+- **Mejora fácil agregada el mismo día**: el umbral de empate (3 decimales) se calibró con una
+  ESTIMACIÓN sobre gaps agregados del log, no con la frecuencia real de empates genuinos -mismo
+  punto ciego que ya se resolvió para multi-query/boost léxico/filtro estructurado. Se agregó
+  `recency_tiebreak_triggered` a `_log_search_event` (mismo patrón que esos tres flags): registra si
+  el desempate cambió algo en cada búsqueda real, para poder ajustar el umbral con datos de
+  producción más adelante en vez de a ojo. 2 tests nuevos (empate real logueado en `True`, sin
+  empate en `False`). 611 tests totales en verde.
+
+### Iteración 75 — El filtro estructurado también busca en la fuente GENERAL, no sólo la de producto (2026-09-29)
+
+Mejora de producto (a diferencia de las anteriores, no un mecanismo interno): la Iteración 72 sólo
+resolvía `campo_estructurado` contra `*_insights_categoricos_por_producto` -si un cliente no tenía
+esa vista, el filtro directamente no existía para él, sin importar qué otros campos categóricos
+tuviera disponibles.
+
+- **A quién reabre esto**: `huerpel_hostess_alto`/`huerpel_hostess_seminuevos_medio` no tienen vista
+  por producto, pero SÍ tienen una vista categórica GENERAL (`*_insights_categoricos`, grano una fila
+  por conversación) con 6 campos filtrables cada uno (`tipo_visita`, `auto_solicitado_segmento`,
+  `auto_solicitado_color`, `medio_publicitario_categoria`, `intencion_toma`, `tipo_operacion`). Antes
+  de esta iteración, en la sesión anterior, se les había dicho explícitamente "no se puede" -esto lo
+  revierte.
+- **Mecanismo**: `_find_general_insights_source` busca por sufijo (`_insights_categoricos_generales`
+  o, si no existe, `_insights_categoricos` a secas -la convención de nombre no es uniforme entre
+  clientes). Reusa `_product_insights_fields` sin cambios (mismo formato de campos en el Data Map,
+  independiente de si la fuente es por producto o general). `search()` prueba primero el campo contra
+  la fuente por PRODUCTO y, si no está ahí, contra la GENERAL como fallback -en el improbable caso de
+  que un nombre de campo exista en ambas, gana la de producto por ser más específica.
+- **SQL más simple que el filtro por producto**: al ser grano una fila por conversación, es un `JOIN`
+  normal por `conversation_id` (mismo patrón que `descriptivos_source`/`performance_source`), no el
+  semi-join `EXISTS` que hace falta para la vista por producto (grano conversation_id + producto_index).
+- **Verificado en vivo** contra `huerpel_hostess_alto` (Gemini + Postgres reales): `campo_estructurado=
+  "tipo_visita"`, `valor_estructurado="Fresh Up"` -el JOIN corrió sin error, trajo candidatas, el juez
+  filtró correctamente y devolvió 1 resultado genuino.
+- **Tests**: `GeneralInsightsFallbackTests` (4 tests: campos disponibles sin fuente de producto, JOIN
+  normal -no EXISTS- con params en orden, error lista sólo campos generales cuando no hay fuente de
+  producto, SQL sin cambios si no se usa el filtro) y `ProductSourceTakesPrecedenceOverGeneralTests`
+  (1 test: un cliente con ambas fuentes usa la de producto para un campo que sólo existe ahí). 616
+  tests totales en verde (antes 611).
+
+### Iteración 76 — Búsqueda vectorial para 2 clientes más, y un bug real de columna encontrado al probarlo en vivo (2026-09-29)
+
+Pedido explícito: "otra mejora de producto prácticamente gratis". Dos candidatas evaluadas con datos
+reales de Postgres antes de tocar código -una se descartó, la otra se hizo:
+
+- **Habilitado `vector_search` para `agrosuper_bajo` y `shoe_box_bajo`** (bloque `top_k: 5` en su
+  `config.yaml`, mismo patrón que Hyundai/Salomon). Verificado por SQL directo antes de decidir:
+  Agrosuper tiene 11 de 14 grabaciones con embedding (79%, volumen chico pero real), Shoe Box 223 de
+  567 (~39%, backfill parcial tipo Salomon).
+- **`forever_21_bajo` deliberadamente NO habilitado**: verificado por SQL directo, tiene **1 (una)
+  grabación en todo su histórico**. Una búsqueda semántica sobre un universo de una sola conversación
+  no tiene nada que buscar -documentado en su `config.yaml` para que quede claro que es una exclusión
+  a propósito, distinta de un descuido.
+- **Bug real encontrado probando Shoe Box en vivo, no en tests**: `UndefinedColumn: column
+  di.resumen_ejecutivo_conversacion does not exist` -un `psycopg.errors` real, no una degradación
+  silenciosa. La vista `vw_shoe_box_insights_descriptivos_generales` existe y matchea el sufijo de
+  convención, pero su columna de resumen se llama `resumen_conversacion` (mismo tipo de problema que
+  Farma24 en su momento, columna con nombre distinto al default). Corregido agregando `"Shoe Box":
+  "resumen_conversacion"` a `_RESUMEN_COLUMN_BY_TENANT`.
+- **Auditoría preventiva tras encontrar ese bug**: se revisó con un script (no a mano) el campo
+  `select_evidence` de la fuente de resumen de TODOS los clientes con `vector_search` habilitado, para
+  no dejar otra bomba de tiempo igual. Encontrados dos casos más, ya excluidos por casualidad de
+  nombre (sufijo `_insights_descriptivos` sin `_generales`, así que `_find_descriptivos_source` ya los
+  ignoraba) pero sin documentar el motivo real -mismo riesgo latente que tenía Steren antes de esta
+  sesión: si alguien "corrige" el nombre sin saber esto, rompe en producción en vez de degradar.
+  Agregados explícitamente a `_DESCRIPTIVOS_UNSUPPORTED_TENANTS`:
+  - **Steren** (ya encontrado en la conversación previa a esta iteración): su vista no tiene
+    `conversation_id` ni `seller_id`, documentado en su propio Data Map.
+  - **Tigo** (encontrado en esta misma auditoría): su vista sí parece tener grano de conversación,
+    pero sus únicos campos de texto libre son detalles de UN criterio puntual del checklist cada uno
+    (`i07_detalle_causa_de_no_retencion`, etc.), no un resumen general -mismo motivo que ya excluye a
+    Atlas.
+- **Verificado en vivo** (Gemini + Postgres reales, sin mocks) contra `agrosuper_bajo` y
+  `shoe_box_bajo` tras el fix: ambos devuelven resultados genuinos sin errores.
+- **Tests**: 2 nuevos (`test_query_uses_tenant_specific_resumen_column_for_shoe_box`,
+  `test_find_descriptivos_source_absent_for_steren_and_tigo_despite_bare_suffix`) más el ajuste de 3
+  tests existentes que usaban `agrosuper_bajo` como "cliente sin búsqueda vectorial" de control (ahora
+  usan `forever_21_bajo`, el único que sigue realmente sin habilitar). 618 tests totales en verde
+  (antes 616).
+
+### Iteración 77 — Auditoría de cobertura de embeddings sobre TODOS los clientes habilitados (2026-09-29)
+
+Pedido explícito: "otra mejora así de gratis". `_LOW_EMBEDDING_COVERAGE_TENANTS` (Iteración 42) sólo
+se completó cuando alguien notó el problema puntual de Atlas/Salomon -nunca se re-corrió como chequeo
+sistemático sobre el resto de los clientes ya habilitados, ni sobre los que se fueron sumando después
+(incluida la Iteración 76 de esta misma sesión).
+
+- **Auditoría por SQL directo** de cobertura (`analytics_v2.conversation_embeddings` vs
+  `mart_v2.recordings_enriched`) sobre los 16 clientes con `vector_search` habilitado: la mayoría
+  entre 74-97% (aceptable, igual que documentaba la Iteración 42), pero 3 con cobertura real baja y
+  SIN advertencia: **Dalton 56%**, **GAC 52%**, **Shoe Box 39%** (este último, habilitado en la
+  Iteración 76 de esta misma sesión -quedó sin este chequeo por descuido).
+- Los tres son de una sola tienda (o casi) -verificado con desglose por tienda-, así que no aplica la
+  distinción "pareja/despareja por tienda" de Atlas/Salomon; el mensaje es más simple (sólo el
+  porcentaje).
+- **Honestidad sobre el alcance de esta verificación**: a diferencia de Atlas/Salomon (verificados con
+  una serie temporal de 5-8 meses para confirmar que el hueco es estructural, no backfill atrasándose
+  sin más), acá sólo se corrió una foto puntual -no se afirma si es estructural o transitorio, sólo se
+  advierte que hoy la muestra es parcial, que es lo único que importa para no sobre-interpretar
+  patrones.
+- Agregados a `_LOW_EMBEDDING_COVERAGE_TENANTS`: `"Dalton"`, `"GAC"`, `"Shoe Box"`.
+- **Test nuevo**: `test_aviso_includes_low_coverage_note_for_newly_audited_tenants` (Shoe Box). 619
+  tests totales en verde (antes 618).
+
+### Iteración 78 — Verificación de una combinación nunca probada: checklist + filtro estructurado juntos (2026-09-29)
+
+`criterio`/`resultado` (JOIN de `performance_source`) y `campo_estructurado` (JOIN/EXISTS de
+`product_insights_source`/`general_insights_source`) arman su SQL de forma independiente desde que
+existen, pero nunca se probó combinarlos en la misma búsqueda -un caso de uso real (ej. coaching:
+"dónde falló el cierre CON clientes que pidieron azul"). Verificado en vivo (Gemini + Postgres
+reales) contra `mens_fashion_alto`: corre sin error y devuelve resultados coherentes. Agregado
+`test_combines_with_criterio_resultado_and_params_stay_in_order` como regresión -no se encontró
+ningún bug, pero la combinación no estaba cubierta y el orden de params entre JOINs independientes es
+exactamente el tipo de cosa que ya rompió antes en este archivo (ver el comentario "IMPORTANTE" sobre
+el orden de `%s` en `_retrieve`). 620 tests totales en verde (antes 619).
+
