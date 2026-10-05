@@ -207,6 +207,12 @@ class ToolProgressLabelTests(unittest.TestCase):
             "Buscando ejemplos en conversaciones... (puede tardar hasta 3 minutos)",
         )
 
+    def test_extract_insight_tiene_etiqueta_propia_y_avisa_la_espera(self) -> None:
+        label = streamlit_app._tool_progress_label("extract_insight")
+        self.assertNotEqual(label, "Analizando...")
+        self.assertIn("minuto", label)
+        self.assertNotIn("extract_insight", label)  # nunca el nombre técnico
+
     def test_unknown_tool_falls_back_to_a_generic_label(self) -> None:
         # Nunca debe filtrar el nombre técnico de una tool nueva que no se haya mapeado todavía.
         self.assertEqual(streamlit_app._tool_progress_label("una_tool_nueva"), "Analizando...")

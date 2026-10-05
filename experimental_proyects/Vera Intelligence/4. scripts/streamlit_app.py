@@ -291,6 +291,8 @@ st.markdown(
 _TOOL_PROGRESS_LABELS = {
     "run_readonly_sql": "Consultando datos...",
     "get_business_rules": "Revisando criterios de negocio...",
+    "compute_stats": "Calculando intervalos y comparaciones...",
+    "count_pattern_cases": "Revisando cientos de conversaciones para contar los casos de cada patrón... (puede tardar varios minutos)",
     # Con statement_timeout en 180s (ver utils/postgres.py) esta búsqueda puede tardar bastante más
     # que las demás -sin el índice ANN sobre analytics_v2.conversation_embeddings, medimos en vivo
     # casos de hasta 148,8s (ver "6. busqueda_vectorial/README.md" > "Iteración 25"). Antes de esa
@@ -298,6 +300,9 @@ _TOOL_PROGRESS_LABELS = {
     # pensar que la app se colgó -este texto pone la expectativa por adelantado en vez de que se
     # entere recién si le toca un caso lento.
     "search_conversations": "Buscando ejemplos en conversaciones... (puede tardar hasta 3 minutos)",
+    # extract_insight (2026-10-02): lee cientos de conversaciones para estimar cuántas cumplen algo que ningún campo
+    # mide -medido en vivo 35-90 s. Sin esta etiqueta caía en "Analizando..." durante todo ese tiempo.
+    "extract_insight": "Leyendo cientos de conversaciones para estimar cuántas cumplen... (suele tardar entre 1 y 2 minutos)",
 }
 
 

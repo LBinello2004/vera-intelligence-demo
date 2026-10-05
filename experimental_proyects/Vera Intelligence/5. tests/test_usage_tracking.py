@@ -164,6 +164,30 @@ class UsageTrackingTests(unittest.TestCase):
             self.assertEqual(load_usage_events(path), [])
 
 
+class TolerantLoaderTests(unittest.TestCase):
+    def test_linea_corrupta_se_saltea_y_el_resto_se_lee(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "usage.jsonl"
+            path.write_text('{"a":1}\n}\n{"b":2}\nools_called":["x"]}\n\n{"c":3}\n', encoding="utf-8")
+            with self.assertLogs("usage_tracking", level="WARNING") as logs:
+                eventos = load_usage_events(path)
+            self.assertEqual(eventos, [{"a": 1}, {"b": 2}, {"c": 3}])
+            self.assertIn("2 línea(s)", logs.output[0])
+
+    def test_strict_conserva_el_error_para_auditorias(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "usage.jsonl"
+            path.write_text('{"a":1}\n}\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_usage_events(path, strict=True)
+
+    def test_tolera_bom_al_principio(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "usage.jsonl"
+            path.write_bytes(b'\xef\xbb\xbf{"a":1}\n{"b":2}\n')
+            self.assertEqual(load_usage_events(path), [{"a": 1}, {"b": 2}])
+
+
 class RecordEstimatedTests(unittest.TestCase):
     """UsageRecorder.record_estimated (2026-09-22): para llamadas cuyo proveedor no devuelve
     usage_metadata (ej. embed_content de Gemini, ver _embed_query en vector_search.py) -el costo

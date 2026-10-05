@@ -116,7 +116,7 @@ def history_results(chat):
     for content in get(curated=True):
         for part in getattr(content, 'parts', None) or []:
             response = getattr(part, 'function_response', None)
-            if response is not None and response.name == 'run_readonly_sql':
+            if response is not None and response.name in ('run_readonly_sql', 'extract_insight', 'compute_stats', 'count_pattern_cases'):
                 payload = response.response or {}
                 add_result(store, payload.get('result'))
     return store
@@ -155,6 +155,12 @@ def calculate(claim, store):
         raise ValueError("insumos inválidos")
     values = [resolve(ref, store) for ref in refs]
     op = claim.get('operation', 'identity')
+    if op in ('ratio', 'percentage', 'relative_change') and any(
+            isinstance(store.get(ref.get('id')), dict) and store[ref['id']].get('tipo_resultado') == 'soporte_de_patron'
+            for ref in refs if isinstance(ref, dict)):
+        # n de m de un patrón NO es una frecuencia: las conversaciones leídas son las más parecidas, no una muestra
+        # (ver count_pattern_cases). Una proporción o un porcentaje con esas celdas se rechaza.
+        raise ValueError("el conteo de casos de un patrón no admite porcentajes ni proporciones: no es una frecuencia")
     if op == 'identity' and len(values) == 1:
         return values[0]
     if op == 'sum':

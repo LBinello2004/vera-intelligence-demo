@@ -140,6 +140,9 @@ class ClientConfig:
     business_rulebooks: dict[str, BusinessRulebookConfig]
     rag_sources: dict[str, RagSourceConfig]
     vector_search: VectorSearchConfig | None
+    # extract_insight (insight_extraction.py): envía transcripciones a un lector externo (JEV); sólo
+    # se habilita por decisión explícita de quien maneja los datos del cliente.
+    insight_extraction: bool = False
 
 
 def _required_text(payload: dict[str, Any], key: str, *, context: str) -> str:
@@ -262,6 +265,13 @@ def load_client_config(client_id: str = DEFAULT_CLIENT_ID) -> ClientConfig:
             store_names = tuple(name.strip() for name in raw_store_names)
         vector_search = VectorSearchConfig(top_k=top_k, store_names=store_names)
 
+    raw_extraction = payload.get("insight_extraction")
+    insight_extraction = False
+    if raw_extraction is not None:
+        if not isinstance(raw_extraction, dict) or not isinstance(raw_extraction.get("enabled", False), bool):
+            raise ValueError("insight_extraction, si se declara, debe ser {enabled: true|false}.")
+        insight_extraction = bool(raw_extraction.get("enabled", False))
+
     return ClientConfig(
         client_id=_required_text(payload, "client_id", context="cliente"),
         display_name=_required_text(payload, "display_name", context="cliente"),
@@ -272,4 +282,5 @@ def load_client_config(client_id: str = DEFAULT_CLIENT_ID) -> ClientConfig:
         business_rulebooks=business_rulebooks,
         rag_sources=rag_sources,
         vector_search=vector_search,
+        insight_extraction=insight_extraction,
     )

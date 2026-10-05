@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,19 +204,31 @@ class InteractionOutcomeRecorder:
         return event
 
 
-def load_usage_events(path: Path) -> list[dict[str, Any]]:
+def load_usage_events(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
+    """Lee un registro JSONL. Por default SALTEA las líneas inválidas y avisa por log (2026-10-02, hallazgo al probar la
+    interfaz: dos procesos escribiendo a la vez en Windows mezclaron fragmentos de línea y UNA línea mala tumbaba la barra
+    lateral completa de la app). `strict=True` conserva el comportamiento anterior (ValueError) para auditorías."""
     if not path.is_file():
         return []
     events: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    skipped: list[int] = []
+    # utf-8-sig: tolera un BOM al principio del archivo (visto en el registro local de desarrollo).
+    for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Registro de uso inválido en línea {line_number}.") from exc
+            if strict:
+                raise ValueError(f"Registro de uso inválido en línea {line_number}.") from exc
+            skipped.append(line_number)
+            continue
         if isinstance(event, dict):
             events.append(event)
+    if skipped:
+        logging.getLogger(__name__).warning(
+            "load_usage_events: %d línea(s) inválida(s) salteadas en %s (primeras: %s).",
+            len(skipped), path.name, skipped[:5])
     return events
 
 

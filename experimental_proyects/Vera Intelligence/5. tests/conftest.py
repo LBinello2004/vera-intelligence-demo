@@ -5,12 +5,17 @@ viviendo en cada archivo de test, como FakeChat/FakeResponse en test_vi_agent.py
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# La caché determinista de la búsqueda (search_determinism) escribe en .runtime: se APAGA para toda la suite para que
+# ningún test lea o deje resultados cacheados de otro; los tests de la propia caché la habilitan con una ruta temporal.
+os.environ.setdefault("VI_SEARCH_CACHE", "0")
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "4. scripts"
 if str(SCRIPTS_DIR) not in sys.path:

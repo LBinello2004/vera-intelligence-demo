@@ -52,13 +52,14 @@ class ViAgentTests(unittest.TestCase):
     def test_mvp_exposes_no_unrestricted_langfuse_tools(self) -> None:
         # TOOL_FUNCTIONS es la tabla de despacho completa del loop manual -run_readonly_sql y
         # get_business_rules siempre, search_conversations agregada 2026-09-10 (ver
-        # "6. busqueda_vectorial/README.md"). Ninguna de las tres se anuncia al modelo salvo que
+        # "6. busqueda_vectorial/README.md"), extract_insight 2026-10-02 (apagada por defecto, ver
+        # InsightExtractionToolTests) y compute_stats 2026-10-05 (matemática pura, siempre disponible). Ninguna se anuncia al modelo salvo que
         # _build_tools_list() la incluya -eso sí depende de CLIENT_CONFIG por cliente, cubierto
         # abajo por VectorSearchToolExposureTests. RAG (file_search) nunca pasa por esta tabla:
         # es un tool nativo server-side de Gemini, no una función Python del loop manual.
         self.assertEqual(
             set(vi_agent.TOOL_FUNCTIONS),
-            {"get_business_rules", "run_readonly_sql", "search_conversations"},
+            {"get_business_rules", "run_readonly_sql", "search_conversations", "extract_insight", "compute_stats", "count_pattern_cases"},
         )
         # El template en sí no hardcodea nombres de tool -se arman dinámicamente en
         # _build_extra_tools_section() según lo que declare config.yaml del cliente activo.
