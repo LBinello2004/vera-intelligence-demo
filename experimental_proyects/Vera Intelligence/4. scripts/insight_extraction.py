@@ -13,8 +13,9 @@ cierra ese hueco leyendo TRANSCRIPCIONES con un lector barato y contando en cód
   4. Resultado = RANGO (mínimo verificado, máximo plausible), nunca un número puntual, con la misma forma
      que un resultado SQL (`columns`/`rows`) para que `answer_verification` pueda respaldar las cifras.
 
-Modo literal (`terminos_literales`, sin modelo): cuenta en código las conversaciones con una frase literal
--un piso verificable ("mencionan textualmente")-; sólo sirve para frases sin ambigüedad.
+Modo PALABRAS CLAVE (`terminos_literales`, sin modelo, sin enviar nada a terceros): cuenta en código las conversaciones
+de la muestra que contienen alguna palabra o raíz (sin tildes ni mayúsculas) y da estimación + intervalo de muestreo. Es gratis y,
+medido contra campos del SQL, se parece a la lectura con JEV en el porcentaje global (no al ordenar tiendas); no ve paráfrasis ni quién habla.
 
 Privacidad: envía transcripciones reales a TypeSafe (JEV) y a Gemini. Sólo se expone si el cliente declara
 `insight_extraction: {enabled: true}` en su config.yaml (decisión explícita de quien maneja los datos del
@@ -273,9 +274,35 @@ def stratified_group_sample(frame: list, desglose: str, seed: str) -> dict[str, 
             "no_incluidas": excluded, "grupos_totales": len(groups)}
 
 
+class _ReadMeter:
+    """Cuenta, de forma segura entre hilos, las lecturas de JEV de UNA consulta (ok, fallidas, caracteres enviados) y el último error."""
+
+    def __init__(self) -> None:
+        self.ok = self.failed = self.chars = 0
+        self.error = ""
+        self._lock = threading.Lock()
+        self._t0 = time.monotonic()
+
+    def read(self, fn: Callable[[str, dict, str], float | None], text: str, spec: dict) -> float | None:
+        try:
+            p = fn(text, spec, "")
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self.failed += 1
+                self.error = str(exc)
+            return None
+        with self._lock:
+            if p is None:
+                self.failed += 1
+            else:
+                self.ok += 1
+                self.chars += len(text)
+        return p
+
+
 class InsightExtractionRepository:
     def __init__(
-        self, client_config, *, usage_recorder=None,
+        self, client_config, *, usage_recorder=None, jev_recorder=None,
         read_fn: Callable[[str, dict, str], float | None] | None = None,
         verify_fn: Callable[[dict, str], dict] | None = None,
         fetch_fn: Callable[..., tuple[int, list[tuple[str, str, dict]]]] | None = None,
@@ -285,6 +312,7 @@ class InsightExtractionRepository:
     ) -> None:
         self.client = client_config
         self.usage_recorder = usage_recorder
+        self.jev_recorder = jev_recorder  # JevReadRecorder: una línea por lote de lecturas (consumo real de TypeSafe)
         # Conteo de casos de un patrón (count_patterns): ordena conversaciones por similitud (VectorSearchRepository.
         # rank_conversations) y trae el texto sólo de las que se leen. Sin `rank_fn` la herramienta no está disponible.
         self._rank = rank_fn
@@ -410,8 +438,24 @@ class InsightExtractionRepository:
             r = self._session.post(JEV_ENDPOINT, json=payload, headers={"Authorization": f"Bearer {key}"}, timeout=60)
             if r.status_code == 200:
                 return float(r.json()["answers"]["q"]["noul"])
+            if r.status_code in (401, 402, 403):
+                # Sin crédito o sin permiso: reintentar no sirve (visto en vivo, 2026-10-05: un 402 por falta de créditos hacía
+                # 3 intentos con pausas por cada conversación y fallaba igual).
+                raise RuntimeError(f"TypeSafe rechazó la lectura (HTTP {r.status_code}"
+                                   + (": sin créditos disponibles" if r.status_code == 402 else "") + ").")
             time.sleep(2 ** attempt)
         return None
+
+    def _log_reads(self, kind: str, meter: _ReadMeter) -> None:
+        """Una línea en el registro local con las lecturas de JEV de esta consulta (si hay registrador). Nunca rompe la consulta."""
+        if self.jev_recorder is None or (meter.ok + meter.failed) == 0:
+            return
+        try:
+            self.jev_recorder.record(
+                client_id=self.client.client_id, kind=kind, reads_ok=meter.ok, reads_failed=meter.failed,
+                chars_sent=meter.chars, seconds=time.monotonic() - meter._t0, model=JEV_MODEL, error=meter.error)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _get_gclient(self):
         api_key = os.environ.get("VERA_AI_API_KEY")
@@ -554,20 +598,21 @@ class InsightExtractionRepository:
             return self._literal(literal, total, rows, pregunta, pop_cells)
 
         # 1) lectura con JEV
+        meter = _ReadMeter()
+
         def read_one(item):
             check_analysis()
             if time.monotonic() > deadline:
                 return None
-            try:
-                return self._read(item[1], spec, "")
-            except Exception:  # noqa: BLE001
-                return None
+            return meter.read(self._read, item[1], spec)
 
         with ThreadPoolExecutor(max_workers=READ_WORKERS) as pool:
             probs = list(pool.map(read_one, rows))
+        self._log_reads("extract", meter)
         read = [(it, p) for it, p in zip(rows, probs) if p is not None]
         if not read:
-            raise RuntimeError("No se pudo leer ninguna conversación (lector no disponible).")
+            raise RuntimeError("No se pudo leer ninguna conversación (lector no disponible"
+                               + (f": {meter.error}" if meter.error else "") + ").")
         positives = [it for it, p in read if p >= JEV_THRESHOLD]
         negatives = [it for it, p in read if p < JEV_THRESHOLD]
 
@@ -671,16 +716,17 @@ class InsightExtractionRepository:
         stats.update(coverage_manifest(pop_cells, sample))
 
     def _literal(self, terms: list[str], total: int, rows, pregunta: str, pop_cells=None) -> str:
-        rx = re.compile("|".join(r"\b" + re.escape(t) + r"\b" for t in terms), re.IGNORECASE)
-        hits = [it for it in rows if rx.search(it[1])]
+        """Modo PALABRAS CLAVE (2026-10-05): sin modelo y sin enviar nada a terceros. Cuenta las conversaciones de la muestra que
+        contienen alguna de las palabras (sin distinguir tildes ni mayúsculas; cada término puede ser una raíz: 'calific' encuentra
+        'calificar', 'calificación'). Da estimación + intervalo de muestreo como el modo lector, pero es una aproximación más tosca:
+        cuenta que la palabra aparezca, no quién la dice ni en qué sentido, y no ve las paráfrasis."""
+        normalized = [_norm(t) for t in terms if _norm(t)]
+        rx = re.compile("|".join(r"(?<!\w)" + re.escape(t) for t in normalized))
+        hits = [it for it in rows if rx.search(_norm(it[1]))]
         leidas = len(rows)
         base = compute_range(poblacion=total, leidas=leidas, positivos_jev=len(hits), confirmadas=len(hits))
-        examples = [{"tienda": it[2]["tienda"], "fecha": it[2]["fecha"], "situacion": "menciona textualmente el término"} for it in hits[:MAX_EXAMPLES]]
-        # Piso verificable: el máximo es desconocido (paráfrasis que el literal no ve).
-        base["pct_maximo"] = None
-        base["conversaciones_maximo"] = None
-        base["pct_estimado"] = None  # un piso de menciones literales no es una estimación
-        base["conversaciones_estimado"] = None
+        examples = [{"tienda": it[2]["tienda"], "fecha": it[2]["fecha"], "situacion": "contiene alguna de las palabras buscadas"}
+                    for it in hits[:MAX_EXAMPLES]]
         self._add_coverage(base, rows, pop_cells)
         return self._pack(base, examples, pregunta, literal=True)
 
@@ -698,7 +744,12 @@ class InsightExtractionRepository:
             "rows": [[stats[c] for c in columns]],
             "tipo_resultado": "extraccion_" + ("literal" if literal else "con_lector"),
             "interpretacion": (
-                ("PISO de menciones textuales (sin máximo ni estimación): es lo que el regex encontró, no el total. "
+                ("APROXIMACIÓN POR PALABRAS CLAVE (sin modelo): pct_estimado = conversaciones de la muestra que contienen alguna de "
+                 "las palabras / conversaciones leídas; pct_minimo/pct_maximo es el intervalo al 95 % del ERROR DE MUESTREO solamente. "
+                 "Cuenta que la palabra aparezca: no sabe quién la dijo (puede ser el cliente), ni el sentido, y no ve las paráfrasis, "
+                 "así que puede errar en cualquier sentido (en pruebas contra campos medidos del SQL: del orden de ±5 a 12 puntos según "
+                 "el campo; para conductas semánticas como 'valida que el cliente entiende' es mala). Presentalo como '≈X % por palabras "
+                 "clave (entre A % y B % por muestreo)' y decí qué palabras se usaron. No sirve para ordenar tiendas. "
                  if literal else
                  "ESTIMACIÓN por lectura: pct_estimado = conversaciones que el lector marcó / conversaciones leídas; pct_minimo/pct_maximo es "
                  "el intervalo al 95 % del ERROR DE MUESTREO solamente: no incluye los errores del lector (puede marcar de más o "
@@ -813,16 +864,15 @@ class InsightExtractionRepository:
         load(order[:PATTERN_M_BASE])
         probs: list[list[float | None]] = [[] for _ in medibles]
 
+        meter = _ReadMeter()
+
         def read_range(pattern_indexes: list[int], start: int, stop: int) -> None:
             def one(job):
                 check_analysis()
                 pi, ii = job
                 if time.monotonic() > deadline:
                     return None
-                try:
-                    return self._read(items[ii][1], specs[pi], "")
-                except Exception:  # noqa: BLE001
-                    return None
+                return meter.read(self._read, items[ii][1], specs[pi])
 
             jobs = [(pi, ii) for pi in pattern_indexes for ii in range(start, stop)]
             with ThreadPoolExecutor(max_workers=READ_WORKERS) as pool:
@@ -846,6 +896,7 @@ class InsightExtractionRepository:
                 if pi not in extended:
                     probs[pi].extend([None] * (len(items) - before))
             read_range(extended, before, len(items))
+        self._log_reads("count_patterns", meter)
 
         # Verificación con cita (Gemini barato) sobre una parte de los positivos del lector
         spec_jobs: list[tuple[int, int]] = []

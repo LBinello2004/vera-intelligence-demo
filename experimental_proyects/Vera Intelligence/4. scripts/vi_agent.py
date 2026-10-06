@@ -59,7 +59,7 @@ from runtime_control import (  # noqa: E402
     check_analysis, current_analysis_control, wait_before_retry,
 )
 from sql_security import validate_readonly_sql  # noqa: E402
-from usage_tracking import InteractionOutcomeRecorder, UsageRecorder  # noqa: E402
+from usage_tracking import InteractionOutcomeRecorder, JevReadRecorder, UsageRecorder  # noqa: E402
 from utils.postgres import postgres_connection_kwargs  # noqa: E402
 from vector_search import VectorSearchRepository  # noqa: E402
 
@@ -127,6 +127,12 @@ USAGE_LOG_PATH = (
 INTERACTION_LOG_PATH = (
     _TEST_LOG_DIR / "interaction_outcomes.jsonl" if _TEST_LOG_DIR
     else PROJECT_ROOT / ".runtime" / "usage" / "interaction_outcomes.jsonl"
+)
+# jev_reads.jsonl (2026-10-06): una línea por lote de lecturas de JEV (TypeSafe), que no devuelve tokens ni costo: se registran lecturas y
+# caracteres enviados para medir el consumo real por consulta contra la factura (la estimación previa resultó ~3 veces menor).
+JEV_LOG_PATH = (
+    _TEST_LOG_DIR / "jev_reads.jsonl" if _TEST_LOG_DIR
+    else PROJECT_ROOT / ".runtime" / "usage" / "jev_reads.jsonl"
 )
 
 # Prompt caching de Gemini (2026-09-11) -ver "8. README.md" > "Potencial de mejora" > "Prompt
@@ -288,7 +294,7 @@ def configure_client(client_id: str = "mens_fashion_alto", *, model_override: st
     # VI_INSIGHT_EXTRACTION=1 para pruebas locales; envía transcripciones a un lector externo.
     _INSIGHT_EXTRACTION_REPOSITORY = (
         InsightExtractionRepository(
-            CLIENT_CONFIG, usage_recorder=_USAGE_RECORDER,
+            CLIENT_CONFIG, usage_recorder=_USAGE_RECORDER, jev_recorder=JevReadRecorder(JEV_LOG_PATH),
             rank_fn=_VECTOR_SEARCH_REPOSITORY.rank_conversations if _VECTOR_SEARCH_REPOSITORY is not None else None)
         if extraction_enabled(CLIENT_CONFIG.insight_extraction, CLIENT_CONFIG.client_id) else None
     )
@@ -889,10 +895,14 @@ def _build_extra_tools_section() -> str:
             "  - CÓMO LLAMARLA: `pregunta` = sí/no concreta sobre UNA conversación; `criterio_si` y "
             "`criterio_no` = qué cuenta y qué NO cuenta (ej. 'promociones en general NO cuenta'). Filtros "
             "de tienda/vendedor/fecha sólo si la pregunta los nombra; sin período = todo el histórico. "
-            "`terminos_literales` SIN criterios sólo para una frase literal sin ambigüedad ('cuotas sin "
-            "interés'): cuenta sin modelo y da un PISO (menciones textuales), no el total; si pasás "
-            "criterios se hace lectura de contexto y los términos se ignoran. Ante la duda, pasá criterios "
-            "y no términos.\n"
+            "PALABRAS CLAVE = PRIMERA OPCIÓN y GRATIS para un porcentaje global: `terminos_literales` SIN criterios, de 3 a 10 "
+            "palabras o raíces separadas por ';' (ej. 'calific; encuesta; satisfaccion'; sin tildes ni mayúsculas, una raíz "
+            "encuentra sus derivadas). Cuenta sin modelo y sin enviar nada a terceros, y da estimación con intervalo de muestreo: "
+            "es aproximada (cuenta que la palabra aparezca, no quién la dice ni el sentido, y no ve paráfrasis). Si ya hiciste "
+            "search_conversations, sacá las palabras de los patrones y casos que devolvió. Pasá `criterio_si` y `criterio_no` "
+            "(lectura con JEV, que cuesta) SÓLO si la conducta es semántica y no tiene palabras distintivas ('valida que el "
+            "cliente entiende'), si la pregunta pide ordenar o comparar tiendas/meses (`desglosar_por`), o si las palabras "
+            "darían falsos positivos claros. Con criterios, los términos se ignoran.\n"
             "  - DESGLOSE: si la pregunta pide el resultado POR TIENDA, POR MES o POR SEMANA ('en qué tiendas', "
             "'cómo evolucionó', 'por período'), pasá `desglosar_por` ('tienda' | 'mes' | 'semana'): vuelve UNA fila por "
             "grupo (hasta 12: las tiendas más grandes o los períodos más recientes) con su rango, en una sola llamada. "
@@ -1363,8 +1373,8 @@ def extract_insight(
         criterio_si: qué cuenta como sí. criterio_no: qué NO cuenta (ej. "promociones en general").
         store_name, employee_name, date_from, date_to: filtros opcionales (YYYY-MM-DD); sin período
             = todo el histórico.
-        terminos_literales: opcional, SIN criterios: frases literales sin ambigüedad separadas por ';'
-            -cuenta sin modelo y da un PISO (menciones textuales). Con criterios se ignora.
+        terminos_literales: opcional, SIN criterios: 3 a 10 palabras o raíces separadas por ';' -cuenta sin
+            modelo (gratis) y da una estimación aproximada con intervalo de muestreo. Con criterios se ignora.
         campo_estructurado, valor_estructurado: opcionales, SIEMPRE juntos -acota la población con un
             campo categórico de la conversación completa del Data Map (ej. sólo las bajas), para que el
             porcentaje sea sobre el denominador que pide la pregunta.

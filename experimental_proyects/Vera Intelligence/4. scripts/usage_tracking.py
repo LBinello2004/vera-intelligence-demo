@@ -162,6 +162,33 @@ def _append_jsonl(path: Path, event: dict[str, Any]) -> None:
         os.close(descriptor)
 
 
+class JevReadRecorder:
+    """Una entrada JSONL por lote de lecturas de JEV (TypeSafe) de una consulta (2026-10-06). JEV no devuelve tokens ni costo,
+    así que se registra lo que lo determina -cuántas lecturas y cuántos caracteres se enviaron- para medir el consumo real por
+    consulta contra la factura de TypeSafe en vez de estimarlo. Una línea por lote, no por lectura."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def record(self, *, client_id: str, kind: str, reads_ok: int, reads_failed: int, chars_sent: int,
+               seconds: float, model: str, error: str = "") -> dict[str, Any]:
+        event = {
+            "schema_version": 1,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "client_id": client_id,
+            "kind": kind,
+            "model": model,
+            "reads_ok": int(reads_ok),
+            "reads_failed": int(reads_failed),
+            "chars_sent": int(chars_sent),
+            "seconds": round(float(seconds), 1),
+        }
+        if error:
+            event["error"] = error[:200]
+        _append_jsonl(self.path, event)
+        return event
+
+
 class InteractionOutcomeRecorder:
     """Registro local de CÓMO terminó cada interacción de usuario (2026-09-15) -complementa a
     UsageRecorder (que registra cada llamada individual a Gemini, ver retry_reason arriba): esto es

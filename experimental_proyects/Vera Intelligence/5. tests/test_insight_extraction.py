@@ -104,14 +104,32 @@ class ExtractFlowTests(unittest.TestCase):
         self.assertLessEqual(row["conversaciones_minimo"], row["conversaciones_maximo"])
         self.assertEqual(len(out["ejemplos"]), 3)
 
-    def test_modo_literal_da_piso_sin_maximo(self):
-        rows = [("a", "hablamos de cuotas sin interés hoy", {"tienda": "T", "fecha": "x"}),
-                ("b", "nada de eso", {"tienda": "T", "fecha": "x"})]
-        out = json.loads(_repo(2, rows, lambda t: 0.0, lambda t: {}).extract(
-            "¿Se menciona cuotas sin interés?", terminos_literales="cuotas sin interés"))
+    def test_modo_palabras_da_estimacion_con_intervalo_y_sin_modelo(self):
+        rows = [(f"a{i}", "hablamos de cuotas sin interés hoy" if i < 3 else "nada de eso", {"tienda": "T", "fecha": "x"})
+                for i in range(10)]
+        repo = _repo(1000, rows, lambda t: self.fail("el modo palabras no debe llamar al lector"),
+                     lambda t: self.fail("el modo palabras no debe llamar a la verificación"))
+        out = json.loads(repo.extract("¿Se menciona cuotas sin interés?", terminos_literales="cuotas sin interés"))
         row = dict(zip(out["columns"], out["rows"][0]))
-        self.assertEqual(row["confirmadas_con_evidencia"], 1)
-        self.assertIsNone(row["pct_maximo"])
+        self.assertEqual(out["tipo_resultado"], "extraccion_literal")
+        self.assertEqual(row["confirmadas_con_evidencia"], 3)
+        self.assertEqual(row["pct_estimado"], 30.0)
+        self.assertLess(row["pct_minimo"], 30.0)
+        self.assertGreater(row["pct_maximo"], 30.0)
+        self.assertIn("PALABRAS CLAVE", out["interpretacion"])
+        self.assertIn("DENOMINADOR", out["interpretacion"])
+
+    def test_modo_palabras_ignora_tildes_mayusculas_y_acepta_raices(self):
+        rows = [("a", "El asesor dice: CALIFICÁNOS del 1 al 10", {"tienda": "T", "fecha": "x"}),
+                ("b", "le pido la cedula", {"tienda": "T", "fecha": "x"}),
+                ("c", "tenemos descalificado el equipo", {"tienda": "T", "fecha": "x"}),   # la raíz no matchea en medio de una palabra
+                ("d", "nada", {"tienda": "T", "fecha": "x"})]
+        repo = _repo(4, rows, lambda t: 0.0, lambda t: {})
+        out = json.loads(repo.extract("¿Califican o piden cédula?", terminos_literales="calific; cédula"))
+        row = dict(zip(out["columns"], out["rows"][0]))
+        self.assertEqual(row["confirmadas_con_evidencia"], 2)
+        self.assertEqual(row["modo"], "poblacion_completa")
+        self.assertEqual((row["pct_minimo"], row["pct_estimado"], row["pct_maximo"]), (50.0, 50.0, 50.0))
 
     def test_misma_consulta_repetida_no_vuelve_a_leer(self):
         rows = [(f"r{i}", f"texto {i} " * 100, {"tienda": "T", "fecha": "x"}) for i in range(5)]
@@ -490,6 +508,46 @@ class InsightExtractionToolTests(unittest.TestCase):
             self.assertTrue(ie.extraction_enabled(False, "cualquiera"))
         with mock.patch.dict("os.environ", {"VI_INSIGHT_EXTRACTION": ""}):
             self.assertFalse(ie.extraction_enabled(False, "farma24"))
+
+
+class JevReadLogTests(unittest.TestCase):
+    """Registro local del consumo de JEV (2026-10-06) y corte inmediato ante 401/402."""
+
+    def test_se_registra_una_linea_por_lote_con_lecturas_y_caracteres(self):
+        import tempfile
+        from pathlib import Path
+
+        from usage_tracking import JevReadRecorder
+
+        rows = [(f"r{i}", f"texto {i} " * 10, {"tienda": "T", "fecha": "x"}) for i in range(6)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "jev_reads.jsonl"
+            repo = ie.InsightExtractionRepository(
+                CLIENT, jev_recorder=JevReadRecorder(path), read_fn=lambda text, spec, key: None if text.startswith("texto 5") else 0.1,
+                verify_fn=lambda spec, text: {"respuesta": False, "evidencia_ok": True, "resumen": ""}, fetch_fn=lambda **kw: (6, rows))
+            repo.extract("¿Pregunta suficientemente larga?", "si", "no")
+            lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual((lines[0]["kind"], lines[0]["reads_ok"], lines[0]["reads_failed"]), ("extract", 5, 1))
+        self.assertEqual(lines[0]["chars_sent"], sum(len(r[1]) for r in rows[:5]))
+        self.assertEqual(lines[0]["model"], ie.JEV_MODEL)
+
+    def test_sin_creditos_falla_de_inmediato_con_un_mensaje_claro(self):
+        repo = ie.InsightExtractionRepository(CLIENT, fetch_fn=lambda **kw: (2, [("a", "x" * 300, {"tienda": "T", "fecha": "x"})] * 2))
+        calls = []
+
+        class Resp:
+            status_code = 402
+
+        def post(self, *a, **kw):
+            calls.append(1)
+            return Resp()
+
+        with mock.patch.dict("os.environ", {"JEV_API": "clave-de-prueba"}), mock.patch("requests.Session.post", post):
+            with self.assertRaises(RuntimeError) as ctx:
+                repo.extract("¿Pregunta suficientemente larga?", "si", "no")
+        self.assertIn("sin créditos", str(ctx.exception))
+        self.assertEqual(len(calls), 2)  # una por conversación: sin reintentos ni pausas
 
 
 if __name__ == "__main__":
