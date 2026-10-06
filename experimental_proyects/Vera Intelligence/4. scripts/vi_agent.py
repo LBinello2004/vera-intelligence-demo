@@ -875,8 +875,8 @@ def _build_extra_tools_section() -> str:
             "date_to, terminos_literales, campo_estructurado, valor_estructurado, desglosar_por, patron): CUANTIFICA un comportamiento de las conversaciones que NINGÚN "
             "campo del Data Map mide (ej. se ofrecen cuotas sin interés, el cliente pide un genérico, "
             "menciona una oferta de la competencia). Lee las conversaciones del segmento -todas si son "
-            "pocas, una muestra aleatoria si son muchas- y devuelve un RANGO verificado, nunca una cifra "
-            "puntual. Es la ÚNICA excepción al LÍMITE DURO de números fuera de SQL, y sólo con este "
+            "pocas, una muestra aleatoria si son muchas- y devuelve una ESTIMACIÓN con intervalo de muestreo "
+            "(aproximada: no incluye los errores del lector). Es la ÚNICA excepción al LÍMITE DURO de números fuera de SQL, y sólo con este "
             "formato.\n"
             "  - CUÁNDO: la pregunta pide cuántos / qué porcentaje de un comportamiento que ningún campo "
             "mide (confirmalo antes con el Data Map) y se puede definir como sí/no sobre una conversación. "
@@ -902,12 +902,16 @@ def _build_extra_tools_section() -> str:
             "search_conversations, sacá las palabras de los patrones y casos que devolvió. Pasá `criterio_si` y `criterio_no` "
             "(lectura con JEV, que cuesta) SÓLO si la conducta es semántica y no tiene palabras distintivas ('valida que el "
             "cliente entiende'), si la pregunta pide ordenar o comparar tiendas/meses (`desglosar_por`), o si las palabras "
-            "darían falsos positivos claros. Con criterios, los términos se ignoran.\n"
+            "darían falsos positivos claros. COMPARACIÓN (2026-10-06): si la ficha de lectura del plan trae `terminos_literales`, "
+            "pasalos JUNTO a los criterios: la herramienta lee con el lector y cuenta las palabras gratis sobre la misma muestra; "
+            "agrega palabras_pct_*, diferencia_con_palabras_puntos y metodos_coinciden. Si coinciden, decilo; si no, mostrá "
+            "AMBOS números (las palabras son un piso: no ven paráfrasis) sin elegir uno a ciegas. Sin desglose, ambos métodos "
+            "corren sobre la misma muestra; con `desglosar_por` sólo se lee.\n"
             "  - DESGLOSE: si la pregunta pide el resultado POR TIENDA, POR MES o POR SEMANA ('en qué tiendas', "
             "'cómo evolucionó', 'por período'), pasá `desglosar_por` ('tienda' | 'mes' | 'semana'): vuelve UNA fila por "
             "grupo (hasta 12: las tiendas más grandes o los períodos más recientes) con su rango, en una sola llamada. "
             "Presentalo como tabla con el rango de cada grupo. Un grupo es 'mayor' que otro SÓLO si sus rangos no se "
-            "superponen (con muestras de ~100 los rangos suelen superponerse: decilo, no armes un ranking). Con "
+            "superponen (con muestras de ~150 por grupo los rangos suelen superponerse: decilo, no armes un ranking). Con "
             "poblacion_filtrada < 30 o conversaciones_leidas < 60 no concluyas sobre ese grupo. Si hay una fila "
             "'no_leido', decí cuántas conversaciones de otros grupos no se leyeron. Aclará que "
             "son lecturas de una muestra por grupo. NO llames la herramienta una vez por tienda.\n"
@@ -926,12 +930,22 @@ def _build_extra_tools_section() -> str:
             "existe en el Data Map, el número sale de SQL, no de esta herramienta.\n"
             "  - CÓMO RESPONDER: usá las cifras del resultado TAL CUAL (pct_estimado, pct_minimo, pct_maximo, "
             "conversaciones_estimado, conversaciones_minimo, conversaciones_maximo, conversaciones_leidas, poblacion_filtrada), "
-            "respaldadas en vera-evidence como cualquier cifra de SQL. Presentá la estimación con su intervalo de muestreo al 95 % "
-            "('≈X % (entre A % y B %)'; decí que el intervalo es sólo por muestreo y no incluye los errores del lector), cuántas "
-            "conversaciones se leyeron de cuántas (modo), y que es una estimación por "
-            "lectura de conversaciones, distinta de los campos medidos del checklist. Decí en UNA línea qué "
-            "contaste y qué NO (según criterio_si y criterio_no) para que el usuario pueda juzgar la definición: "
-            "un criterio más estricto o más amplio cambia el resultado. Con modo="
+            "respaldadas en vera-evidence como cualquier cifra de SQL. FORMATO: un punto por cosa, cada uno con su nombre en "
+            "negrita y UNA frase que explique qué es, en lenguaje llano, así: (1) **Estimación:** ≈X % de las conversaciones "
+            "analizables (qué porcentaje es y sobre qué base). (2) **Margen por muestreo (95 %):** entre A % y B % -cuánto "
+            "podría variar el número solo por haber leído una muestra y no todas; si leyéramos otra muestra al azar, el valor "
+            "caería probablemente en ese rango. (3) **Lo que ese margen NO cubre:** que el lector se equivoque (marque de más o "
+            "se pierda casos) ni que otra definición del concepto dé otro número; el valor real puede alejarse varios puntos "
+            "del rango, más en conceptos amplios o de interpretación -no inventes cuántos. (4) **Conversaciones (extrapolación):** "
+            "≈N, entre N1 y N2, que es el porcentaje aplicado al total, no un conteo. (5) **Base leída:** n de M conversaciones, "
+            "muestra aleatoria (o todas, según modo). (6) **Qué se contó y qué no:** UNA línea según criterio_si y criterio_no. "
+            "(7) Si el resultado trae palabras_pct_*: **Comparación con palabras clave:** el porcentaje contando sólo esas palabras, "
+            "y si coinciden o no con la estimación. "
+            "Aclará que es una estimación por lectura de conversaciones, distinta de los campos medidos del checklist. Si el "
+            "concepto es AMPLIO ('deuda', 'quejas', 'problemas'), agregá que con una definición más estricta o más amplia el "
+            "porcentaje cambia y nombrá los campos del Data Map que miden algo cercano; su cifra sólo si ya la tenés por SQL "
+            "en esta respuesta. En el modo palabras clave, el punto (3) aclara además que cuenta que la palabra aparezca, no "
+            "quién la dice ni el sentido, y el (6) lista las palabras usadas. Con modo="
             "muestra_aleatoria nunca la presentes como el total exacto de la operación. Los 'ejemplos' son "
             "casos (tienda/fecha, sin citas ni nombres de personas). Si la herramienta falla, decí que no "
             "podés cuantificarlo; nunca lo estimes con search_conversations."
@@ -1374,7 +1388,8 @@ def extract_insight(
         store_name, employee_name, date_from, date_to: filtros opcionales (YYYY-MM-DD); sin período
             = todo el histórico.
         terminos_literales: opcional, SIN criterios: 3 a 10 palabras o raíces separadas por ';' -cuenta sin
-            modelo (gratis) y da una estimación aproximada con intervalo de muestreo. Con criterios se ignora.
+            modelo (gratis) y da una estimación aproximada con intervalo de muestreo. Junto con criterios, se cuentan sobre la
+            misma muestra para COMPARAR con la lectura (sin desglose).
         campo_estructurado, valor_estructurado: opcionales, SIEMPRE juntos -acota la población con un
             campo categórico de la conversación completa del Data Map (ej. sólo las bajas), para que el
             porcentaje sea sobre el denominador que pide la pregunta.

@@ -90,7 +90,10 @@ abandono, período). NUNCA definas acá un comportamiento que se cuantifica leye
 Vacío si no aplica.
 9. "advertencias": lista corta de riesgos concretos para ESTA pregunta (bases chicas, período parcial, \
 correlación vs causa, categorías que se pisan, cobertura de análisis). Máximo 5, sólo los que apliquen.
-10. "usar_busqueda": true si algo de lo pedido es cualitativo y no está en un campo; false si es numérico.
+10. "usar_busqueda": true SÓLO si algo de lo pedido es CUALITATIVO: qué dicen, cómo, por qué, ejemplos, patrones, \
+coaching. false si pide únicamente cuánto / qué porcentaje / ranking / comparación, AUNQUE ese número no esté en un campo \
+y se obtenga leyendo conversaciones ("cuantificable_por_lectura": true): contar por lectura NO necesita la búsqueda \
+semántica. Si pide el número Y lo cualitativo ("cuántas mencionan X y qué dicen"), true.
 12. "busqueda": null si usar_busqueda es false; si no, la BÚSQUEDA SEMÁNTICA ya redactada, para que la misma pregunta \
 dé siempre la misma búsqueda: {{"query": <la situación observable que se busca, tal como OCURRE en la conversación \
 (ej. "el cliente pregunta el precio, el vendedor lo informa y no ofrece una alternativa"), NUNCA una ausencia ni una \
@@ -104,7 +107,7 @@ abordan X"); lista vacía [] si apunta a UNA conducta puntual ("invitan a la enc
 "date_from": <YYYY-MM-DD sólo si el período es explícito, sino null>, "date_to": <ídem>}}.
 11. "falta_info": {{"critica": <true SÓLO si falta una pieza sin la cual cualquier respuesta sería un acierto por \
 azar>, "pregunta": <UNA repregunta corta al usuario, con 2-4 opciones concretas si se puede>, "motivo": <qué \
-falta>}}. Es crítica=true SÓLO en estos tres casos:
+falta>}}. Es crítica=true SÓLO en estos cuatro casos:
   (a) REFERENCIA SIN ANTECEDENTE: la pregunta alude a algo que no está en ella y que sólo el usuario sabe: \
 "el asesor", "esa tienda", "el gerente", "esa promoción", "el modelo", "el vendedor nuevo", "el otro", "eso", \
 "comparado con antes". Un nombre propio completo ("Parque Delta", "Ricardo Mendoza") NO entra acá: se busca en los \
@@ -116,10 +119,18 @@ enero con febrero", "¿mejoró?", "¿subió o bajó?", "cómo evolucionó") sin 
 trae un indicador obvio. Si nombra el indicador ("la tasa de cierre", "las ventas perdidas", "las conversaciones") o \
 nombra los dos objetos a comparar con nombre propio, NO es crítico.
   (c) INTERPRETACIONES DISTINTAS: hay dos lecturas que dan respuestas MUY diferentes y ninguna es la obvia.
+  (d) CONCEPTO AMPLIO A CUANTIFICAR LEYENDO: pide CUÁNTAS o QUÉ PORCENTAJE de un concepto AMPLIO y sin campo propio, \
+cuyo número cambia mucho según qué se cuente (medido: "hablan de deuda" dio 31 % contando sólo palabras de mora y 50 % \
+leyendo menciones implícitas): "deuda", "problemas", "quejas", "mala atención", "interés", "dudas". Aplica sólo si en \
+"metricas" hay una con "cuantificable_por_lectura": true y "campo": null, y la pregunta NO define qué cuenta. Escribí la \
+repregunta con 2 o 3 definiciones concretas del concepto (de la más estricta a la más amplia) y ofrecé que el usuario \
+ponga la suya (ej. "¿Qué cuento como deuda? (a) sólo saldos vencidos o en mora, (b) cualquier mención de plata \
+adeudada, incluidos acuerdos de pago, o decime vos la definición.").
 NUNCA es crítico (se responde con un valor por defecto sensato, declarado): un período faltante (todo el histórico, \
 declarado), un pedido de panorama general ("¿cómo está el negocio?", "dame un resumen de la semana", "¿cómo vienen los \
 vendedores?": se muestra cierre y volumen), un término con definición fija ("el mejor vendedor" = mayor tasa de cierre), \
-una métrica inexistente (se dice que no está) ni un tema cualitativo explícito.
+una métrica inexistente (se dice que no está), un tema cualitativo explícito ni una CONDUCTA CONCRETA ya nombrada en la \
+pregunta ("ofrecen cuotas sin interés", "invitan a la encuesta", "piden la cédula"): eso no es el caso (d).
   CONTEXTO: si una referencia de (a) o (b) tiene un antecedente CLARO y único en el CONTEXTO DE LA CONVERSACIÓN \
 ("esa tienda" y el turno anterior habla de una sola tienda), NO es crítica: resolvela y poné el nombre resuelto en \
 alcance.entidades para que el agente lo declare. Si el contexto trae varios candidatos posibles o ninguno, sí es crítica. \
@@ -157,6 +168,10 @@ comentarios entre empleados.
 campo>}} cuando la pregunta es sobre un subconjunto ("de las bajas", "de las ventas perdidas").
 - "nivel_de_ambiguedad": "baja" | "media" | "alta": qué tan discutible es la frontera del concepto. Si es "alta", \
 el agente le dirá al usuario qué definición se usó.
+- "palabras": lista de 5 a 10 palabras, raíces o variantes cortas (minúsculas, sin tildes) con las que suele DECIRSE \
+esa conducta en una conversación, incluyendo sinónimos y otras formas de decir lo mismo (una sola frase deja afuera \
+las variantes y subestima el número). Sirven para contar gratis las menciones y compararlas con la lectura. [] si la \
+conducta no tiene palabras distintivas porque es de interpretación ("valida que el cliente entiende", "hablan de deuda").
 
 Ejemplos de buenas fichas:
 1) Pedido: "cuántas veces se ofrecen cuotas sin interés".
@@ -165,6 +180,7 @@ Ejemplos de buenas fichas:
 cuotas sin interés con tarjeta', 'Con esta tarjeta tenés cuotas fijas sin interés')."
    criterio_no: "Cuotas con interés o recargo; el cliente pregunta si hay cuotas y el vendedor dice que no; \
 promociones bancarias o descuentos directos sin nombrar cuotas sin interés; mención genérica de 'medios de pago'."
+   palabras: ["cuotas sin interes", "sin interes", "cuotas sin recargo", "cuotas fijas", "sin recargo"].
    nivel_de_ambiguedad: "baja".
 2) Pedido: "cuántos clientes piden un genérico o algo más barato".
    pregunta: "¿El cliente solicita explícitamente una versión genérica, una segunda marca o una opción más \
@@ -172,6 +188,7 @@ económica?"
    criterio_si: "El cliente lo pide o lo pregunta (ej. '¿Tenés en genérico?', '¿Hay algo más barato que este?')."
    criterio_no: "Lo ofrece el vendedor por su cuenta; el cliente sólo pregunta el precio; pide sustitución por \
 falta de stock sin hablar de costo; comentarios entre empleados."
+   palabras: ["generico", "segunda marca", "mas barato", "mas economico", "algo mas barato"].
    nivel_de_ambiguedad: "media".
 3) Pedido: "en qué porcentaje de las bajas el cliente menciona una oferta de Claro o Movistar".
    pregunta: "¿El cliente menciona haber recibido o tener una oferta, precio o plan propuesto por Claro o \
@@ -182,6 +199,7 @@ ofrecen el doble de gigas por menos plata', 'Movistar me dejó la fibra a mitad 
 empresas sin una oferta o precio; menciones hechas sólo por el asesor; nombrar la empresa sin relación con una \
 oferta."
    poblacion: {{"campo": "i03_solicitud_o_tramite_principal", "valor": "cancelacion_retiro"}}.
+   palabras: [] (la palabra "claro" aparece como afirmación en casi todas las conversaciones: no sirve para contar).
    nivel_de_ambiguedad: "alta".
 
 Devolvé SÓLO un JSON: {{"fichas": [ ... ]}}. No ampliés ni reduzcas lo que pidió el usuario."""
@@ -309,6 +327,10 @@ def ground_lecturas(plan: dict, known_fields: set[str]) -> dict:
                 ficha["poblacion"] = None
         else:
             ficha["poblacion"] = None
+        # palabras: sólo textos cortos y razonables (5 a 10 como mucho); lo demás se descarta y la ficha sigue sin comparación.
+        raw_words = ficha.get("palabras")
+        ficha["palabras"] = ([w.strip() for w in raw_words if isinstance(w, str) and 3 <= len(w.strip()) <= 40][:10]
+                             if isinstance(raw_words, list) else [])
         valid.append(ficha)
     plan["lecturas"] = valid
     return plan
@@ -490,10 +512,14 @@ def render_plan(plan: dict, *, extraction_available: bool = False) -> str:
                 if ficha.get("nivel_de_ambiguedad") == "alta" else ""
             desg = _desglose_hint(plan)
             desg_txt = f", desglosar_por=«{desg}»" if desg else ""
+            words = [w for w in (ficha.get("palabras") or []) if isinstance(w, str) and w.strip()]
+            # Sin desglose se pasan también las palabras: la herramienta las cuenta gratis sobre la misma muestra y compara.
+            words_txt = (f", terminos_literales=«{'; '.join(words)}» (pasalos JUNTO a los criterios: se comparan ambos métodos)"
+                         if words and not desg else "")
             fichas.append(
                 "Ficha de lectura para extract_insight (usala TAL CUAL, no la reescribas): "
                 f"pregunta=«{ficha['pregunta']}», criterio_si=«{ficha.get('criterio_si', '')}», "
-                f"criterio_no=«{ficha.get('criterio_no', '')}»{pob_txt}{desg_txt}.{amb}")
+                f"criterio_no=«{ficha.get('criterio_no', '')}»{pob_txt}{desg_txt}{words_txt}.{amb}")
     sections.append(_section("7. FICHAS DE LECTURA", fichas))
 
     defs = plan.get("definiciones")

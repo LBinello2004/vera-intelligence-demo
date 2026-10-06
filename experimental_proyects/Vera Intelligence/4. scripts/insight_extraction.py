@@ -54,9 +54,9 @@ JEV_THRESHOLD = 0.5
 POSITIVE_VERIFY_MODEL = "gemini-3.1-flash-lite"  # US$0,25/1,50 por millón de tokens
 NEGATIVE_VERIFY_MODEL = "gemini-3.7-flash"       # US$0,75/3,75 por millón de tokens
 
-EXHAUSTIVE_MAX = 2000        # hasta acá se lee toda la población filtrada
-SAMPLE_SIZE = 2000           # por encima, muestra sistemática de este tamaño (2026-10-05: subido de 600; JEV lee ~46-68 conversaciones/s,
-                             # ~US$0,11 por 1.000 lecturas; con 2.000 el error de muestreo baja de ±5,5 a ±3,0 puntos)
+EXHAUSTIVE_MAX = 1000        # hasta acá se lee toda la población filtrada
+SAMPLE_SIZE = 1000           # por encima, muestra sistemática de este tamaño (2026-10-06: bajado de 2.000 por costo; JEV lee ~46-68 conversaciones/s y cuesta ~US$0,31 por 1.000
+                             # lecturas, medido con la factura de TypeSafe; con 1.000 el error de muestreo es ~±3 puntos, con 2.000 ~±2,2)
 READ_WORKERS = 32
 VERIFY_WORKERS = 16
 VERIFY_POSITIVES_MAX = 12    # positivos verificados con cita: sólo para tener ejemplos (ya no corrigen el número)
@@ -68,14 +68,14 @@ MEMO_TTL_SECONDS = 900       # misma consulta repetida (ej. el modelo la llama d
 MEMO_MAX = 32
 
 # Conteo de casos de un patrón (count_patterns, 2026-10-05). m = conversaciones más parecidas que lee JEV por patrón.
-# Medido: JEV lee ~46 conversaciones/s con 16 hilos y cuesta ~US$0,11 por 1.000 lecturas (Farma 24, 8.275 caracteres promedio).
+# Medido: JEV lee ~46 conversaciones/s con 16 hilos y cuesta ~US$0,31 por 1.000 lecturas (medido 2026-10-06 con la factura de TypeSafe: US$ 1,2 por 3.926 lecturas, ~12.000 caracteres promedio en Tigo).
 PATTERN_M_BASE = 1000        # lectura inicial por patrón
-PATTERN_M_MAX = 3000         # tope: sólo se amplía si el final de la lista sigue denso (el patrón es más común que lo leído)
+PATTERN_M_MAX = 2000         # tope (2026-10-06: bajado de 3.000 por costo): sólo se amplía si el final de la lista sigue denso (el patrón es más común que lo leído)
 PATTERN_DENSE = 0.30         # fracción de marcadas en las últimas PATTERN_WINDOW leídas a partir de la cual el patrón sigue "denso"
 PATTERN_WINDOW = 100
 PATTERN_VERIFY_MAX = 30      # positivos de JEV que Gemini (modelo barato) verifica con cita por patrón
 PATTERN_MAX = 3              # patrones por llamada (comparten el mismo ordenamiento por similitud, que es lo lento)
-PATTERN_TRAMOS = ((1, 100), (101, 300), (301, 1000), (1001, 3000))
+PATTERN_TRAMOS = ((1, 100), (101, 300), (301, 1000), (1001, 2000))
 TEXT_FETCH_BATCH = 400
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -222,6 +222,12 @@ def coverage_manifest(pop_cells: dict, sample_cells: list) -> dict[str, Any]:
 # de grupos. Supuesto declarado: el lector se comporta parecido entre grupos.
 # --------------------------------------------------------------------------------------------------
 DESGLOSES = ("tienda", "mes", "semana")
+WORDS_AGREE_POINTS = 5   # diferencia máxima (puntos) entre lectura y palabras para decir que coinciden
+WORDS_COMPARE_NOTE = (
+    "COMPARACIÓN CON PALABRAS CLAVE (mismas conversaciones leídas, sin costo): palabras_pct_* es el porcentaje contando sólo "
+    "las palabras de palabras_usadas (no ve paráfrasis ni quién habla); el principal es pct_estimado (la lectura). Si "
+    "metodos_coinciden='si', decí que ambos métodos coinciden. Si 'no', mostrá AMBOS números y explicá que las palabras "
+    "son un piso aproximado y la lectura entiende paráfrasis, sin elegir uno a ciegas. ")
 # Se agrega a la `interpretacion` de cada resultado: el modelo la lee cada vez, a diferencia de una regla del prompt (Tigo a32,
 # 2026-10-05: respondió "de las conversaciones con clientes de hogar" siendo la población todas las conversaciones).
 DENOMINATOR_NOTE = (
@@ -231,7 +237,7 @@ DENOMINATOR_NOTE = (
     "sólo aplica a un tipo de conversación, decí que el % incluye las que no aplican."
 )
 GROUP_MAX = 12            # grupos que se leen (las tiendas más grandes / los períodos más recientes)
-GROUP_READ_BUDGET = 3000  # lecturas totales objetivo entre todos los grupos (antes 1.200: ~100 por grupo, ±10 puntos)
+GROUP_READ_BUDGET = 1800  # lecturas totales entre todos los grupos (2026-10-06: ~150 por tienda con 12 grupos; antes 3.000 por costo)
 GROUP_MIN_SAMPLE, GROUP_MAX_SAMPLE = 60, 400
 
 
@@ -570,12 +576,13 @@ class InsightExtractionRepository:
             if value and not _DATE_RE.match(value):
                 raise ValueError(f"{label} debe tener formato YYYY-MM-DD.")
         literal = [t.strip() for t in re.split(r"[;|\n]", terminos_literales or "") if t.strip()]
-        # El modo literal (regex, sin modelo) es sólo para frases sin ambigüedad: si se pasaron
-        # criterios, se quiere una lectura de contexto y los términos se ignoran -un regex sobre
-        # palabras sueltas ("genérico", "claro") tiene falsos positivos y no puede presentarse como
-        # piso verificado (experimento jev_extraccion: precisión 0,19-0,59 en esas preguntas).
+        # Con criterios se quiere una lectura de contexto: las palabras no la reemplazan (un regex sobre palabras sueltas como
+        # "genérico" o "claro" tiene falsos positivos; experimento jev_extraccion: precisión 0,19-0,59), pero se cuentan sobre
+        # la MISMA muestra, sin costo, para comparar ambos métodos (2026-10-06: contra el SQL, las palabras dieron 10 % y la
+        # lectura 17 % en "cuotas sin interés", según cuántas variantes se listaran).
+        words_extra: list[str] = []
         if criterio_si.strip() and criterio_no.strip():
-            literal = []
+            words_extra, literal = literal, []
         if not literal and not (criterio_si.strip() and criterio_no.strip()):
             raise ValueError("Falta `criterio_si` y `criterio_no` (qué cuenta y qué no), o `terminos_literales`.")
         spec = {"pregunta": pregunta, "criterio_si": criterio_si.strip(), "criterio_no": criterio_no.strip()}
@@ -662,6 +669,8 @@ class InsightExtractionRepository:
                 gs["grupo"] = key
                 groups.append(gs)
             return self._pack_grouped(groups, groups_info, desglose, examples, pregunta, diagnostico)
+        if words_extra:
+            self._compare_words(stats, words_extra, total, rows)
         self._add_coverage(stats, rows, pop_cells)
         return self._pack(stats, examples, pregunta, diagnostico=diagnostico)
 
@@ -715,14 +724,33 @@ class InsightExtractionRepository:
         sample = [(str(it[2]["fecha"])[:7], it[2]["tienda"]) for it in rows]
         stats.update(coverage_manifest(pop_cells, sample))
 
+    @staticmethod
+    def _word_hits(terms: list[str], rows) -> list:
+        """Conversaciones de `rows` que contienen alguna palabra o raíz (sin tildes ni mayúsculas)."""
+        normalized = [_norm(t) for t in terms if _norm(t)]
+        if not normalized:
+            return []
+        rx = re.compile("|".join(r"(?<!\w)" + re.escape(t) for t in normalized))
+        return [it for it in rows if rx.search(_norm(it[1]))]
+
+    def _compare_words(self, stats: dict, terms: list[str], total: int, rows) -> None:
+        """Agrega al resultado de la LECTURA el porcentaje por palabras clave sobre la misma muestra (gratis) y si ambos métodos
+        coinciden (diferencia <= WORDS_AGREE_POINTS puntos). Las palabras son un piso aproximado: no ven paráfrasis."""
+        hits = self._word_hits(terms, rows)
+        w = compute_range(poblacion=total, leidas=len(rows), positivos_jev=len(hits), confirmadas=len(hits))
+        stats["palabras_pct_estimado"] = w["pct_estimado"]
+        stats["palabras_pct_minimo"] = w["pct_minimo"]
+        stats["palabras_pct_maximo"] = w["pct_maximo"]
+        stats["diferencia_con_palabras_puntos"] = round(abs(stats["pct_estimado"] - w["pct_estimado"]), 1)
+        stats["metodos_coinciden"] = "si" if stats["diferencia_con_palabras_puntos"] <= WORDS_AGREE_POINTS else "no"
+        stats["palabras_usadas"] = "; ".join(terms)
+
     def _literal(self, terms: list[str], total: int, rows, pregunta: str, pop_cells=None) -> str:
         """Modo PALABRAS CLAVE (2026-10-05): sin modelo y sin enviar nada a terceros. Cuenta las conversaciones de la muestra que
         contienen alguna de las palabras (sin distinguir tildes ni mayúsculas; cada término puede ser una raíz: 'calific' encuentra
         'calificar', 'calificación'). Da estimación + intervalo de muestreo como el modo lector, pero es una aproximación más tosca:
         cuenta que la palabra aparezca, no quién la dice ni en qué sentido, y no ve las paráfrasis."""
-        normalized = [_norm(t) for t in terms if _norm(t)]
-        rx = re.compile("|".join(r"(?<!\w)" + re.escape(t) for t in normalized))
-        hits = [it for it in rows if rx.search(_norm(it[1]))]
+        hits = self._word_hits(terms, rows)
         leidas = len(rows)
         base = compute_range(poblacion=total, leidas=leidas, positivos_jev=len(hits), confirmadas=len(hits))
         examples = [{"tienda": it[2]["tienda"], "fecha": it[2]["fecha"], "situacion": "contiene alguna de las palabras buscadas"}
@@ -736,6 +764,8 @@ class InsightExtractionRepository:
         columns = ["modo", "poblacion_filtrada", "conversaciones_leidas", "confirmadas_con_evidencia",
                    "pct_estimado", "pct_minimo", "pct_maximo", "conversaciones_estimado", "conversaciones_minimo",
                    "conversaciones_maximo"]
+        columns += [c for c in ("palabras_pct_estimado", "palabras_pct_minimo", "palabras_pct_maximo",
+                                "diferencia_con_palabras_puntos", "metodos_coinciden", "palabras_usadas") if c in stats]
         columns += [c for c in ("meses_en_poblacion", "meses_en_muestra", "tiendas_en_poblacion",
                                 "tiendas_en_muestra", "distancia_distribucion_pct", "alerta_cobertura")
                     if c in stats]
@@ -755,6 +785,7 @@ class InsightExtractionRepository:
                  "el intervalo al 95 % del ERROR DE MUESTREO solamente: no incluye los errores del lector (puede marcar de más o "
                  "perder casos), así que es una aproximación. confirmadas_con_evidencia = positivos verificados con cita textual "
                  "(sólo ejemplos, no corrigen el número). Presentalo como '≈X % (entre A % y B % por muestreo)'. ")
+                + (WORDS_COMPARE_NOTE if "metodos_coinciden" in stats else "")
                 + "Si modo=muestra_aleatoria, los porcentajes son de la muestra con su margen y las "
                 "conversaciones son una extrapolación. Declará siempre el modo, cuántas se leyeron y el intervalo. "
                 "La muestra se reparte proporcionalmente por mes y tienda; las columnas *_en_poblacion / *_en_muestra "

@@ -77,6 +77,31 @@ class PlannerTests(unittest.TestCase):
                       "8. DEFINICIONES", "9. CUIDADOS", "Denominador", "Formato pedido", "Abrir el resultado por"):
             self.assertIn(marca, text)
 
+    def test_el_planificador_repregunta_conceptos_amplios_pero_no_conductas_concretas(self):
+        # 2026-10-06: "¿Cuántas conversaciones hablan de deuda?" dio 31 % contando palabras de mora y 50 % leyendo menciones implícitas.
+        prompt = qp._PLANNER_PROMPT
+        self.assertIn("(d) CONCEPTO AMPLIO A CUANTIFICAR LEYENDO", prompt)
+        self.assertIn("cuatro casos", prompt)
+        self.assertIn("CONDUCTA CONCRETA ya nombrada", prompt)
+
+    def test_la_ficha_lleva_palabras_validas_y_se_pasan_junto_a_los_criterios(self):
+        plan = {"lecturas": [{"pregunta": "¿El vendedor ofrece cuotas sin interés al cliente?", "criterio_si": "Menciona cuotas sin interés.",
+                              "criterio_no": "Cuotas con interés o recargo; el cliente pregunta y el vendedor dice que no.",
+                              "palabras": ["cuotas sin interes", " sin recargo ", "x", 5, "a" * 60]}]}
+        qp.ground_lecturas(plan, set())
+        self.assertEqual(plan["lecturas"][0]["palabras"], ["cuotas sin interes", "sin recargo"])
+        text = qp.render_plan({**plan, "metricas": [{"pedida": "cuotas", "campo": None, "cuantificable_por_lectura": True}]},
+                              extraction_available=True)
+        self.assertIn("terminos_literales=«cuotas sin interes; sin recargo»", text)
+        plan["lecturas"][0]["palabras"] = "no es una lista"
+        qp.ground_lecturas(plan, set())
+        self.assertEqual(plan["lecturas"][0]["palabras"], [])
+
+    def test_contar_por_lectura_no_necesita_busqueda_semantica(self):
+        # 2026-10-06: "¿en qué porcentaje mencionan cuotas sin interés?" disparaba búsqueda y conteo de patrones (237 s, ~US$ 0,9)
+        # porque el planificador marcaba usar_busqueda=true para todo lo que no era un campo.
+        self.assertIn("contar por lectura NO necesita la búsqueda", qp._PLANNER_PROMPT)
+
     def test_repregunta_solo_si_es_critica_y_tiene_formato(self):
         ok = {"falta_info": {"critica": True, "pregunta": "¿A qué asesor te referís? Decime el nombre.", "motivo": "x"}}
         self.assertIsNotNone(qp._valid_clarification(ok))

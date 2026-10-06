@@ -510,6 +510,42 @@ class InsightExtractionToolTests(unittest.TestCase):
             self.assertFalse(ie.extraction_enabled(False, "farma24"))
 
 
+class WordsComparisonTests(unittest.TestCase):
+    """Criterios + palabras (2026-10-06): se lee con el lector y se cuentan las palabras gratis sobre la misma muestra."""
+
+    def _rows(self):
+        # 10 conversaciones: 3 dicen "cuotas sin interés"; 2 lo dicen con otras palabras ("sin recargo"); 5 no lo dicen
+        texts = (["tenés cuotas sin interés hoy"] * 3) + (["son cuotas sin recargo con esa tarjeta"] * 2) + (["nada de eso"] * 5)
+        return [(f"r{i}", t, {"tienda": "T", "fecha": "x"}) for i, t in enumerate(texts)]
+
+    def _run(self, terms):
+        rows = self._rows()
+        reads = {r[1]: (0.9 if "cuotas" in r[1] else 0.1) for r in rows}
+        repo = _repo(10, rows, lambda text: reads[text], lambda text: {"respuesta": False, "evidencia_ok": True, "resumen": ""})
+        out = json.loads(repo.extract("¿Mencionan cuotas sin interés?", "si", "no", terminos_literales=terms))
+        return out, dict(zip(out["columns"], out["rows"][0]))
+
+    def test_las_palabras_acompanan_a_la_lectura_y_se_comparan(self):
+        out, row = self._run("cuotas sin interes")        # sin la variante "sin recargo": subestima
+        self.assertEqual(out["tipo_resultado"], "extraccion_con_lector")
+        self.assertEqual(row["pct_estimado"], 50.0)         # el lector marcó 5 de 10
+        self.assertEqual(row["palabras_pct_estimado"], 30.0)
+        self.assertEqual(row["diferencia_con_palabras_puntos"], 20.0)
+        self.assertEqual(row["metodos_coinciden"], "no")
+        self.assertEqual(row["palabras_usadas"], "cuotas sin interes")
+        self.assertIn("COMPARACIÓN CON PALABRAS CLAVE", out["interpretacion"])
+
+    def test_con_las_variantes_completas_coinciden(self):
+        _, row = self._run("cuotas sin interes; sin recargo")
+        self.assertEqual(row["palabras_pct_estimado"], 50.0)
+        self.assertEqual(row["metodos_coinciden"], "si")
+
+    def test_sin_palabras_no_hay_columnas_de_comparacion(self):
+        out, _ = self._run("")
+        self.assertNotIn("metodos_coinciden", out["columns"])
+        self.assertNotIn("COMPARACIÓN CON PALABRAS CLAVE", out["interpretacion"])
+
+
 class JevReadLogTests(unittest.TestCase):
     """Registro local del consumo de JEV (2026-10-06) y corte inmediato ante 401/402."""
 

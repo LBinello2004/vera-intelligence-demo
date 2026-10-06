@@ -98,7 +98,7 @@ class CountPatternsTests(unittest.TestCase):
         self.assertEqual(by_tramo["1-100"]["marcadas_por_el_lector"], 40)
         self.assertEqual(by_tramo["101-300"]["marcadas_por_el_lector"], 0)
         self.assertEqual(by_tramo["301-1000"]["conversaciones_leidas"], 700)
-        self.assertNotIn("1001-3000", by_tramo)
+        self.assertNotIn("1001-2000", by_tramo)
 
     def test_dense_pattern_extends_the_reading_and_flags_the_cap(self) -> None:
         payload, rows = self.run_count(make_repo(total=1200), [PATRON_DENSO])
@@ -106,7 +106,7 @@ class CountPatternsTests(unittest.TestCase):
         self.assertEqual(total["conversaciones_leidas"], 1200)           # amplió más allá de 1.000
         self.assertEqual(total["marcadas_por_el_lector"], 600)
         self.assertEqual(total["tope_alcanzado"], "si")                   # el final seguía denso y hay más población
-        self.assertEqual(next(r for r in rows if r["tramo"] == "1001-3000")["conversaciones_leidas"], 200)
+        self.assertEqual(next(r for r in rows if r["tramo"] == "1001-2000")["conversaciones_leidas"], 200)
 
     def test_a_dense_pattern_in_an_exhausted_population_is_not_a_cap(self) -> None:
         _, rows = self.run_count(make_repo(total=1200, exhausted=True), [PATRON_DENSO])
