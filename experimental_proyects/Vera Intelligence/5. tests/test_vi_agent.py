@@ -48,18 +48,54 @@ class FakeChat:
         return response if isinstance(response, FakeResponse) else FakeResponse(response)
 
 
+class AlcanceSqlYBusquedaTests(unittest.TestCase):
+    """Alcance 2026-10-06: Vera Intelligence usa sólo SQL y búsqueda vectorial; la lectura de conversaciones con JEV se descartó."""
+
+    def tearDown(self) -> None:
+        vi_agent.configure_client("mens_fashion_alto")
+
+    def test_no_hay_herramientas_de_lectura_aunque_se_pida_la_extraccion(self) -> None:
+        with patch.dict(os.environ, {"VI_INSIGHT_EXTRACTION": "all", "JEV_API": "clave-de-prueba"}):
+            vi_agent.configure_client("mens_fashion_alto")
+            names = {getattr(t, "__name__", None) for t in vi_agent._build_tools_list()}
+            section = vi_agent._build_extra_tools_section()
+        self.assertTrue({"run_readonly_sql", "compute_stats"} <= names)
+        for viejo in ("extract_insight", "count_pattern_cases"):
+            self.assertNotIn(viejo, names)
+            self.assertNotIn(viejo, section)
+        for texto in ("JEV", "terminos_literales", "desglosar_por", "palabras clave"):
+            self.assertNotIn(texto, section)
+        self.assertFalse(hasattr(vi_agent, "extract_insight"))
+        self.assertFalse(hasattr(vi_agent, "_INSIGHT_EXTRACTION_REPOSITORY"))
+
+    def test_el_prompt_pide_decir_que_un_numero_sin_campo_no_esta_medido(self) -> None:
+        texto = vi_agent.SYSTEM_INSTRUCTION_TEMPLATE
+        self.assertIn("NÚMEROS QUE NO ESTÁN MEDIDOS", texto)
+        self.assertIn("eso no está medido", texto)
+        self.assertIn("checklist de análisis", texto)
+        for palabra in ("suele", "principalmente", "la mayoría"):
+            self.assertIn(palabra, texto)  # están en la lista de lo PROHIBIDO para describir patrones
+
+    def test_la_busqueda_no_ofrece_medir_la_frecuencia_de_un_patron(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            vi_agent.configure_client("mens_fashion_alto")
+            section = vi_agent._build_extra_tools_section()
+        self.assertNotIn("qué tan frecuente es este patrón", section)
+        self.assertIn("palabras de frecuencia", section)
+
+
 class ViAgentTests(unittest.TestCase):
     def test_mvp_exposes_no_unrestricted_langfuse_tools(self) -> None:
         # TOOL_FUNCTIONS es la tabla de despacho completa del loop manual -run_readonly_sql y
         # get_business_rules siempre, search_conversations agregada 2026-09-10 (ver
-        # "6. busqueda_vectorial/README.md"), extract_insight 2026-10-02 (apagada por defecto, ver
-        # InsightExtractionToolTests) y compute_stats 2026-10-05 (matemática pura, siempre disponible). Ninguna se anuncia al modelo salvo que
+        # "6. busqueda_vectorial/README.md") y compute_stats 2026-10-05 (matemática pura, siempre disponible; la lectura de conversaciones
+        # con JEV, extract_insight y count_pattern_cases, se descartó el 2026-10-06). Ninguna se anuncia al modelo salvo que
         # _build_tools_list() la incluya -eso sí depende de CLIENT_CONFIG por cliente, cubierto
         # abajo por VectorSearchToolExposureTests. RAG (file_search) nunca pasa por esta tabla:
         # es un tool nativo server-side de Gemini, no una función Python del loop manual.
         self.assertEqual(
             set(vi_agent.TOOL_FUNCTIONS),
-            {"get_business_rules", "run_readonly_sql", "search_conversations", "extract_insight", "compute_stats", "count_pattern_cases"},
+            {"get_business_rules", "run_readonly_sql", "search_conversations", "compute_stats"},
         )
         # El template en sí no hardcodea nombres de tool -se arman dinámicamente en
         # _build_extra_tools_section() según lo que declare config.yaml del cliente activo.

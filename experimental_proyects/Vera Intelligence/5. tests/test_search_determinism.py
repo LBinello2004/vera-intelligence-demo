@@ -202,49 +202,10 @@ class PlanCacheTests(CacheEnabled):
         self.assertEqual(len(llamadas), 3)
 
 
-class PatternCardTests(CacheEnabled):
-    """Redactor de fichas de patrón y guarda de las citas que respaldan cada patrón (simulados; sin API)."""
-    FICHA = {"pregunta": "¿El vendedor informa el precio y no ofrece una alternativa?",
-             "criterio_si": "El vendedor da el precio y no propone otra opción (paráfrasis).",
-             "criterio_no": "Ofrece otra opción; el cliente no consulta el precio; comentarios entre empleados.",
-             "nivel_de_ambiguedad": "media"}
+class PatronesVerificadosTests(CacheEnabled):
+    """Verificación mecánica de los patrones que devuelve la búsqueda (sin API)."""
 
-    def _gen(self, llamadas, payload=None, falla=False):
-        def gen(**kw):
-            llamadas.append(kw["contents"])
-            if falla:
-                raise RuntimeError("boom")
-            return SimpleNamespace(text=json.dumps(payload if payload is not None else {"ficha": self.FICHA}),
-                                   usage_metadata=None)
-        return gen
-
-    def test_arma_la_ficha_con_las_citas_como_contexto_interno(self):
-        llamadas = []
-        ficha = qp.design_pattern_card("informa el precio y no ofrece alternativa", ["el vendedor dijo el precio y nada más"],
-                                       client=None, model="m", generate=self._gen(llamadas))
-        self.assertEqual(ficha["pregunta"], self.FICHA["pregunta"])
-        prompt = llamadas[0]
-        self.assertIn("informa el precio y no ofrece alternativa", prompt)
-        self.assertIn("el vendedor dijo el precio y nada más", prompt)
-        self.assertIn("NO los copies", prompt)  # las citas no deben salir en la ficha
-
-    def test_ficha_invalida_o_fallo_devuelven_none(self):
-        corta = dict(self.FICHA, criterio_no="no")
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], {"ficha": corta})))
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], {"ficha": "texto"})))
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], falla=True)))
-
-    def test_la_misma_entrada_da_la_misma_ficha_sin_volver_a_llamar(self):
-        llamadas = []
-        for _ in range(2):
-            qp.design_pattern_card("patrón estable de prueba largo", ["cita uno"], client=None, model="m",
-                                   generate=self._gen(llamadas))
-        self.assertEqual(len(llamadas), 1)
-
-    def test_los_patrones_verificados_guardan_sus_citas(self):
+    def test_un_patron_con_dos_citas_reales_de_vendedores_distintos_se_conserva(self):
         resultados = [
             {"conversation_id": "c1", "vendedor": "Ana", "contexto_conversacion": "dijo el precio sin ofrecer ninguna otra opcion al cliente"},
             {"conversation_id": "c2", "vendedor": "Luis", "contexto_conversacion": "informo cuanto cuesta y no propuso alternativas baratas"},
@@ -252,80 +213,17 @@ class PatternCardTests(CacheEnabled):
         raw = [{"patron": "informa el precio y no ofrece alternativas", "evidencia_1": "dijo el precio sin ofrecer ninguna otra opcion",
                 "evidencia_2": "informo cuanto cuesta y no propuso alternativas"}]
         self.assertEqual(vs._verify_patrones(raw, resultados), ["informa el precio y no ofrece alternativas"])
-        citas = vs.recall_pattern_evidence("informa el precio y no ofrece alternativas")
-        self.assertEqual(len(citas), 2)
-        self.assertIn("dijo el precio sin ofrecer ninguna otra opcion", citas)
-        self.assertEqual(vs.recall_pattern_evidence("un patrón que nunca se vio"), [])
 
-    def test_un_patron_no_verificado_no_guarda_citas(self):
+    def test_un_patron_con_citas_inexistentes_se_descarta(self):
         resultados = [{"conversation_id": "c1", "vendedor": "Ana", "contexto_conversacion": "texto distinto"}]
         raw = [{"patron": "patrón inventado sin respaldo real", "evidencia_1": "cita que no existe en ningún texto",
                 "evidencia_2": "otra cita que tampoco existe en ningún lado"}]
         self.assertEqual(vs._verify_patrones(raw, resultados), [])
-        self.assertEqual(vs.recall_pattern_evidence("patrón inventado sin respaldo real"), [])
 
-
-class PatternCardTests(CacheEnabled):
-    """Redactor de fichas de patrón y guarda de las citas que respaldan cada patrón (simulados; sin API)."""
-    FICHA = {"pregunta": "¿El vendedor informa el precio y no ofrece una alternativa?",
-             "criterio_si": "El vendedor da el precio y no propone otra opción (paráfrasis).",
-             "criterio_no": "Ofrece otra opción; el cliente no consulta el precio; comentarios entre empleados.",
-             "nivel_de_ambiguedad": "media"}
-
-    def _gen(self, llamadas, payload=None, falla=False):
-        def gen(**kw):
-            llamadas.append(kw["contents"])
-            if falla:
-                raise RuntimeError("boom")
-            return SimpleNamespace(text=json.dumps(payload if payload is not None else {"ficha": self.FICHA}),
-                                   usage_metadata=None)
-        return gen
-
-    def test_arma_la_ficha_con_las_citas_como_contexto_interno(self):
-        llamadas = []
-        ficha = qp.design_pattern_card("informa el precio y no ofrece alternativa", ["el vendedor dijo el precio y nada más"],
-                                       client=None, model="m", generate=self._gen(llamadas))
-        self.assertEqual(ficha["pregunta"], self.FICHA["pregunta"])
-        prompt = llamadas[0]
-        self.assertIn("informa el precio y no ofrece alternativa", prompt)
-        self.assertIn("el vendedor dijo el precio y nada más", prompt)
-        self.assertIn("NO los copies", prompt)  # las citas no deben salir en la ficha
-
-    def test_ficha_invalida_o_fallo_devuelven_none(self):
-        corta = dict(self.FICHA, criterio_no="no")
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], {"ficha": corta})))
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], {"ficha": "texto"})))
-        self.assertIsNone(qp.design_pattern_card("un patrón cualquiera largo", [], client=None, model="m",
-                                                 generate=self._gen([], falla=True)))
-
-    def test_la_misma_entrada_da_la_misma_ficha_sin_volver_a_llamar(self):
-        llamadas = []
-        for _ in range(2):
-            qp.design_pattern_card("patrón estable de prueba largo", ["cita uno"], client=None, model="m",
-                                   generate=self._gen(llamadas))
-        self.assertEqual(len(llamadas), 1)
-
-    def test_los_patrones_verificados_guardan_sus_citas(self):
-        resultados = [
-            {"conversation_id": "c1", "vendedor": "Ana", "contexto_conversacion": "dijo el precio sin ofrecer ninguna otra opcion al cliente"},
-            {"conversation_id": "c2", "vendedor": "Luis", "contexto_conversacion": "informo cuanto cuesta y no propuso alternativas baratas"},
-        ]
-        raw = [{"patron": "informa el precio y no ofrece alternativas", "evidencia_1": "dijo el precio sin ofrecer ninguna otra opcion",
-                "evidencia_2": "informo cuanto cuesta y no propuso alternativas"}]
-        self.assertEqual(vs._verify_patrones(raw, resultados), ["informa el precio y no ofrece alternativas"])
-        citas = vs.recall_pattern_evidence("informa el precio y no ofrece alternativas")
-        self.assertEqual(len(citas), 2)
-        self.assertIn("dijo el precio sin ofrecer ninguna otra opcion", citas)
-        self.assertEqual(vs.recall_pattern_evidence("un patrón que nunca se vio"), [])
-
-    def test_un_patron_no_verificado_no_guarda_citas(self):
-        resultados = [{"conversation_id": "c1", "vendedor": "Ana", "contexto_conversacion": "texto distinto"}]
-        raw = [{"patron": "patrón inventado sin respaldo real", "evidencia_1": "cita que no existe en ningún texto",
-                "evidencia_2": "otra cita que tampoco existe en ningún lado"}]
-        self.assertEqual(vs._verify_patrones(raw, resultados), [])
-        self.assertEqual(vs.recall_pattern_evidence("patrón inventado sin respaldo real"), [])
+    def test_ya_no_se_guardan_citas_para_medir_frecuencias(self):
+        # 2026-10-06: se descartó el puente patrón -> número (lectura con JEV).
+        self.assertFalse(hasattr(vs, "recall_pattern_evidence"))
+        self.assertFalse(hasattr(vs.VectorSearchRepository, "rank_conversations"))
 
 
 class SynthesisRetryTests(CacheEnabled):

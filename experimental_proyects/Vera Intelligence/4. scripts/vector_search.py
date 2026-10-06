@@ -464,9 +464,6 @@ def _clean_extra_queries(raw: object, exclude: list[str]) -> list[str]:
 # mejor chunk.
 _CANDIDATE_MULTIPLIER = 4
 _MAX_CANDIDATES = 60
-# Modo ranking (conteo de casos de un patrón): fragmentos pedidos por conversación y tope de filas.
-_RANKING_CHUNKS_PER_CONVERSATION = 3
-_RANKING_MAX_CHUNKS = 12000
 
 # Modo comparación (`comparar_con_mejores`): cuántos "mejores" del criterio, con cuánta base evaluada
 # mínima (Sí+No) para no elegir a alguien por 2-3 conversaciones sueltas, y cuántas conversaciones
@@ -1684,18 +1681,6 @@ def _apply_literal_term_boost(resultados: list[dict], termino_literal: str) -> l
 _PATRONES_MAX = 5
 
 
-def _pattern_evidence_key(patron: str) -> str:
-    return sd.stable_hash("pattern_evidence", _normalize_for_match(patron))
-
-
-def recall_pattern_evidence(patron: str) -> list[str]:
-    """Citas YA verificadas que respaldan un patrón que devolvió `search_conversations` (vacío si no hay caché o no se
-    conoce). Sólo alimenta, internamente, la redacción de la ficha con la que `extract_insight(patron=...)` cuantifica ese
-    patrón; nunca se muestra al usuario."""
-    valor = sd.cache_get("pattern_evidence", _pattern_evidence_key(patron))
-    return [str(c) for c in valor] if isinstance(valor, list) else []
-
-
 def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
     """Verificación mecánica de "patrones" (2026-09-22): un patrón afirma una REPETICIÓN, así que
     exige dos citas reales en DOS conversaciones DISTINTAS, no sólo una cita cualquiera. Sin esto,
@@ -1739,10 +1724,6 @@ def _verify_patrones(raw_patrones: object, resultados: list[dict]) -> list[str]:
             if vendedor_1 and vendedor_1 == vendedor_2:
                 continue
         patrones_verificados.append(patron)
-        # Puente patrón -> número (2026-10-02): se guardan las dos citas verificadas para poder redactar después la ficha que
-        # mide qué tan frecuente es este patrón (ver question_planner.design_pattern_card).
-        sd.cache_put("pattern_evidence", _pattern_evidence_key(patron),
-                     [str(item.get("evidencia_1") or ""), str(item.get("evidencia_2") or "")])
     return patrones_verificados[:_PATRONES_MAX]
 
 
@@ -1829,7 +1810,6 @@ class VectorSearchRepository:
         product_insights_source: "SourceConfig | None" = None,
         general_insights_source: "SourceConfig | None" = None,
         use_secondary_connection: bool = False,
-        ranking_only: bool = False,
         ephemeral_connection: bool = False,
     ) -> tuple[list[dict], int, float, int]:
         """Recuperación de UN grupo de conversaciones (SQL vectorial + deduplicación por
@@ -2000,31 +1980,16 @@ class VectorSearchRepository:
         # evalúa por cada fila candidata ANTES del ORDER BY ... LIMIT, o sea decenas de miles de
         # transcripciones extraídas para quedarse con `candidate_limit` (<= 40). Ahora la consulta
         # interior sólo ordena por distancia y recorta; la transcripción se une recién para esas filas.
-        if ranking_only:
-            # Modo ranking (2026-10-05, conteo de casos de un patrón): sólo ORDENA conversaciones por similitud con los MISMOS
-            # filtros de tenant/seguridad; no trae transcripciones (se piden aparte, sólo de las que se vayan a leer).
-            sql = (
-                "SELECT top.recording_id, top.chunk_idx, top.store_name, top.employee_full_name, "
-                "top.started_at, NULL AS transcript, top.conversation_id, "
-                "top.resumen_ejecutivo_conversacion, top.distancia\n"
-                "FROM (\n" + sql + ") top\n"
-                "ORDER BY top.distancia, top.recording_id, top.chunk_idx\n"
-            )
-        else:
-            sql = (
-                "SELECT top.recording_id, top.chunk_idx, top.store_name, top.employee_full_name, "
-                "top.started_at, cr.data->>'transcribedAudio' AS transcript, top.conversation_id, "
-                "top.resumen_ejecutivo_conversacion, top.distancia\n"
-                "FROM (\n" + sql + ") top\n"
-                "JOIN raw_v2.conversations_raw cr ON cr.recording_id = top.recording_id\n"
-                "ORDER BY top.distancia, top.recording_id, top.chunk_idx\n"
-            )
+        sql = (
+            "SELECT top.recording_id, top.chunk_idx, top.store_name, top.employee_full_name, "
+            "top.started_at, cr.data->>'transcribedAudio' AS transcript, top.conversation_id, "
+            "top.resumen_ejecutivo_conversacion, top.distancia\n"
+            "FROM (\n" + sql + ") top\n"
+            "JOIN raw_v2.conversations_raw cr ON cr.recording_id = top.recording_id\n"
+            "ORDER BY top.distancia, top.recording_id, top.chunk_idx\n"
+        )
 
-        if ranking_only:
-            # Una conversación puede tener varios fragmentos cerca: se piden más filas que conversaciones y se deduplica abajo.
-            candidate_limit = min(top_k * _RANKING_CHUNKS_PER_CONVERSATION, _RANKING_MAX_CHUNKS)
-        else:
-            candidate_limit = min(top_k * _CANDIDATE_MULTIPLIER, _MAX_CANDIDATES)
+        candidate_limit = min(top_k * _CANDIDATE_MULTIPLIER, _MAX_CANDIDATES)
         params: list[object] = [vector_literal]  # distancia (SELECT)
         if self._descriptivos_source is not None:
             params.append(self.client.tenant)  # di (JOIN)
@@ -2159,174 +2124,10 @@ class VectorSearchRepository:
                     # devolver el resultado (ver el final de search()), igual que el fragmento.
                     "contexto_conversacion": _sanitize_offensive_language(contexto),
                     "posible_instruccion_incrustada": posible_instruccion_incrustada,
-                    **({"recording_id": recording_id} if ranking_only else {}),
                 }
             )
 
         return resultados, len(rows), query_ms, candidate_limit
-
-    def rank_conversations(
-        self,
-        query: str,
-        *,
-        limit: int = 1000,
-        store_name: str | None = None,
-        employee_name: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        campo_estructurado: str | None = None,
-        valor_estructurado: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        """Ordena conversaciones por similitud con `query` (más parecidas primero), SIN transcripciones ni juez.
-
-        Uso interno del conteo de casos de un patrón (`InsightExtractionRepository.count_patterns`): las mismas reglas de
-        aislamiento y de "sólo analizables" que `search()` (misma consulta SQL, `_retrieve(ranking_only=True)`), pero devuelve
-        hasta `limit` conversaciones distintas en lugar de unas pocas decenas. Cada ítem trae `recording_id`, `tienda` y `fecha`;
-        el segundo valor dice si la población quedó agotada (no había más conversaciones que ordenar).
-        El resultado NO es una muestra: son las más parecidas, así que nunca debe usarse para estimar una frecuencia.
-        """
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError("El ranking requiere un texto no vacío.")
-        limit = max(1, min(int(limit), 5000))
-        store_name = _as_optional_str(store_name)
-        employee_name = _as_optional_str(employee_name)
-        date_from = _parse_date_arg(_as_optional_str(date_from), arg_name="date_from")
-        date_to = _parse_date_arg(_as_optional_str(date_to), arg_name="date_to")
-        campo = _as_optional_str(campo_estructurado)
-        valor = _as_optional_str(valor_estructurado)
-        product_source = general_source = None
-        if campo or valor:
-            if not campo or not valor:
-                raise ValueError("campo_estructurado y valor_estructurado se pasan juntos -o ninguno de los dos.")
-            campo = campo.strip()
-            candidate_product = _find_product_insights_source(self.client)
-            product_fields = (_product_insights_fields(str(self.client.data_map_path), candidate_product.name)
-                              if candidate_product is not None else {})
-            candidate_general = _find_general_insights_source(self.client)
-            general_fields = (_product_insights_fields(str(self.client.data_map_path), candidate_general.name)
-                              if candidate_general is not None else {})
-            if campo in product_fields:
-                product_source, configured = candidate_product, product_fields[campo]["configured_values"]
-            elif campo in general_fields:
-                general_source, configured = candidate_general, general_fields[campo]["configured_values"]
-            else:
-                raise ValueError("campo_estructurado inválido para este cliente. Campos permitidos: "
-                                 + (", ".join(sorted(set(product_fields) | set(general_fields))) or "(ninguno)"))
-            valor = _normalize_valor_estructurado(valor, configured)
-            if valor is None:
-                raise ValueError(f"valor_estructurado inválido para campo_estructurado={campo!r}. Valores permitidos: "
-                                 + ", ".join(configured))
-        check_analysis()
-        api_key = os.getenv("VERA_AI_API_KEY")
-        if not api_key:
-            raise OperationalUnavailable()
-        vector = _embed_query(query.strip(), api_key, usage_recorder=self._usage_recorder, client_id=self.client.client_id)
-        if product_source is None and general_source is None:
-            return self._rank_fast(_vector_literal(vector), limit, store_name, employee_name, date_from, date_to)
-        resultados, filas, _ms, candidate_limit = self._retrieve(
-            vector_literal=_vector_literal(vector), top_k=limit, store_name=store_name, employee_name=employee_name,
-            employee_exact=None, date_from=date_from, date_to=date_to, criterio=None, resultado_filtro=None,
-            performance_source=None, campo_estructurado=campo, valor_estructurado=valor,
-            product_insights_source=product_source, general_insights_source=general_source, ranking_only=True,
-        )
-        # `agotada`: el SQL devolvió menos filas que el tope pedido, o sea que no quedaban más conversaciones que ordenar (todas
-        # quedaron incluidas); si no, el recorte fue del tope y puede haber más.
-        agotada = filas < candidate_limit
-        return [{"recording_id": r["recording_id"], "tienda": r.get("tienda"), "fecha": r.get("fecha"),
-                 "distancia": r.get("distancia")} for r in resultados], agotada
-
-    def _rank_fast(self, vector_literal: str, limit: int, store_name: str | None, employee_name: str | None,
-                   date_from: str | None, date_to: str | None) -> tuple[list[dict], bool]:
-        """Ranking en DOS ETAPAS (medido 2026-10-05, Farma 24): ordenar por similitud cuesta ~41 s con o sin tope, y los joins de
-        `_retrieve` con un tope grande suman 30 s o más (o pasan el statement_timeout con carga). Acá se ordenan primero los
-        fragmentos del tenant (y de la tienda/vendedor/fechas pedidos, vía las columnas seller_id/store_id/employee_id/
-        conversation_started_at de la tabla de embeddings, verificadas: sin nulos y 100 % coincidentes con recordings_enriched
-        en 20.000 filas de Farma 24 y de Tigo) y recién después se une y se filtra sólo lo que sobrevive. Los filtros por nombre
-        se vuelven a aplicar afuera (segunda barrera: el filtro interno es sólo una optimización)."""
-        allowed = (self.client.vector_search.store_names
-                   if self.client.vector_search is not None and self.client.vector_search.store_names else None)
-        inner_where = ["ce.embedding_config_id = %s", "ce.seller_id = %s"]
-        inner_params: list[object] = [EMBEDDING_CONFIG_ID, self.client.tenant]
-        outer_where = ["r.seller_id = %s", "conv.useful_for_analysis IS TRUE"]
-        outer_params: list[object] = [self.client.tenant]
-
-        def resolve(column: str, name_column: str, condition: str, value: object) -> list[str]:
-            rows, _ms = _execute_retrieval_sql(
-                f"SELECT DISTINCT {column} FROM mart_v2.recordings_enriched WHERE seller_id = %s AND {name_column} {condition}",
-                (self.client.tenant, value), lock=_connection_lock, get_connection=_get_reusable_connection,
-                reset_connection=_reset_primary_connection)
-            return [r[0] for r in rows if r[0] is not None]
-
-        if allowed:
-            outer_where.append("r.store_name = ANY(%s)")
-            outer_params.append(list(allowed))
-        if store_name and store_name.strip():
-            outer_where.append("r.store_name ILIKE %s")
-            outer_params.append(f"%{store_name.strip()}%")
-        if allowed or (store_name and store_name.strip()):
-            ids = (resolve("store_id", "store_name", "ILIKE %s", f"%{store_name.strip()}%")
-                   if store_name and store_name.strip() else resolve("store_id", "store_name", "= ANY(%s)", list(allowed)))
-            if not ids:
-                return [], True
-            inner_where.append("ce.store_id = ANY(%s)")
-            inner_params.append(ids)
-        if employee_name and employee_name.strip():
-            outer_where.append("r.employee_full_name ILIKE %s")
-            outer_params.append(f"%{employee_name.strip()}%")
-            employee_ids = resolve("employee_id", "employee_full_name", "ILIKE %s", f"%{employee_name.strip()}%")
-            if not employee_ids:
-                return [], True
-            inner_where.append("ce.employee_id = ANY(%s)")
-            inner_params.append(employee_ids)
-        if date_from:
-            inner_where.append("ce.conversation_started_at::date >= %s::date")
-            inner_params.append(date_from)
-            outer_where.append("r.started_at::date >= %s::date")
-            outer_params.append(date_from)
-        if date_to:
-            inner_where.append("ce.conversation_started_at::date <= %s::date")
-            inner_params.append(date_to)
-            outer_where.append("r.started_at::date <= %s::date")
-            outer_params.append(date_to)
-        chunk_limit = min(limit * _RANKING_CHUNKS_PER_CONVERSATION, _RANKING_MAX_CHUNKS)
-        sql = (
-            "WITH top AS MATERIALIZED (\n"
-            "  SELECT ce.recording_id, ce.chunk_idx, ce.embedding <=> %s::vector AS distancia\n"
-            "  FROM analytics_v2.conversation_embeddings ce\n"
-            "  WHERE " + " AND ".join(inner_where) + "\n"
-            "  ORDER BY ce.embedding <=> %s::vector, ce.recording_id, ce.chunk_idx\n"
-            "  LIMIT %s\n"
-            ")\n"
-            "SELECT top.recording_id, r.store_name, r.started_at, conv.conversation_id, top.distancia,\n"
-            "       (SELECT count(*) FROM top) AS n_inner\n"
-            "FROM top\n"
-            "JOIN mart_v2.recordings_enriched r ON r.recording_id = top.recording_id\n"
-            "LEFT JOIN LATERAL (\n"
-            "  SELECT c.conversation_id, c.useful_for_analysis FROM core_v2.conversations c\n"
-            "  WHERE c.recording_id = top.recording_id ORDER BY c.extracted_at DESC NULLS LAST LIMIT 1\n"
-            ") conv ON true\n"
-            "WHERE " + " AND ".join(outer_where) + "\n"
-            "ORDER BY top.distancia, top.recording_id, top.chunk_idx\n"
-        )
-        params = tuple([vector_literal, *inner_params, vector_literal, chunk_limit, *outer_params])
-        rows, _ms = _execute_retrieval_sql(
-            sql, params, lock=_connection_lock, get_connection=_get_reusable_connection,
-            reset_connection=_reset_primary_connection)
-        seen: set[str] = set()
-        ranked: list[dict] = []
-        n_inner = 0
-        for recording_id, store, started_at, conversation_id, distancia, n_inner in rows:
-            key = conversation_id or recording_id
-            if key in seen:
-                continue
-            seen.add(key)
-            ranked.append({"recording_id": recording_id, "tienda": store, "fecha": _json_safe(started_at),
-                           "distancia": round(float(distancia), 4)})
-            if len(ranked) >= limit:
-                break
-        # Agotada = el ordenamiento interno trajo menos fragmentos que el tope pedido (no había más del tenant/filtros) y no
-        # se recortó por `limit` conversaciones.
-        return ranked, bool(rows) and int(n_inner) < chunk_limit and len(ranked) < limit
 
     def _top_performers(
         self,
@@ -2419,8 +2220,7 @@ class VectorSearchRepository:
                 cliente, qué hace el vendedor, otra forma de expresarlo). Las propone el planificador sólo cuando la pregunta es
                 amplia o exploratoria con varias caras; se buscan en paralelo (una conexión por ángulo) y se funden con `query` y
                 `query_alternativa` por Reciprocal Rank Fusion, y el juez de relevancia —que evalúa siempre contra la pregunta
-                ORIGINAL— descarta lo que se desvía. Sin costo extra de modelo (sólo un embedding por ángulo). Para contar casos
-                (count_pattern_cases) se sigue usando la consulta original, no la unión.
+                ORIGINAL— descarta lo que se desvía. Sin costo extra de modelo (sólo un embedding por ángulo).
             campo_estructurado, valor_estructurado: (2026-09-29, ampliado el mismo día) filtro EXACTO
                 por un atributo ya verificado por el pipeline de extracción -de un producto (ej.
                 color, tipo de prenda, motivo de venta perdida) o de la conversación completa (ej.

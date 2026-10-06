@@ -56,6 +56,11 @@ METRIC = re.compile(r"tasa|porcentaje|promedio|puntuaci[oó]n|score|cumplimiento
 # aplicado. El resto de la lista (sin duda, estadísticamente significativo, muestra
 # representativa/suficiente, garantiza, demuestra concluyentemente) es menos ambigua y se mantiene.
 CONFIDENT = re.compile(r"sin duda|estadísticamente significativ|estadisticamente significativ|muestra representativa|muestra suficiente|garantiza|demuestra concluyentemente", re.I)
+# Lenguaje de FRECUENCIA en la sección de patrones (2026-10-06): sin conteo de conversaciones, decir que algo "suele" pasar o que es lo
+# "principal" afirma una frecuencia que nadie midió. El prompt lo prohíbe, pero 3 de 6 respuestas de prueba igual lo usaron: se verifica
+# mecánicamente, sólo en el texto que sigue a la etiqueta de patrones (el resto de la respuesta, con cifras de SQL, puede usar estas palabras).
+FREQUENCY = re.compile(r"(?<!\w)(?:suele[n]?|principalmente|frecuentemente|habitualmente|generalmente|comúnmente|comunmente|a menudo|muchas veces|casi siempre|la mayoría|la mayoria)(?!\w)", re.I)
+PATTERNS_LABEL = re.compile(r"\*\*En conversaciones reales:?\*\*", re.I)
 FALLBACK = "No pude verificar las cifras con suficiente respaldo. No voy a presentar una conclusión numérica; podés pedir el detalle del indicador para revisarlo."
 
 
@@ -116,7 +121,7 @@ def history_results(chat):
     for content in get(curated=True):
         for part in getattr(content, 'parts', None) or []:
             response = getattr(part, 'function_response', None)
-            if response is not None and response.name in ('run_readonly_sql', 'extract_insight', 'compute_stats', 'count_pattern_cases'):
+            if response is not None and response.name in ('run_readonly_sql', 'compute_stats'):
                 payload = response.response or {}
                 add_result(store, payload.get('result'))
     return store
@@ -155,12 +160,6 @@ def calculate(claim, store):
         raise ValueError("insumos inválidos")
     values = [resolve(ref, store) for ref in refs]
     op = claim.get('operation', 'identity')
-    if op in ('ratio', 'percentage', 'relative_change') and any(
-            isinstance(store.get(ref.get('id')), dict) and store[ref['id']].get('tipo_resultado') == 'soporte_de_patron'
-            for ref in refs if isinstance(ref, dict)):
-        # n de m de un patrón NO es una frecuencia: las conversaciones leídas son las más parecidas, no una muestra
-        # (ver count_pattern_cases). Una proporción o un porcentaje con esas celdas se rechaza.
-        raise ValueError("el conteo de casos de un patrón no admite porcentajes ni proporciones: no es una frecuencia")
     if op == 'identity' and len(values) == 1:
         return values[0]
     if op == 'sum':
@@ -250,7 +249,7 @@ class Verification:
     limitations: list[str] = field(default_factory=list)
 
 
-def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
+def _verify_numbers(answer, store, *, current_ids=None, rulebook_texts=()):
     blocks = list(FENCE.finditer(answer))
     cleaned = FENCE.sub('', answer).strip()
     verdict = Verification(cleaned)
@@ -504,6 +503,22 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
         verdict.errors.append('conclusión de certeza sin evidencia suficiente')
     verdict.limitations = list(dict.fromkeys(verdict.limitations))
     verdict.errors = list(dict.fromkeys(verdict.errors))[:10]
+    return verdict
+
+
+def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
+    """Verificación de cifras y evidencia (`_verify_numbers`) más el chequeo de lenguaje de frecuencia en los patrones, que corre
+    SIEMPRE: una respuesta con patrones de la búsqueda y sin ninguna consulta SQL tiene el store vacío y sale temprano de la
+    verificación numérica (2026-10-06: así se les escapaban "suelen" y "principalmente" a las respuestas de sólo búsqueda)."""
+    verdict = _verify_numbers(answer, store, current_ids=current_ids, rulebook_texts=rulebook_texts)
+    prose = OTHER_FENCES.sub('', verdict.answer or '')
+    label = PATTERNS_LABEL.search(prose)
+    if label:
+        words = sorted({m.group(0).lower() for m in FREQUENCY.finditer(prose[label.start():])})
+        if words:
+            verdict.errors.append('lenguaje de frecuencia en los patrones (' + ', '.join(words) + '): no hay un conteo que lo respalde; '
+                                  'describí lo que se observa en las conversaciones revisadas sin decir cuán común es')
+            verdict.errors = list(dict.fromkeys(verdict.errors))[:10]
     return verdict
 
 

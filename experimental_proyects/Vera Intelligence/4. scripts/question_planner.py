@@ -3,21 +3,16 @@
 Motivo (banco de robustez con preguntas vagas + informe de prueba del equipo): el agente falla más por NO
 PLANIFICAR que por falta de capacidad -acepta una premisa sin chequearla, reemplaza en silencio una métrica que
 no existe por otra parecida, responde una parte de la pregunta, cambia la definición de "cierre" o de "último mes"
-entre corridas-. El planificador convierte la pregunta (sobre todo si es vaga) en un PLAN ESTRUCTURADO, en dos etapas:
+entre corridas-. El planificador convierte la pregunta (sobre todo si es vaga) en un PLAN ESTRUCTURADO:
 
   Etapa 1 (siempre)          : objetivo/tipo, partes, métricas (existe o no como campo), alcance (entidades, período,
                                desagregación, denominador, formato pedido), comparación/baseline, premisa a verificar,
                                definiciones fijas, advertencias, y -si falta una pieza CRÍTICA- una repregunta.
-  Etapa 2 (sólo si hace falta): "redactor de definiciones" ESPECIALIZADO: por cada comportamiento que hay que
-                               cuantificar leyendo conversaciones (herramienta extract_insight / JEV), escribe la ficha
-                               (pregunta atómica, qué cuenta, qué NO, población) con un prompt dedicado y ejemplos
-                               (experimento `3. experimentos/jev_extraccion/`: la definición mueve el resultado).
-
-Qué NO hace: no ejecuta SQL, no decide cifras, no reemplaza al agente. Todo número sigue saliendo de SQL (o de
-extract_insight) y verificándose igual.
+Qué NO hace: no ejecuta SQL, no decide cifras, no reemplaza al agente. Todo número sigue saliendo de SQL y verificándose igual.
+(Hasta 2026-10-06 había una etapa 2, un redactor de fichas para medir comportamientos leyendo conversaciones con JEV; se descartó.)
 
 Anclajes deterministas contra alucinación del planificador: los campos que nombra se validan contra el Data Map real;
-las fichas se validan (pregunta, exclusiones no vacías, población con campo real); la repregunta sólo se acepta si
+la repregunta sólo se acepta si
 cumple un formato mínimo. Fail-open: cualquier error devuelve plan vacío y el agente corre como antes.
 """
 from __future__ import annotations
@@ -61,16 +56,10 @@ Devolvé SÓLO un JSON con exactamente estas secciones:
 venta", "de qué productos hablan", "mes por separado"). Una por ítem, en orden.
 4. "metricas": lista de {{"pedida": <métrica con las palabras del usuario>, "campo": <nombre EXACTO de un campo \
 de la lista que la mide DIRECTAMENTE, o null>, "nota": <si campo es null: qué campo parecido existe y mide OTRA \
-cosa, o "ninguno">, "cuantificable_por_lectura": <true si, sin ser un campo, es un comportamiento sí/no que se \
-decide leyendo una conversación (mencionó cuotas sin interés, pidió un genérico); false para montos, precios, \
-tickets, NPS y lo que no se lee de una conversación>, "via_patron": <true SÓLO si lo que se mide es la frecuencia de un \
-PATRÓN QUE TODAVÍA NO SE CONOCE y lo va a descubrir la búsqueda ("el primero de esos patrones", "el patrón más \
-común", "qué tan frecuente es lo que se repite"); en ese caso NO se puede redactar su definición ahora; false si la \
-conducta ya está nombrada en la pregunta>}}. Sólo campo si mide lo mismo; "promociones en general" NO \
-mide "cuotas sin interés"; montos, tickets, precios y diferencias de precio NO existen salvo que un campo lo \
-diga; NPS puntaje no existe si sólo hay indicadores de proceso. Lo CUALITATIVO ("qué dicen", "qué ofertas \
-mencionan", "por qué") NO es una métrica faltante: va en "partes" con usar_busqueda=true. Sólo listá métricas \
-cuando la pregunta pide cuantificar.
+cosa, o "ninguno">}}. Sólo campo si mide lo mismo; "promociones en general" NO mide "cuotas sin interés"; montos, \
+tickets, precios y diferencias de precio NO existen salvo que un campo lo diga; NPS puntaje no existe si sólo hay \
+indicadores de proceso. Lo CUALITATIVO ("qué dicen", "qué ofertas mencionan", "por qué") NO es una métrica faltante: \
+va en "partes" con usar_busqueda=true. Sólo listá métricas cuando la pregunta pide cuantificar.
 5. "alcance": {{"entidades": [{{"tipo": "tienda"|"vendedor"|"producto"|"otro", "texto": <como lo nombra>}}] \
 (nombres propios a buscar; si no aparecen, el agente lo dice y no sustituye), "periodo": <período pedido, \
 explícito, o "sin período en la pregunta: usar TODO el histórico disponible y declararlo"; sólo una pregunta de \
@@ -85,15 +74,12 @@ períodos explícitos>}}.
 "verificar": <cómo verificarlo con los campos disponibles, o "no verificable">}}.
 8. "definiciones": objeto con las definiciones que el agente debe FIJAR y declarar (ej. {{"cierre": "compra \
 efectiva = conversaciones con compra / analizables"}}). SÓLO términos de negocio con campo propio (cierre, baja, \
-abandono, período). NUNCA definas acá un comportamiento que se cuantifica leyendo conversaciones \
-("cuantificable_por_lectura": true): eso lo define otro paso, y los campos de texto libre no se cuentan. \
-Vacío si no aplica.
+abandono, período). Vacío si no aplica.
 9. "advertencias": lista corta de riesgos concretos para ESTA pregunta (bases chicas, período parcial, \
 correlación vs causa, categorías que se pisan, cobertura de análisis). Máximo 5, sólo los que apliquen.
 10. "usar_busqueda": true SÓLO si algo de lo pedido es CUALITATIVO: qué dicen, cómo, por qué, ejemplos, patrones, \
-coaching. false si pide únicamente cuánto / qué porcentaje / ranking / comparación, AUNQUE ese número no esté en un campo \
-y se obtenga leyendo conversaciones ("cuantificable_por_lectura": true): contar por lectura NO necesita la búsqueda \
-semántica. Si pide el número Y lo cualitativo ("cuántas mencionan X y qué dicen"), true.
+coaching. false si pide únicamente cuánto / qué porcentaje / ranking / comparación (eso sale de un campo por SQL, o no está \
+medido). Si pide el número Y lo cualitativo ("cuántas tienen un cierre bajo y qué pasa en ellas"), true.
 12. "busqueda": null si usar_busqueda es false; si no, la BÚSQUEDA SEMÁNTICA ya redactada, para que la misma pregunta \
 dé siempre la misma búsqueda: {{"query": <la situación observable que se busca, tal como OCURRE en la conversación \
 (ej. "el cliente pregunta el precio, el vendedor lo informa y no ofrece una alternativa"), NUNCA una ausencia ni una \
@@ -107,7 +93,7 @@ abordan X"); lista vacía [] si apunta a UNA conducta puntual ("invitan a la enc
 "date_from": <YYYY-MM-DD sólo si el período es explícito, sino null>, "date_to": <ídem>}}.
 11. "falta_info": {{"critica": <true SÓLO si falta una pieza sin la cual cualquier respuesta sería un acierto por \
 azar>, "pregunta": <UNA repregunta corta al usuario, con 2-4 opciones concretas si se puede>, "motivo": <qué \
-falta>}}. Es crítica=true SÓLO en estos cuatro casos:
+falta>}}. Es crítica=true SÓLO en estos tres casos:
   (a) REFERENCIA SIN ANTECEDENTE: la pregunta alude a algo que no está en ella y que sólo el usuario sabe: \
 "el asesor", "esa tienda", "el gerente", "esa promoción", "el modelo", "el vendedor nuevo", "el otro", "eso", \
 "comparado con antes". Un nombre propio completo ("Parque Delta", "Ricardo Mendoza") NO entra acá: se busca en los \
@@ -119,18 +105,11 @@ enero con febrero", "¿mejoró?", "¿subió o bajó?", "cómo evolucionó") sin 
 trae un indicador obvio. Si nombra el indicador ("la tasa de cierre", "las ventas perdidas", "las conversaciones") o \
 nombra los dos objetos a comparar con nombre propio, NO es crítico.
   (c) INTERPRETACIONES DISTINTAS: hay dos lecturas que dan respuestas MUY diferentes y ninguna es la obvia.
-  (d) CONCEPTO AMPLIO A CUANTIFICAR LEYENDO: pide CUÁNTAS o QUÉ PORCENTAJE de un concepto AMPLIO y sin campo propio, \
-cuyo número cambia mucho según qué se cuente (medido: "hablan de deuda" dio 31 % contando sólo palabras de mora y 50 % \
-leyendo menciones implícitas): "deuda", "problemas", "quejas", "mala atención", "interés", "dudas". Aplica sólo si en \
-"metricas" hay una con "cuantificable_por_lectura": true y "campo": null, y la pregunta NO define qué cuenta. Escribí la \
-repregunta con 2 o 3 definiciones concretas del concepto (de la más estricta a la más amplia) y ofrecé que el usuario \
-ponga la suya (ej. "¿Qué cuento como deuda? (a) sólo saldos vencidos o en mora, (b) cualquier mención de plata \
-adeudada, incluidos acuerdos de pago, o decime vos la definición.").
 NUNCA es crítico (se responde con un valor por defecto sensato, declarado): un período faltante (todo el histórico, \
 declarado), un pedido de panorama general ("¿cómo está el negocio?", "dame un resumen de la semana", "¿cómo vienen los \
 vendedores?": se muestra cierre y volumen), un término con definición fija ("el mejor vendedor" = mayor tasa de cierre), \
-una métrica inexistente (se dice que no está), un tema cualitativo explícito ni una CONDUCTA CONCRETA ya nombrada en la \
-pregunta ("ofrecen cuotas sin interés", "invitan a la encuesta", "piden la cédula"): eso no es el caso (d).
+una métrica inexistente (se dice que no está: ni siquiera un concepto amplio como "deuda" o "problemas" justifica repreguntar) \
+ni un tema cualitativo explícito.
   CONTEXTO: si una referencia de (a) o (b) tiene un antecedente CLARO y único en el CONTEXTO DE LA CONVERSACIÓN \
 ("esa tienda" y el turno anterior habla de una sola tienda), NO es crítica: resolvela y poné el nombre resuelto en \
 alcance.entidades para que el agente lo declare. Si el contexto trae varios candidatos posibles o ninguno, sí es crítica. \
@@ -138,96 +117,6 @@ Una respuesta del usuario que contesta tu repregunta anterior cuenta como antece
   En "pregunta" escribí UNA repregunta corta que diga qué falta; si hay opciones concretas ofrecé 2 o 3.
 
 No inventes campos. Sé conciso."""
-
-# --------------------------------------------------------------------------------------------- etapa 2
-_DEFINER_PROMPT = """Sos el REDACTOR DE DEFINICIONES de un agente de análisis. Tu único trabajo: escribir, para \
-cada comportamiento que hay que contar LEYENDO conversaciones reales de atención en tienda (transcripciones con \
-ruido de reconocimiento de voz y hablantes mezclados), la ficha que lee un clasificador sí/no por conversación. \
-La definición decide el resultado: una definición laxa infla el conteo y una estricta lo achica, así que tiene que \
-reflejar EXACTAMENTE lo que pidió el usuario.
-
-PREGUNTA DEL USUARIO:
-{question}
-
-COMPORTAMIENTOS A DEFINIR:
-{metrics}
-
-CAMPOS CATEGÓRICOS DISPONIBLES para acotar la población (fuente.campo: descripción):
-{catalog}
-
-Para cada comportamiento devolvé una ficha con:
-- "metrica": la misma «pedida».
-- "pregunta": sí/no sobre UNA conversación, atómica (un solo concepto), que diga QUIÉN lo dice o hace (el \
-cliente, el vendedor o cualquiera). Nada de "y" que junte dos cosas.
-- "criterio_si": definición operativa de qué cuenta, con 2 frases de ejemplo realistas.
-- "criterio_no": exclusiones explícitas. OBLIGATORIO y tan importante como el sí: casos frontera ("es cliente de \
-esa empresa" no es una oferta de esa empresa), palabras ambiguas ("claro" como afirmación no es la empresa \
-Claro), lo que dice el vendedor cuando se pregunta por el cliente, mencionar el tema sin la acción pedida, \
-comentarios entre empleados.
-- "poblacion": null, o {{"campo": <nombre EXACTO de un campo categórico de la lista>, "valor": <valor de ese \
-campo>}} cuando la pregunta es sobre un subconjunto ("de las bajas", "de las ventas perdidas").
-- "nivel_de_ambiguedad": "baja" | "media" | "alta": qué tan discutible es la frontera del concepto. Si es "alta", \
-el agente le dirá al usuario qué definición se usó.
-- "palabras": lista de 5 a 10 palabras, raíces o variantes cortas (minúsculas, sin tildes) con las que suele DECIRSE \
-esa conducta en una conversación, incluyendo sinónimos y otras formas de decir lo mismo (una sola frase deja afuera \
-las variantes y subestima el número). Sirven para contar gratis las menciones y compararlas con la lectura. [] si la \
-conducta no tiene palabras distintivas porque es de interpretación ("valida que el cliente entiende", "hablan de deuda").
-
-Ejemplos de buenas fichas:
-1) Pedido: "cuántas veces se ofrecen cuotas sin interés".
-   pregunta: "¿El vendedor ofrece explícitamente pagar en cuotas sin interés al cliente durante la conversación?"
-   criterio_si: "El vendedor menciona la posibilidad de abonar en cuotas sin recargo o sin interés (ej. 'Tenés 3 \
-cuotas sin interés con tarjeta', 'Con esta tarjeta tenés cuotas fijas sin interés')."
-   criterio_no: "Cuotas con interés o recargo; el cliente pregunta si hay cuotas y el vendedor dice que no; \
-promociones bancarias o descuentos directos sin nombrar cuotas sin interés; mención genérica de 'medios de pago'."
-   palabras: ["cuotas sin interes", "sin interes", "cuotas sin recargo", "cuotas fijas", "sin recargo"].
-   nivel_de_ambiguedad: "baja".
-2) Pedido: "cuántos clientes piden un genérico o algo más barato".
-   pregunta: "¿El cliente solicita explícitamente una versión genérica, una segunda marca o una opción más \
-económica?"
-   criterio_si: "El cliente lo pide o lo pregunta (ej. '¿Tenés en genérico?', '¿Hay algo más barato que este?')."
-   criterio_no: "Lo ofrece el vendedor por su cuenta; el cliente sólo pregunta el precio; pide sustitución por \
-falta de stock sin hablar de costo; comentarios entre empleados."
-   palabras: ["generico", "segunda marca", "mas barato", "mas economico", "algo mas barato"].
-   nivel_de_ambiguedad: "media".
-3) Pedido: "en qué porcentaje de las bajas el cliente menciona una oferta de Claro o Movistar".
-   pregunta: "¿El cliente menciona haber recibido o tener una oferta, precio o plan propuesto por Claro o \
-Movistar?"
-   criterio_si: "El cliente refiere una oferta, precio o plan concreto de Claro o Movistar (ej. 'En Claro me \
-ofrecen el doble de gigas por menos plata', 'Movistar me dejó la fibra a mitad de precio')."
-   criterio_no: "La palabra 'claro' como afirmación ('claro, entiendo'); decir que es o fue cliente de esas \
-empresas sin una oferta o precio; menciones hechas sólo por el asesor; nombrar la empresa sin relación con una \
-oferta."
-   poblacion: {{"campo": "i03_solicitud_o_tramite_principal", "valor": "cancelacion_retiro"}}.
-   palabras: [] (la palabra "claro" aparece como afirmación en casi todas las conversaciones: no sirve para contar).
-   nivel_de_ambiguedad: "alta".
-
-Devolvé SÓLO un JSON: {{"fichas": [ ... ]}}. No ampliés ni reduzcas lo que pidió el usuario."""
-
-
-_PATTERN_DEFINER_PROMPT = """Sos el REDACTOR DE DEFINICIONES de un agente de análisis. Un PATRÓN fue DESCUBIERTO por búsqueda semántica \
-en conversaciones reales de atención en tienda (transcripciones con ruido de reconocimiento de voz y hablantes mezclados). \
-Ahora hay que medir QUÉ TAN FRECUENTE es ese patrón sobre una muestra aleatoria de TODAS las conversaciones, así que tenés \
-que escribir la ficha que lee un clasificador sí/no por conversación. La definición decide el resultado: una laxa infla el \
-conteo y una estricta lo achica; tiene que describir EXACTAMENTE el patrón, ni más ni menos.
-
-PATRÓN: {patron}
-
-CASOS QUE LO RESPALDAN (INTERNOS: sirven para entender el patrón; NO los copies, NO los cites, NO pongas frases textuales \
-suyas en la ficha):
-{citas}
-
-Devolvé una ficha con:
-- "pregunta": sí/no sobre UNA conversación, atómica (un solo concepto), que diga QUIÉN lo hace (el cliente, el vendedor o \
-cualquiera). Mide la conducta tal como OCURRE, no la ausencia de un criterio.
-- "criterio_si": definición operativa de qué cuenta, con 2 ejemplos PARAFRASEADOS y genéricos (nunca frases copiadas de los \
-casos).
-- "criterio_no": exclusiones explícitas, OBLIGATORIAS y tan importantes como el sí: casos frontera, el parecido que NO es el \
-patrón, lo que dice el otro participante, mencionar el tema sin la conducta.
-- "nivel_de_ambiguedad": "baja" | "media" | "alta".
-
-Devolvé SÓLO un JSON: {{"ficha": {{"pregunta": "...", "criterio_si": "...", "criterio_no": "...", "nivel_de_ambiguedad": "..."}}}}."""
-
 
 _PLAN_HEADER = (
     "[PLAN INTERNO DE LA CONSULTA -guía para vos, nunca lo menciones ni lo cites en la respuesta]"
@@ -300,39 +189,6 @@ def ground_plan(plan: dict, known_fields: set[str]) -> dict:
         if bare not in known_fields:
             item["campo"] = None
             item["nota"] = f"el campo '{campo}' no existe; " + str(item.get("nota") or "")
-    return plan
-
-
-def ground_lecturas(plan: dict, known_fields: set[str]) -> dict:
-    """Valida las fichas de lectura: descarta las inválidas y la población con un campo inexistente.
-
-    Una ficha es válida sólo si tiene pregunta, criterio_si y exclusiones (criterio_no) no triviales: sin
-    exclusiones explícitas la definición queda laxa y el conteo se infla (experimento jev_extraccion)."""
-    fichas = plan.get("lecturas")
-    if not isinstance(fichas, list):
-        plan["lecturas"] = []
-        return plan
-    valid = []
-    for ficha in fichas:
-        if not isinstance(ficha, dict):
-            continue
-        if (len(str(ficha.get("pregunta") or "").strip()) < 15
-                or len(str(ficha.get("criterio_si") or "").strip()) < 15
-                or len(str(ficha.get("criterio_no") or "").strip()) < 25):
-            continue
-        pob = ficha.get("poblacion")
-        if isinstance(pob, dict):
-            campo = str(pob.get("campo") or "").split(".")[-1].strip().lower()
-            if campo not in known_fields or not pob.get("valor"):
-                ficha["poblacion"] = None
-        else:
-            ficha["poblacion"] = None
-        # palabras: sólo textos cortos y razonables (5 a 10 como mucho); lo demás se descarta y la ficha sigue sin comparación.
-        raw_words = ficha.get("palabras")
-        ficha["palabras"] = ([w.strip() for w in raw_words if isinstance(w, str) and 3 <= len(w.strip()) <= 40][:10]
-                             if isinstance(raw_words, list) else [])
-        valid.append(ficha)
-    plan["lecturas"] = valid
     return plan
 
 
@@ -414,20 +270,7 @@ def _section(title: str, body: list[str]) -> str:
     return f"{title}\n" + "\n".join(f"   - {line}" for line in body) if body else ""
 
 
-def _desglose_hint(plan: dict) -> str:
-    """Traduce alcance.desagregacion a un valor de `desglosar_por` de extract_insight ('' si no aplica)."""
-    alcance = plan.get("alcance") if isinstance(plan.get("alcance"), dict) else {}
-    text = str(alcance.get("desagregacion") or "").lower()
-    if any(w in text for w in ("tienda", "sucursal", "local")):
-        return "tienda"
-    if "semana" in text:
-        return "semana"
-    if any(w in text for w in ("mes", "mensual", "evoluci", "período", "periodo", "fecha")):
-        return "mes"
-    return ""
-
-
-def render_plan(plan: dict, *, extraction_available: bool = False) -> str:
+def render_plan(plan: dict) -> str:
     """Plan estructurado en secciones numeradas para el agente principal; vacío si no aporta nada."""
     sections: list[str] = []
 
@@ -449,24 +292,14 @@ def render_plan(plan: dict, *, extraction_available: bool = False) -> str:
             continue
         if m.get("campo"):
             met.append(f"«{m['pedida']}»: existe, medila con el campo {m['campo']}.")
-        elif extraction_available and m.get("via_patron"):
-            met.append(
-                f"«{m['pedida']}»: es la frecuencia de un PATRÓN que todavía no se conoce. NO hay ficha: primero "
-                "search_conversations (usá la búsqueda fijada de la sección 10) y, con el patrón que devuelva, llamá "
-                "extract_insight pasando SÓLO `patron` = el texto EXACTO del patrón (copiado de `patrones`) y los MISMOS "
-                "filtros y campo_estructurado que usó la búsqueda; NO escribas pregunta ni criterios. El número sale de "
-                "esa muestra aleatoria, nunca de la búsqueda.")
-        elif extraction_available and m.get("cuantificable_por_lectura"):
-            met.append(
-                f"«{m['pedida']}»: NO es un campo del Data Map, pero es un comportamiento sí/no de la conversación: "
-                "cuantificala con extract_insight (ver ficha en la sección 7) y aclarale al usuario que es una "
-                "estimación por lectura de conversaciones, no un campo medido.")
         else:
             met.append(
-                f"«{m['pedida']}»: NO existe como dato. Decilo en la primera oración y no la reemplaces en silencio. "
+                f"«{m['pedida']}»: NO está medida (ningún campo del Data Map la mide). Decilo en la primera oración y no "
+                "la reemplaces en silencio. No des ningún número, porcentaje ni conteo, ni lo estimes con la búsqueda. "
                 f"Si existe un campo cercano ({m.get('nota') or 'ninguno'}) que realmente ayude a la decisión, podés "
-                "mostrarlo rotulado como OTRA medición; si no aporta, no agregues métrica de relleno. No inventes ni "
-                "estimes el número.")
+                "mostrarlo rotulado como OTRA medición (qué mide distinto); si no aporta, no agregues métrica de relleno. "
+                "Ofrecé ver ejemplos y patrones cualitativos de las conversaciones (sin frecuencia) y sugerí que el equipo "
+                "agregue esa medición al checklist de análisis.")
     sections.append(_section("3. MÉTRICAS", met))
 
     alc: list[str] = []
@@ -499,28 +332,6 @@ def render_plan(plan: dict, *, extraction_available: bool = False) -> str:
             f"La pregunta da por hecho: «{premisa['afirma']}». Verificalo ({premisa.get('verificar') or 'no verificable'}) "
             "y decí al principio si se confirma o no; si no es verificable, decilo y no expliques el supuesto cambio "
             "como si fuera cierto."]))
-
-    fichas: list[str] = []
-    if extraction_available:
-        for ficha in plan.get("lecturas") or []:
-            if not isinstance(ficha, dict) or not ficha.get("pregunta"):
-                continue
-            pob = ficha.get("poblacion") if isinstance(ficha.get("poblacion"), dict) else None
-            pob_txt = (f", campo_estructurado=«{str(pob['campo']).split('.')[-1]}», valor_estructurado=«{pob['valor']}»"
-                       if pob else "")
-            amb = f" [ambigüedad {ficha['nivel_de_ambiguedad']}: decile al usuario qué definición se usó]" \
-                if ficha.get("nivel_de_ambiguedad") == "alta" else ""
-            desg = _desglose_hint(plan)
-            desg_txt = f", desglosar_por=«{desg}»" if desg else ""
-            words = [w for w in (ficha.get("palabras") or []) if isinstance(w, str) and w.strip()]
-            # Sin desglose se pasan también las palabras: la herramienta las cuenta gratis sobre la misma muestra y compara.
-            words_txt = (f", terminos_literales=«{'; '.join(words)}» (pasalos JUNTO a los criterios: se comparan ambos métodos)"
-                         if words and not desg else "")
-            fichas.append(
-                "Ficha de lectura para extract_insight (usala TAL CUAL, no la reescribas): "
-                f"pregunta=«{ficha['pregunta']}», criterio_si=«{ficha.get('criterio_si', '')}», "
-                f"criterio_no=«{ficha.get('criterio_no', '')}»{pob_txt}{desg_txt}{words_txt}.{amb}")
-    sections.append(_section("7. FICHAS DE LECTURA", fichas))
 
     defs = plan.get("definiciones")
     if isinstance(defs, dict) and defs:
@@ -591,7 +402,6 @@ def build_plan(
     session_id: str = "",
     interaction_id: str = "",
     generate=None,
-    extraction_available: bool = False,
     allow_clarification: bool = True,
     context: str = "",
 ) -> PlanResult:
@@ -614,59 +424,10 @@ def build_plan(
         if clarification:
             return PlanResult(text="", clarification=clarification, plan=plan)
 
-        # Etapa 2: redactor de definiciones, sólo si hay algo que cuantificar leyendo conversaciones.
-        by_reading = [m for m in plan.get("metricas") or []
-                      if isinstance(m, dict) and not m.get("campo") and m.get("cuantificable_por_lectura")
-                      and not m.get("via_patron")]
-        plan["lecturas"] = []
-        if extraction_available and by_reading:
-            try:
-                metrics_txt = "\n".join(f"- «{m.get('pedida')}»" for m in by_reading)
-                defined = _call_json(
-                    gen, model,
-                    _DEFINER_PROMPT.format(question=question.strip(), metrics=metrics_txt, catalog=catalog),
-                    thinking=types.ThinkingLevel.MEDIUM, call_kind="planner_definer", **common)
-                plan["lecturas"] = (defined or {}).get("fichas") or []
-            except Exception:  # noqa: BLE001 -sin ficha el agente redacta la suya (comportamiento anterior)
-                logger.warning("El redactor de definiciones falló.", exc_info=True)
-            ground_lecturas(plan, known)
-        return PlanResult(text=render_plan(plan, extraction_available=extraction_available), plan=plan)
+        return PlanResult(text=render_plan(plan), plan=plan)
     except Exception:  # noqa: BLE001 -fail-open
         logger.warning("El planificador de preguntas falló; el agente sigue sin plan.", exc_info=True)
         return PlanResult()
-
-
-def design_pattern_card(
-    patron: str,
-    citas: list[str],
-    *,
-    client,
-    model: str,
-    catalog: str = "",
-    known: set[str] | None = None,
-    usage_recorder=None,
-    client_id: str = "",
-    generate=None,
-) -> dict | None:
-    """Ficha de lectura (pregunta, criterio_si, criterio_no) que mide la frecuencia de un PATRÓN descubierto por la
-    búsqueda semántica. Mismo validador que las fichas del planificador (exclusiones no triviales). Cacheada por prompt
-    (misma entrada = misma ficha). Devuelve None ante cualquier fallo: el agente cae a escribir los criterios él."""
-    try:
-        gen = generate or client.models.generate_content
-        citas_txt = "\n".join(f"- «{c}»" for c in citas if c) or "(sin casos disponibles)"
-        parsed = _call_json(
-            gen, model, _PATTERN_DEFINER_PROMPT.format(patron=" ".join(str(patron).split()), citas=citas_txt),
-            thinking=types.ThinkingLevel.MEDIUM, usage_recorder=usage_recorder, client_id=client_id,
-            session_id="", interaction_id="", call_kind="planner_pattern")
-        ficha = (parsed or {}).get("ficha")
-        if not isinstance(ficha, dict):
-            return None
-        plan = {"lecturas": [ficha]}
-        ground_lecturas(plan, known if known is not None else set())
-        return plan["lecturas"][0] if plan["lecturas"] else None
-    except Exception:  # noqa: BLE001 -fail-open
-        logger.warning("El redactor de fichas de patrón falló.", exc_info=True)
-        return None
 
 
 def plan_question(question: str, **kwargs) -> str:

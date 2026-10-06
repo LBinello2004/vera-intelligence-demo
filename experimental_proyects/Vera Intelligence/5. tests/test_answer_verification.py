@@ -442,3 +442,30 @@ class ConfidentLanguageTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 v = self._verify(phrase)
                 self.assertTrue(any("certeza" in e for e in v.errors))
+
+
+class FrequencyLanguageInPatternsTests(unittest.TestCase):
+    """2026-10-06: sin conteo, la sección de patrones no puede decir cuán común es algo."""
+
+    def setUp(self):
+        self.store = {}
+        self.id = add_result(self.store, {"columns": ["tasa", "n_evaluados"], "rows": [[13.9, 115]], "truncated": False})
+
+    def _verify(self, text: str):
+        return verify_answer("El cierre fue 13,9% (115 conversaciones evaluadas). " + text, self.store, current_ids={self.id})
+
+    def test_las_palabras_de_frecuencia_en_los_patrones_se_rechazan(self):
+        v = self._verify("**En conversaciones reales:** los vendedores suelen ofrecer otra marca y principalmente informan el precio.")
+        self.assertTrue(any("frecuencia en los patrones" in e and "suelen" in e and "principalmente" in e for e in v.errors), v.errors)
+
+    def test_los_patrones_descriptos_sin_frecuencia_pasan(self):
+        v = self._verify("**En conversaciones reales:** al pedir un genérico, el vendedor informa el precio de la marca más económica.")
+        self.assertFalse(any("frecuencia" in e for e in v.errors), v.errors)
+
+    def test_las_mismas_palabras_fuera_de_la_seccion_de_patrones_no_se_tocan(self):
+        v = self._verify("La mayoría de las sucursales suele estar por encima del promedio de la red.")
+        self.assertFalse(any("frecuencia" in e for e in v.errors), v.errors)
+
+    def test_tambien_se_rechaza_en_una_respuesta_de_solo_busqueda_sin_ninguna_consulta_sql(self):
+        v = verify_answer("**En conversaciones reales:** los clientes suelen pedir el principio activo.", {}, current_ids=set())
+        self.assertTrue(any("frecuencia en los patrones" in e for e in v.errors), v.errors)
