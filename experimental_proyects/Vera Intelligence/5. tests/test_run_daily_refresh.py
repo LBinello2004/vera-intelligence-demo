@@ -301,6 +301,17 @@ class LockAndHelpersTests(unittest.TestCase):
         with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": ""}):
             self.assertFalse(rdr.notify(loud, "x", post=lambda u, p: self.fail("sin webhook no avisa")))
 
+    def test_el_latido_opcional_avisa_un_todo_bien_corto_solo_si_se_activa(self) -> None:
+        quiet = {"promoted": [], "needs_human": [], "errors": [], "publication": None, "date": "2026-10-08", "clients_run": 19}
+        sent: list[dict] = []
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x", "VI_NOTIFY_HEARTBEAT": "1"}):
+            self.assertTrue(rdr.notify(quiet, "texto largo del reporte", post=lambda u, p: sent.append(p)))
+        self.assertEqual(len(sent), 1)
+        self.assertIn("19 clientes", sent[0]["text"])
+        self.assertNotIn("texto largo", sent[0]["text"])
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x", "VI_NOTIFY_HEARTBEAT": ""}):
+            self.assertFalse(rdr.notify(quiet, "x", post=lambda u, p: self.fail("sin latido no avisa")))
+
 
 if __name__ == "__main__":
     unittest.main()

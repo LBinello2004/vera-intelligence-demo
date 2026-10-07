@@ -298,6 +298,11 @@ def notify(report: dict, markdown: str, post: Callable[[str, dict], None] | None
     """Webhook opcional (`VI_NOTIFY_WEBHOOK`, formato {"text": ...} de Slack). Sólo avisa si hay algo que contar; nunca rompe la corrida."""
     url = (os.environ.get("VI_NOTIFY_WEBHOOK") or "").strip()
     interesting = report["promoted"] or report["needs_human"] or report["errors"] or (report["publication"] or {}).get("error")
+    if url and not interesting and (os.environ.get("VI_NOTIFY_HEARTBEAT") or "").strip() in ("1", "true", "yes"):
+        # Latido opcional: un aviso corto de "todo bien" cada día, para que la AUSENCIA del mensaje delate una VM o un cron caídos
+        # (si el proceso no corre, nadie puede avisar que no corrió).
+        markdown = f"✅ Refresco del {report['date']}: {report['clients_run']} clientes revisados, sin cambios ni nada que revisar."
+        interesting = True
     if not url or not interesting:
         return False
     try:

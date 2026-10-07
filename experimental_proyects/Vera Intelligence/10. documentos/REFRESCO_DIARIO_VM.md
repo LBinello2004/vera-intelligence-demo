@@ -1,117 +1,168 @@
-# Refresco diario del Data Map en una VM
+# Refresco diario del Data Map en una VM — guía completa
 
-Estado: **implementado y probado en Windows; sin probar en Linux** (2026-10-07). Reemplaza a la rutina de Claude `vera-intelligence-data-map-poller`.
+Estado (2026-10-07): implementado y probado en Windows con repos git de prueba y con una corrida real de punta a punta (Tigo). **Sin probar en Linux. La VM todavía no está armada.**
+Esta guía es la única que hace falta para armar la VM y entender qué pasa después. Reemplaza a la rutina de Claude `vera-intelligence-data-map-poller` (hay que desactivarla cuando la VM ande).
 
-## Qué hace
+---
 
-Una vez por día (lunes a viernes) revisa si cambió algún prompt de negocio en Langfuse (label `production`) de cada cliente. Si no cambió, termina en unos
-6 segundos por cliente y **no gasta nada** (no llama a Gemini). Si cambió, regenera el Data Map con Gemini (verificando cada regla nueva contra Postgres, solo
-lectura), lo pasa por un gate contra el SQL dorado del cliente y, **solo si pasa**, lo promueve. Todo lo promovido en el día se publica en **un solo commit y un solo
-push** al repo de la demo; la app en Streamlit Cloud toma el push sola (no hace falta reiniciarla a mano).
-
-Un cambio rechazado por el gate **no se olvida**: queda pendiente y se reintenta en la corrida siguiente, hasta 4 intentos por cambio de prompt. Recién
-después de agotarlos pide revisión humana.
-
-## Qué necesita la VM
-
-- Python 3.11 y un venv con `requirements.txt` del proyecto (`4. scripts/requirements.txt`).
-- Un **clon del repo de la demo** (`LBinello2004/vera-intelligence-demo`), en la rama `main`, con permiso de **push** (una deploy key con escritura o un token
-  limitado a ese repo). Es el repo desde el que se despliega la app.
-- Un archivo `.env` en la raíz del clon con las claves: `VERA_AI_API_KEY` (Gemini), las de Postgres (`PG*`, usuario **solo lectura**) y las de Langfuse. No hace falta
-  `JEV_API`. El `.env` no se versiona.
-- Salida a internet hacia Langfuse, Gemini y Postgres, y un disco que persista: el estado vive en `.runtime/` dentro del clon (versiones de prompt ya procesadas,
-  intentos, registros). Si se borra, el sistema vuelve a sembrar la línea de base sin regenerar nada.
-
-## Puesta en marcha (en este orden)
-
-1. Clonar, crear el venv, instalar dependencias y copiar el `.env`.
-2. Prueba sin publicar ni promover: `python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --no-pull --no-push --dry-run --clients tigo_alto`.
-   Tiene que decir `sin_cambios` (o generar una candidata si justo hubo un cambio).
-3. Prueba completa sin push: quitar `--dry-run --clients` y agregar `--no-push`. Si algo se promueve, queda commiteado solo en local.
-4. Probar el push a mano: `git push` desde el clon.
-5. Programar el cron (ver abajo) y mirar el reporte del primer día.
-
-## Cron
+## 1. Qué hace y cómo eso actualiza la app solo
 
 ```
-30 5 * * 1-5  cd /ruta/al/clon && /ruta/al/venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" >> /var/log/vi_refresh.log 2>&1
+Langfuse (prompts de negocio de cada cliente, label "production")
+        │  ① cron en la VM, todos los días hábiles a las 05:30
+        ▼
+run_daily_refresh.py  ── por cada uno de los clientes de "2. clientes/", en su propio proceso:
+        │   ② ¿cambió algún prompt desde la última versión procesada?
+        │        NO → termina (≈6 s por cliente, US$0 de Gemini)
+        │        SÍ → ③ Gemini regenera el Data Map (verifica cada regla nueva con SQL de solo lectura contra Postgres)
+        │              ④ gate: estructura + campos que no se perdieron + SQL dorado como verdad + el agente responde sin empeorar
+        │              ⑤ pasó → se promueve (se edita la línea `data_map:` de config.yaml y se agrega el archivo V<N+1>.yaml)
+        │                 no pasó → queda pendiente y se reintenta solo (hasta 4 intentos por cambio de prompt)
+        ▼
+⑥ UN solo commit + UN solo push al repo de la demo (solo si algo se promovió)
+        ▼
+⑦ Streamlit Community Cloud ve el push a `main` y vuelve a desplegar la app con el config.yaml nuevo
 ```
 
-Todo lo que sea de un solo disparo por día alcanza: el candado global evita que dos corridas se pisen (vence a las 6 h si un proceso murió).
+Por eso no hace falta tocar la app ni reiniciarla: el único "canal" entre la VM y la app es `git push` a `main`.
+Streamlit Cloud suele reflejar un push casi al instante y solo reinstala si cambian las dependencias (según su documentación; **no se verificó con esta app**). Las sesiones que ya estaban abiertas siguen con el Data Map anterior hasta que se reconectan.
 
-## Qué mirar
+Garantías que importan:
+- Los Data Maps viejos **nunca se borran ni se pisan**; cada promoción es una versión nueva (`V4`, `V5`...).
+- Cada promoción queda escrita en `2. clientes/<cliente>/data_map/CAMBIOS_AUTOMATICOS.md` (y `.jsonl`) con qué cambió, qué prompt la motivó, el resultado del gate y el comando exacto para revertirla.
+- Si algo falla, el sistema **no promueve**: la app sigue con el Data Map que ya tenía.
 
-- **Reporte del día:** `.runtime/daily_refresh/AAAA-MM-DD.md` (legible) y `.json` (completo). Si algún cliente necesita revisión, la primera línea dice
-  `⚠️ ACCIÓN REQUERIDA: <cliente>`.
-- **Código de salida:** `0` todo bien (haya o no promociones) · `1` algún cliente requiere revisión o falló · `2` no pudo empezar (otro refresco en curso, repo con cambios
-  ajenos sin commitear, `git pull` fallido) · `3` se promovió pero falló el push.
-- **Aviso opcional:** definir `VI_NOTIFY_WEBHOOK` con la URL de un webhook (formato `{"text": ...}`, compatible con Slack). Avisa solo si hubo promociones, clientes a
-  revisar, errores o un push fallido.
-- **Detalle por cliente:** `.runtime/data_map_updates/<cliente>/<fecha>.json`.
+---
 
-## Qué hace si algo sale mal
+## 2. Qué hay que hacer en la VM (una sola vez)
 
-- **Falla de red o caída de un cliente:** reintenta hasta 2 veces con espera y sigue con los demás; un cliente caído no frena al resto.
-- **Gate rechaza:** el cambio queda pendiente y se reintenta en la corrida siguiente (no se vuelve a pedir nada a una persona hasta agotar 4 intentos).
-- **Cambios ajenos sin commitear en el clon:** no toca nada y avisa (no pisa trabajo a mano).
-- **Push rechazado porque el remoto avanzó:** hace `pull --rebase` y reintenta una vez. Si sigue fallando, deja lo promovido commiteado en local y publica en la
-  corrida siguiente antes de hacer nada más.
+Requisitos: Linux con Python 3.11+ y git, salida a internet hacia GitHub, Langfuse, Gemini y Postgres, y **disco que persista** (el estado vive en `.runtime/` dentro del clon).
 
-## Registro de cambios y cómo volver atrás
+**Paso 1 — Clave de despliegue con permiso de escritura.** En GitHub, repo `LBinello2004/vera-intelligence-demo` → Settings → Deploy keys → Add deploy key → pegar la clave pública de la VM y tildar **Allow write access**. (Alternativa: un token fino limitado a ese repo.)
 
-Cada promoción (y cada reversión) queda escrita en `2. clientes/<cliente>/data_map/CAMBIOS_AUTOMATICOS.md` (legible, lo más nuevo arriba) y
-`CAMBIOS_AUTOMATICOS.jsonl` (una línea por evento). Cada entrada dice: fecha, versión anterior → nueva, qué prompt(s) la motivaron (con versión de Langfuse),
-qué campos/valores/secciones cambiaron, el changelog que escribió el modelo, el resultado del gate, el modelo usado y cuántos intentos hizo, y el **comando exacto
-para revertir**. Los archivos del registro viajan en el mismo commit que la promoción. Los Data Maps viejos nunca se borran.
-
-Revertir (ejemplos; correr desde la raíz del clon):
-
-```
-python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --list
-python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --reason "las cifras de X no coinciden" --publish
-python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --to 2
+**Paso 2 — Clonar e instalar.**
+```bash
+git clone git@github.com:LBinello2004/vera-intelligence-demo.git vera-demo
+cd vera-demo
+git config user.name  "Vera refresco automatico"
+git config user.email "refresco-automatico@vera.invalid"
+python3.11 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-Sin `--to` vuelve a la versión anterior de la última promoción automática. Reescribe solo la línea `data_map:` de `config.yaml`, deja alineado el almacén (para que la
-versión activa no pise la reversión), agrega la entrada `revertido` al registro y, con `--publish`, hace commit + push. El prompt cuyo cambio motivó la promoción queda
-marcado como procesado, así que **el refresco no vuelve a regenerarlo** hasta que el prompt cambie de nuevo.
+**Paso 3 — Credenciales.** Crear `vera-demo/.env` (en la raíz del clon; no se versiona):
+```
+VERA_AI_API_KEY=...          # Gemini
+PGPASSWORD=...               # Postgres (la conexión es de solo lectura por sesión)
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+LANGFUSE_BASE_URL=...
+# Opcionales (ver sección 4):
+VI_NOTIFY_WEBHOOK=https://hooks.slack.com/services/...
+VI_NOTIFY_HEARTBEAT=1
+```
+No hace falta `JEV_API` ni nada de Firestore.
 
-## Costo y cuándo pide revisión humana
+**Paso 4 — Prueba sin tocar nada** (desde `vera-demo/`):
+```bash
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --no-pull --no-push --dry-run --clients tigo_alto
+```
+Tiene que terminar con `sin_cambios` (la primera vez solo "siembra" la línea de base: anota qué versión de cada prompt ya está reflejada, sin regenerar nada). Si falla acá, es un problema de credenciales o de red, no del refresco.
 
-- Sin cambios de prompt: US$0 (no llama a Gemini).
-- Por cada cambio detectado: regeneración (no se registra su costo; estimado US$0,1–0,5 por intento) + gate v2 (≈US$0,36 medido con el descuento por tokens cacheados).
-  La cifra de US$1,46 que se dijo antes no consideraba ese descuento y era incorrecta.
-- Un prompt compartido entre varios clientes dispara la regeneración en cada uno de ellos (Langfuse tiene prompts comunes).
-- Ahorros incluidos: (1) un cambio solo de forma (espacios, mayúsculas, tildes, puntuación) se marca procesado sin regenerar (en el historial de 22 cambios: 0 casos, es
-  solo una guarda); (2) la espera de estabilidad `VI_SETTLE_HOURS` / `--settle-hours` está **desactivada por defecto**: en el historial los cambios repetidos de un mismo
-  cliente estaban separados por días, así que esperar 18 h no habría ahorrado nada; (3) modelo barato para el primer intento con `VI_REGEN_CHEAP_MODEL`: **desactivado por defecto** (ver abajo).
-- Pide revisión humana solo en: `gate_fallo_no_promovido` tras agotar los 4 intentos (`reintentos_agotados`), `error_regeneracion`, `deriva_de_columnas_no_promovido`.
-  Todo lo demás (reintentos pendientes, espera, otro proceso en curso) no avisa.
+**Paso 5 — Prueba completa sin publicar:**
+```bash
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --no-push
+```
+Recorre todos los clientes. Si justo hubo un cambio de prompt y se promueve algo, queda commiteado solo en local. Revisar `.runtime/daily_refresh/<fecha>.md`.
 
-## Prueba del modelo barato y corrección del gate (2026-10-07, Tigo, cambio real sales_evaluation v22→v23)
+**Paso 6 — Probar el push a mano:** `git push` desde el clon (con algo trivial) para confirmar que la clave de despliegue escribe.
 
-- Con el gate original, el Data Map **vigente** de Tigo fallaba su propio gate: (a) `numbers_in` descartaba enteros de menos de 3 dígitos, así que un conteo de 93 no se
-  podía encontrar nunca; (b) el banco dorado pide denominadores (139.950, 34.682) que el agente reporta distinto (107.159 analizables). Corregido: se buscan todos los
-  números, y si el candidato no menciona uno se le pregunta lo mismo al Data Map vigente y solo se rechaza si el vigente sí lo mencionaba (regresión).
-- Con el gate corregido pasaron los dos candidatos: `gemini-3.5-flash-lite` (45 s, **0 consultas SQL**) y `gemini-3.7-flash` (69 s, 4 consultas), con cambios casi idénticos.
-- El barato escribió "se verificó en Postgres QA" sin haber hecho ninguna consulta; el gate no detecta eso. Por eso `VI_REGEN_CHEAP_MODEL` queda vacío: el ahorro
-  (centavos por evento, unos pocos dólares al mes) no compensa una verificación declarada y no hecha. Una sola prueba, un solo cliente.
+**Paso 7 — Programar el cron** (`crontab -e`; revisar la zona horaria de la VM):
+```
+30 5 * * 1-5  cd /ruta/a/vera-demo && .venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" >> /ruta/a/vi_refresh.log 2>&1
+```
+Una sola corrida por día alcanza. Un candado impide que dos corridas se pisen (vence a las 6 h si un proceso murió).
 
-## Cómo el gate gasta menos y falla menos (2026-10-07)
+**Paso 8 — Desactivar la rutina de Claude** `vera-intelligence-data-map-poller` (si no, dos sistemas intentarían promover lo mismo) y mirar el reporte del primer día.
 
-- **Solo pregunta lo que el cambio puede afectar.** Compara el candidato con el vigente (`change_footprint`): si solo cambió `metadata` no le pregunta nada al agente (gate
-  casi gratis); si cambió un campo, solo las preguntas del banco cuyo SQL usa ese campo; si cambió una sección global (reglas SQL, ruteo, joins, perfiles), todas (hasta 4);
-  si solo cambió `limitations`, una pregunta centinela. En el historial real de Tigo, 2 de 3 cambios fueron solo de metadata; en Farma 24 y Mens Fashion tocaron 1–2 campos o
-  una sección global.
-- **El vigente se mide una vez.** Lo que responde el Data Map vigente se guarda (`.runtime/store/<cliente>/gate_baseline.json`, atado al hash del texto del vigente) y no se
-  vuelve a preguntar en reintentos ni en corridas siguientes.
-- **El reintento aprende del rechazo.** El intento siguiente recibe qué falló (campos perdidos, número que dejó de aparecer y la respuesta obtenida, deriva de columnas).
-- Sigue valiendo: estructura y campos perdidos se chequean siempre (sin costo); la pregunta al agente solo rechaza si hay regresión respecto del vigente.
+---
 
-## Lo que NO está resuelto
+## 3. Qué pasa cada día, en concreto
 
-- **No probado en Linux.** El código usa `pathlib` y subprocesos con el intérprete del venv; falta correrlo allá.
-- **Dos repos:** los Data Maps promovidos en la VM quedan en el repo de la demo, no en `data-sci-vera`. Hay que traerlos de vuelta de vez en cuando.
-- **Qué hace Streamlit Cloud ante el push:** según su documentación refleja el cambio casi en tiempo real y solo reinstala si cambian las dependencias, pero no se
-  verificó cómo reacciona esta app (las sesiones abiertas siguen con el Data Map anterior hasta que se reconectan).
-- **El gate verifica que el candidato no rompa lo que ya se medía, no que un cambio de prompt de negocio haya quedado bien interpretado.** Es un control mecánico.
+1. Toma el candado global. Publica primero lo que haya quedado promovido y sin publicar de una corrida anterior (push que había fallado).
+2. Exige repo limpio y hace `git pull --ff-only`. Si hay cambios ajenos sin commitear **no toca nada** y avisa.
+3. Corre cada cliente en su propio proceso, con límite de 60 minutos y hasta 2 reintentos solo ante fallas de proceso o de red.
+4. Escribe el reporte del día.
+5. Si algo se promovió: un solo commit que incluye exactamente, por cliente, `config.yaml`, el Data Map nuevo y los archivos `CAMBIOS_AUTOMATICOS`; push (si el remoto avanzó, hace `pull --rebase` y reintenta una vez).
+6. Avisa por webhook si está configurado.
+
+Estados posibles por cliente: `sin_cambios`, `promovido`, `cambio_cosmetico_sin_regenerar`, `reintento_pendiente` (**no requiere a nadie**), `en_curso_por_otro_proceso`, y los que **sí requieren revisión humana** (sección 4).
+
+---
+
+## 4. Dónde avisa si hace falta revisión humana
+
+**Importante: sin configurar nada, no avisa a nadie.** Lo único que queda es el reporte en la VM; alguien tiene que mirarlo. Para que avise de verdad hay que crear un canal y poner su URL en `VI_NOTIFY_WEBHOOK` (hoy no existe: decisión pendiente).
+
+| Dónde | Qué ve la persona | Cuándo |
+|---|---|---|
+| **Webhook** (`VI_NOTIFY_WEBHOOK`, formato `{"text": ...}` de Slack; sirve cualquier canal que lo acepte) | Un mensaje que empieza con `⚠️ ACCIÓN REQUERIDA: <clientes>` y lista cada cliente con su estado y el motivo | Cuando algún cliente requiere revisión, hubo un error de proceso, falló el push, o el refresco no pudo ni empezar (otra corrida en curso, repo con cambios ajenos, `git pull` fallido). **También avisa cuando se promueve algo** (informativo, sin la línea de acción) |
+| **Reporte del día** en la VM: `.runtime/daily_refresh/AAAA-MM-DD.md` (y `.json` con todo el detalle) | La primera línea dice `⚠️ ACCIÓN REQUERIDA: ...` si hace falta algo | Siempre se escribe |
+| **Log de cron** (`vi_refresh.log` según el cron del paso 7) | Lo mismo que el reporte, impreso | Siempre |
+| **Código de salida** del proceso | `0` bien · `1` algún cliente requiere revisión o falló · `2` no pudo empezar · `3` se promovió pero falló el push | Útil si algún monitor ya mira cron |
+| **Detalle por cliente** `.runtime/data_map_updates/<cliente>/<fecha>.json` | Candidata, changelog, preguntas del gate y por qué falló | Para entender un caso puntual |
+
+**Qué estados piden revisión humana y qué hacer:**
+
+| Estado | Qué significa | Qué hacer |
+|---|---|---|
+| `gate_fallo_no_promovido` | El gate rechazó el cambio de prompt y ya se usaron los 4 intentos permitidos | Mirar el detalle del cliente: qué pregunta falló y con qué números. Si el Data Map vigente ya no contesta bien esa pregunta, el banco dorado (`preguntas/preguntas_evaluacion.yaml`) puede estar desactualizado: corregirlo. Si el candidato es bueno, promoverlo a mano |
+| `reintentos_agotados` | Los intentos ya estaban agotados de corridas anteriores y el cambio sigue sin resolverse | Igual que el anterior (el sistema no vuelve a gastar hasta que alguien lo resuelva o el prompt cambie de nuevo) |
+| `reintento_pendiente` | El gate lo rechazó pero quedan intentos | **Nada**: se reintenta en la corrida siguiente, con el motivo del rechazo como pista para Gemini. No genera aviso de acción |
+| `error_regeneracion` | Gemini no devolvió un YAML válido ni después de 2 correcciones | Reintentar al día siguiente; si se repite, revisar el prompt diff |
+| `deriva_de_columnas_no_promovido` | El candidato declara campos que no existen en la vista real de Postgres | Revisar si la vista cambió |
+| `error_de_proceso` (errores) | El proceso del cliente se cayó o excedió 60 min, incluso con reintentos | Ver el log |
+| Push fallido (exit 3) | Hay algo promovido y commiteado en la VM que no llegó a GitHub | Revisar la clave de despliegue/red; la próxima corrida lo vuelve a intentar antes de hacer nada más |
+
+**Lo que NO cubre:** si la VM está apagada, el cron se cayó o el disco se perdió, **no hay nadie que pueda avisar que no corrió**. Para eso está el latido opcional: con `VI_NOTIFY_HEARTBEAT=1` (y webhook configurado) llega todos los días un mensaje corto `✅ Refresco del <fecha>: N clientes revisados, sin cambios`. **Si un día hábil no llega, hay que mirar la VM.**
+
+---
+
+## 5. Cómo volver atrás
+
+Cada promoción deja en `CAMBIOS_AUTOMATICOS.md` su comando de reversión. Desde la raíz del clon:
+```bash
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --list
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --reason "las cifras de X no coinciden" --publish
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/revert_data_map.py" --client tigo_alto --to 2
+```
+Sin `--to` vuelve a la versión anterior de la última promoción automática. Reescribe solo la línea `data_map:` de `config.yaml`, agrega la entrada `revertido` al registro y, con `--publish`, hace commit y push (la app se actualiza sola). No borra ninguna versión. El prompt que motivó la promoción queda marcado como procesado: **el refresco no vuelve a regenerarlo** hasta que ese prompt cambie otra vez.
+
+---
+
+## 6. Costo
+
+Medido el 2026-10-07 sobre el gate de los 19 clientes en su peor caso (todas las preguntas): US$1,09 en total, ≈US$0,06 por cliente (entre US$0,025 y US$0,10; Tigo US$0,20 por reintentos). Supone `gemini-3.7-flash` y tokens cacheados al 10 % del precio.
+La regeneración no se registra: estimada en US$0,10–0,40 por intento.
+
+| Situación | Costo |
+|---|---|
+| Día sin cambios de prompt | US$0 en Gemini (solo lee Langfuse y Postgres) |
+| Cambio que solo toca metadata | Solo la regeneración (el gate casi no cuesta) |
+| Cambio típico de un cliente | ≈US$0,15–0,60 |
+| Mes con el ritmo histórico (~20 eventos en 22 días) | ≈US$3–12 |
+
+Un prompt compartido entre varios clientes regenera una vez por cliente. La VM no suma costo si ya existe.
+
+Cómo se mantiene bajo: el gate solo le pregunta al agente lo que el cambio puede afectar (si solo cambió la metadata, nada); lo que responde el Data Map vigente se mide una vez y se guarda; los cambios de solo forma (espacios, tildes, mayúsculas) no regeneran. El modelo barato para regenerar (`VI_REGEN_CHEAP_MODEL`) está **apagado a propósito**: en la prueba pasó el gate pero no hizo ninguna consulta SQL y declaró haber verificado.
+
+---
+
+## 7. Límites conocidos (decirlos antes de confiar)
+
+- **No probado en Linux** y sin VM armada. El primer día hay que mirarlo.
+- **El gate es mecánico.** Verifica que el candidato no rompa lo que ya se medía (estructura, campos, números del SQL dorado), no que un cambio de prompt de negocio haya quedado bien interpretado. Un cambio que afecte campos que ninguna pregunta del banco usa queda sin verificar.
+- **Los bancos dorados envejecen** (las tablas crecen). El gate compara contra el Data Map vigente para no rechazar por eso, pero un banco con SQL roto se informa en el detalle del gate (`gate_bank_problems`) y hay que arreglarlo a mano.
+- **Falsos rechazos:** se probó que el gate acepta cada Data Map vigente como candidato de sí mismo (19 de 19), no que rechace correctamente uno malo con un modelo real.
+- **Dos repos:** lo que promueva la VM queda en el repo de la demo; el repo principal (`data-sci-vera`) queda desfasado hasta que se sincronice a mano.
+- **Streamlit Cloud ante el push:** según su documentación se refleja casi al instante, pero no se verificó con esta app.
