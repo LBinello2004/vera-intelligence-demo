@@ -2,7 +2,7 @@ client_id: huerpel_hostess_seminuevos
 display_name: "Huerpel Hostess Seminuevos"
 tenant: "Huerpel"
 model: gemini-3.7-flash
-data_map: "2. clientes/huerpel_hostess_seminuevos_medio/data_map/VI Data Map Huerpel Hostess Seminuevos V3.yaml"
+data_map: "2. clientes/huerpel_hostess_seminuevos_medio/data_map/VI Data Map Huerpel Hostess Seminuevos V4.yaml"
 
 # Sub-marca "Hostess Seminuevos" del grupo Huerpel (México): recepción inicial en la
 # unidad de vehículos SEMINUEVOS/usados multimarca (Nami), tienda única, 673 conversaciones

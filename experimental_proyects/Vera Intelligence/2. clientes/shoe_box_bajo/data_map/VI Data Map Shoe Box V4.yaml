@@ -1,0 +1,453 @@
+metadata:
+  name: VI Data Map Shoe Box V4
+  version: 4.0.0
+  nota_2026-10-07: 'Candidata rechazada por el gate. Sus referencias a v3 apuntan al contenido que hoy es la V5 (ver renumerado_2026-10-07 en V5).'
+  client: Shoe Box
+  model_target: Gemini 3.7
+  generated_at: '2026-10-05'
+  scope: Sólo seis vistas dashboard_v2 de Shoe Box. El tenant ('Shoe Box') es fijo para este cliente; no se
+    resuelve dinámicamente.
+  source_of_truth:
+    checklist_prompt: clientes/Canaima/Shoe Box/checklist (Langfuse, label production, v3 — actualizado 2026-09-28)
+    insights_prompt: clientes/Canaima/Shoe Box/insights (Langfuse, label production, v7 — actualizado 2026-10-05)
+    note: 'Grupo Canaima (marca paraguas de Shoe Box y F21 Shoes, ver el checklist: "auditor del protocolo de
+      venta de Grupo Canaima para interacciones... en tiendas Shoe Box y F21 Shoes"). Checklist propio de
+      venta asistida de calzado (13 campos, metodología A.C.E. para objeciones). Insights incluye 3 booleanos
+      generales (falta de stock, alternativa, complementario), 1 categórico general (motivo de venta perdida) y 2
+      campos por producto (rol, resultado) — sin demografía, sin motivador de visita, sin premiumización.'
+  changes_from_v3:
+  - 'Actualización de conversation_insights de v5 a v7: se formaliza el puente direccional con hubo_falta_stock
+      (si hubo_falta_stock=true en no_compra, motivo_de_venta_perdida debe ser la variante disponibilidad_* correspondiente
+      o disponibilidad_sin_modelo por defecto si no se precisa la variante, evitando no_determinado/no_aplica salvo objeción
+      posterior más fuerte). Se redefine sin_urgencia_o_deja_pensar para abarcar abandonos y postergaciones legibles sin causa
+      sustantiva ("lo dejo acá", "después veo", retirarse tras atención legible), acotando no_determinado a casos sin señal
+      o con transcripciones demasiado degradadas (diarización colapsada, audio truncado, ASR corrupto, cliente ausente; prohibiendo
+      no_aplica para audios degradados). Se exige estricta coherencia en resumen_conversacion prohibiendo no_determinado si el
+      resumen explicita una causa de no compra.'
+  - 'Crecimiento de la base a 1.291 conversaciones (933 útiles para análisis, verificado 2026-10-05). En registros históricos
+      previos a v5 motivo_de_venta_perdida presenta NULL (931 filas), registrando 360 conversaciones evaluadas bajo v5/v7.'
+  changes_from_v2:
+  - 'Actualización de conversation_insights de v2 a v5: se introduce el campo categórico general motivo_de_venta_perdida
+      en dashboard_v2.vw_shoe_box_insights_categoricos_generales para identificar la causa principal verbalizada de la no
+      compra (o no_aplica en compras e interacciones no comerciales). Se formalizan reglas de consistencia con tipoInteraccion
+      (compra siempre implica no_aplica) y con hubo_falta_stock (disponibilidad_sin_* alineado con falta de stock).
+      El descriptivo resumen_conversacion se sincroniza con este campo.'
+  - 'Crecimiento de la base a 1.004 conversaciones (708 útiles para análisis, verificado 2026-10-01). En registros históricos
+      previos a v5 motivo_de_venta_perdida presenta NULL (931 filas), registrando 73 conversaciones evaluadas bajo v5.'
+  changes_from_v1:
+  - 'Actualización de conversation_insights de v1 a v2: se redefine el orden de resolución estableciendo
+      tipoInteraccion como hecho ancla global previo a clasificar productos. Se incorpora la regla estricta de
+      consistencia (si tipoInteraccion="compra", al menos un producto debe ser "comprado", creándose un registro
+      con rol_producto="no_claro" si no puede identificarse el artículo; si "no_compra", ningún producto puede
+      ser "comprado"). Arrays de producto vacíos sólo permitidos en "no_compra".'
+  - 'Actualización de sales_evaluation de v1 a v3: VendedorRealizoPreguntaExplicitaDeCierre se amplía operativamente
+      a cualquier acción verbal explícita de avance/cierre (propuesta, confirmación, invitación, preparación,
+      caja/pago, "vamos para que canceles"), sin exigir forma interrogativa y evaluando el cierre antes del desenlace
+      sin penalizar señales exploratorias intermedias. Se formaliza la regla de prioridad de usefulForAnalysis
+      (true ante cualquier tramo comercial reconocible).'
+  - 'Crecimiento de la base a 471 conversaciones (299 útiles para análisis, verificado 2026-09-28).'
+  hallazgos_criticos_verificados_2026-10-05:
+  - 'Distribución y consistencia de motivo_de_venta_perdida (verificado contra 360 filas no nulas bajo prompt v5/v7 de 1.291 totales):
+      100% de consistencia en tipointeraccion="compra" con motivo_de_venta_perdida="no_aplica" (71/71). En tipointeraccion="no_compra"
+      (289 filas), se observa no_determinado=129, no_aplica=54, sin_urgencia_o_deja_pensar=39, disponibilidad_sin_talla=35,
+      disponibilidad_sin_modelo=18, objecion_ajuste_incomodidad=6, disponibilidad_sin_color=6, precio_o_presupuesto=1,
+      otra_tienda_o_competencia=1.'
+  - 'Coherencia stock vs motivo de disponibilidad: el 100% de los casos con motivo disponibilidad_sin_* (59/59: talla=35, modelo=18, color=6)
+      registran hubo_falta_stock=true.'
+  - 'Distribución general en 1.291 conversaciones: hubo_falta_stock (true=360, false=931), hubo_ofrecimiento_alternativa
+      (true=319, false=972), hubo_ofrecimiento_complementario (true=121, false=1170). Demografía: compra=259, no_compra=1032,
+      usefulforanalysis=933.'
+  hallazgos_criticos_verificados_2026-10-01:
+  - 'Distribución y consistencia de motivo_de_venta_perdida (verificado contra 73 filas no nulas bajo prompt v5 de 1.004 totales):
+      100% de consistencia en tipointeraccion="compra" con motivo_de_venta_perdida="no_aplica" (12/12). En tipointeraccion="no_compra"
+      (61 filas), se observa no_determinado=25, no_aplica=18, disponibilidad_sin_modelo=5, objecion_ajuste_incomodidad=4,
+      disponibilidad_sin_talla=3, disponibilidad_sin_color=3, sin_urgencia_o_deja_pensar=1, precio_o_presupuesto=1,
+      otra_tienda_o_competencia=1.'
+  - 'Coherencia stock vs motivo de disponibilidad: el 100% de los casos con motivo disponibilidad_sin_* (11/11) registran
+      hubo_falta_stock=true.'
+  - 'Distribución general en 1.004 conversaciones: hubo_falta_stock (true=276, false=728), hubo_ofrecimiento_alternativa
+      (true=260, false=744), hubo_ofrecimiento_complementario (true=94, false=910). Demografía: compra=200, no_compra=804.'
+  hallazgos_criticos_verificados_2026-09-28:
+  - 'Consistencia estricta tipoInteraccion vs resultado_producto (verificado contra 471 filas): las 84 conversaciones
+      con tipointeraccion="compra" tienen exactamente ≥1 producto con resultado_producto="comprado" (84/84). Las 387
+      conversaciones con tipointeraccion="no_compra" tienen 0 productos con resultado_producto="comprado".'
+  - 'Distribución de productos y arrays vacíos: en tipointeraccion="no_compra", 212 conversaciones tienen array vacío
+      (sin filas en vw_shoe_box_insights_categoricos_por_producto); en "compra", el 100% posee productos registrados,
+      incluyendo 11 casos con rol_producto="no_claro" y resultado_producto="comprado".'
+  - 'Ampliación de enums observados en producto: rol_producto presenta 4 valores observados (principal=319,
+      complementario=41, alternativo=39, no_claro=14; total n=413 productos). resultado_producto presenta 3 valores
+      observados (no_claro=198, comprado=112, no_comprado=103).'
+  - 'En insights categóricos generales (n=471), hubo_falta_stock registra true=132, false=339;
+      hubo_ofrecimiento_alternativa registra true=122, false=349; hubo_ofrecimiento_complementario registra
+      true=43, false=428.'
+  known_findings_v1:
+  - '[HISTÓRICO V1 -SUPERADO EN V2: al 2026-09-28 la base creció a 471 conversaciones (299 analizables),
+      verificado en Postgres QA; las cifras vigentes son las de hallazgos_criticos_verificados_2026-09-28 y
+      las descripciones de campo. No aplicar esta advertencia de n=7 a respuestas actuales.]
+      ADVERTENCIA CRÍTICA DE VOLUMEN: este Data Map se construyó con **7 conversaciones totales** en Postgres
+      (5 analizables, verificado 2026-09-07) — el prompt de checklist/insights se publicó apenas el
+      2026-09-04, 3 días antes de este onboarding. Todos los "hallazgos" de este mapa son literalmente la
+      lectura completa de esas 7 filas, no una muestra estadística. NINGÚN porcentaje o tasa de este cliente
+      debe presentarse con la misma confianza que en clientes con miles de conversaciones — el agente debe
+      aclarar el tamaño de la base cada vez que dé una cifra. Reauditar este Data Map cuando el volumen
+      crezca (recomendado: al menos unos cientos de conversaciones) — los "hallazgos" actuales pueden no
+      sostenerse. RE-VERIFICADO el mismo día (2026-09-07, unas horas después del onboarding): sigue en 7
+      filas, sin conversaciones nuevas desde el 2026-09-04 -no hay todavía nada que reauditar, el pipeline
+      de ingesta de Shoe Box no muestra actividad reciente-. Volver a chequear el conteo de filas antes de
+      asumir que este Data Map sigue vigente si pasa más tiempo.
+      EVALUACIÓN DE GRADO (2026-09-07): a diferencia de Atlas/Tigo/High Life (que subieron de grado el
+      mismo día tras verificar su ejecución, ver README.md), Shoe Box se mantiene en "bajo" a propósito.
+      La ejecución del agente es correcta -verificado, aclara el tamaño de muestra explícitamente en cada
+      respuesta- pero acá el problema no es una porción del histórico poco confiable (como en High Life,
+      donde el 27% vigente sigue siendo válido): con n=7, NINGÚN porcentaje o tasa de este cliente es
+      estadísticamente significativo, así que no hay una porción "sana" del alcance en la que apoyarse.
+      No hay ningún cambio de Data Map, prompt o código que resuelva esto -es un problema de volumen real
+      de datos, no de ingeniería-. Reevaluar el grado sólo cuando el volumen real crezca (ver advertencia
+      de arriba), no antes.'
+  - 'No hay tabla demography con campos de perfil de cliente (género, tipo, necesidad, decisión, precio,
+      urgencia) como en los otros clientes del proyecto: vw_shoe_box_demografia sólo tiene tipointeraccion
+      además de las columnas genéricas. Este Data Map no puede responder preguntas de demografía del
+      cliente.'
+  - '[HISTÓRICO V1, con n=7; no re-auditado todavía con n=471] Con sólo 7 filas, no se detectaron problemas de casing, columnas muertas ni dual-source -no hay
+      suficiente volumen para que esos patrones se manifiesten o se descarten con confianza-.'
+  - 'RAG no aplica: el checklist no declara geminiFileSearchStoreName.'
+decision_flow:
+- 'ANTES DE RESPONDER CUALQUIER PREGUNTA: verificar tamaño de la base y aclarar la base evaluada (n) en cada respuesta.'
+- Identificar si la pregunta es general de conversación o específica de producto.
+- Resolver profile, grano, tenant y fecha antes de escribir SQL.
+- Verificar que cada condición explícita de la pregunta aparezca en SELECT, WHERE, GROUP BY o cálculo.
+routing:
+  demography:
+    questions: sólo resultado de la interacción (tipointeraccion); no hay perfil de cliente
+    avoid: no inventar campos de género/necesidad/decisión que no existen en esta vista para este cliente
+  performance:
+    questions: los 13 criterios del checklist (saludo, descubrimiento, escucha, orientación, argumentación,
+      validación, manejo de objeciones A.C.E., venta complementaria, cierre, despedida)
+    avoid: no tratar N/A como incumplimiento
+  categorical_insights:
+    questions: falta de stock, ofrecimiento de alternativa, ofrecimiento de complementario, motivo de venta perdida
+      (3 booleanos generales y 1 categórico general, sin motivador de visita ni premiumización)
+    avoid: no inventar campos que no existen en este insights (mucho más chico que el de retail de moda);
+      no confundir falta de talla/stock con objeción de ajuste; si tipoInteraccion="compra", motivo_de_venta_perdida es no_aplica;
+      transcripciones degradadas van a no_determinado (nunca no_aplica); si hubo_falta_stock=true en no_compra, asignar disponibilidad_*
+      (no no_determinado/no_aplica) salvo freno posterior más fuerte; abandonos/postergaciones legibles son sin_urgencia_o_deja_pensar
+      (no no_determinado)
+  descriptive_insights:
+    questions: resumen de la conversación (un solo campo de texto libre)
+    avoid: no agrupar ni calcular frecuencia de texto
+  categorical_product_insights:
+    questions: rol del producto (principal/alternativo/complementario/no_claro) y si se compró
+    avoid: no afirmar ventas transaccionales sin evidencia; si tipoInteraccion="compra", al menos un producto tiene resultado_producto="comprado"
+  descriptive_product_insights:
+    questions: producto mencionado, marca/modelo, talla, color (todo texto libre observado, no un enum cerrado)
+    avoid: no inferir marca/talla/color por conocimiento externo del catálogo
+profiles:
+  standard_conversation:
+    row_key: conversation_id
+    tenant_field: seller_id
+    date_field: uploaded_at_local
+    optional_dimensions: [store_id, store_name, sector_id, sector_name, employee_id, employee_full_name]
+    quality_filter: usefulforanalysis IS TRUE cuando la pregunta se refiera a conversaciones analizables. Prioridad de regla útil si existe al menos un tramo comercial reconocible.
+sql_rules:
+  scope: Usar únicamente sources[].source. Nunca consultar otra vista, schema o cliente.
+  read_only: Un único SELECT o WITH...SELECT; sin interpolar texto del usuario; LIMIT 200 para detalle.
+  tenant: Aplicar el valor exacto autorizado de sesión ('Shoe Box') sobre seller_id en cada fuente.
+  time: Filtrar profiles.standard_conversation.date_field sólo cuando el usuario indique un período.
+  conversation_population: COUNT(DISTINCT conversation_id).
+  product_population: COUNT(DISTINCT (conversation_id, producto_index)).
+  performance_rate: 'cumplimientos / base_evaluada; base = conversaciones distintas con valor Sí o No; excluir
+    N/A y null. Declarar siempre el tamaño de la base evaluada, no sólo el porcentaje.'
+  free_text: Seleccionar como evidencia con claves y fecha. Nunca GROUP BY, COUNT o ranking por texto narrativo.
+semantic_dependencies:
+  low_volume_warning: 'Cualquier cálculo de tasa/porcentaje debe declarar el tamaño de la base evaluada
+    explícitamente (ej. "48 de 223") para contextualizar el indicador.'
+  ace_method: 'vendedormanejoobjecionesconace sólo es "Sí" si el vendedor cumple las 3 funciones del método
+    A.C.E. (Aceptar, Clarificar, Explicar/Explorar) ante una objeción real. No exige las palabras literales,
+    pero las tres funciones deben estar presentes.'
+joins:
+  general_evidence:
+    left: categorical_insights
+    right: descriptive_insights
+    keys: [conversation_id]
+    cardinality: conversation_to_conversation
+  product_evidence:
+    left: categorical_product_insights
+    right: descriptive_product_insights
+    keys: [conversation_id, producto_index]
+    cardinality: product_to_product
+  rule: No usar CROSS JOIN para asociar evidencia. Si falta una clave, no atribuir el texto al grupo categórico.
+sources:
+  demography:
+    source: dashboard_v2.vw_shoe_box_demografia
+    use_when: Resultado de la interacción (compra/no compra). Única dimensión disponible en esta vista para
+      este cliente.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      tipointeraccion:
+        configured_values: [compra, no_compra]
+        observed_values: [compra, no_compra]
+        type: text
+        nullable: false
+        description: 'Resultado global de la interacción según el insights, resuelto primero a partir de evidencia
+          transaccional observable (confirmación definitiva, paso a caja, pago, ticket). No se deriva de
+          resultado_producto. Si tipoInteraccion="compra", al menos un producto tiene resultado_producto="comprado".
+          Si "no_compra", ningún producto tiene "comprado". Verificado (n=471): 84 compra, 387 no_compra.'
+        operations: [filter, group, compare]
+  performance:
+    source: dashboard_v2.vw_shoe_box_rendimiento_vendedor
+    use_when: Los 13 criterios del checklist de venta asistida de calzado.
+    grain: Una fila por conversación con múltiples columnas de criterios.
+    profile: standard_conversation
+    decision_semantics: 'Campos en sentido positivo. "Sí" = conducta realizada correctamente. "No" = situación
+      evaluable con oportunidad real y el vendedor no la realizó o insuficiente. "N/A" = sin oportunidad real
+      o disparador fuera del audio.'
+    fields:
+      vendedorsaludoyofrecioayuda:
+        configured_values: &si_no_na [Sí, 'No', N/A]
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Saludo y disponibilidad. Sí requiere AMBOS componentes: saludo/bienvenida cordial Y
+          ofrecimiento de ayuda/orientación. Verificado (n=471): Sí=151, No=99, N/A=221.'
+        operations: [filter, group, compare]
+      vendedorrealizotrespreguntasutiles:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Descubrimiento. Sí: ≥3 preguntas útiles (uso, talla, tipo, estilo, color, ajuste, marca,
+          presupuesto, destinatario, prioridades) ANTES de la primera recomendación. No cuenta información
+          espontánea del cliente. Verificado (n=471): Sí=208, No=48, N/A=215.'
+        operations: [filter, group, compare]
+      vendedorrealizopreguntaabierta:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Descubrimiento. Sí: al menos una pregunta abierta (invita a desarrollar, no es de
+          filtro tipo "¿qué talla?"). Verificado (n=471): Sí=106, No=150, N/A=215.'
+        operations: [filter, group, compare]
+      vendedorreformulooconfirmolanecesidad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Escucha y confirmación. Sí: resume/reformula/confirma la necesidad identificada antes de
+          recomendar. Verificado (n=471): Sí=11, No=141, N/A=319.'
+        operations: [filter, group, compare]
+      vendedorpresentoopcionprincipalpertinente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Orientación. Sí: presenta al menos una opción compatible con la necesidad conocida (no
+          exige múltiples opciones). Verificado (n=471): Sí=239, No=17, N/A=215.'
+        operations: [filter, group, compare]
+      vendedorofrecioalternativascuandoaplicaba:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Orientación. Sí: ofrece una segunda opción ante falta de stock, duda/rechazo del
+          cliente, pedido explícito de comparar, o necesidad no específica en instancia de recomendación.
+          Verificado (n=471): Sí=125, No=70, N/A=276.'
+        operations: [filter, group, compare]
+      vendedorconectobeneficioconnecesidad:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Argumentación de valor. Sí: conecta explícitamente una característica/beneficio con la
+          necesidad conocida (no alcanza con "es cómodo" sin relacionarlo). Verificado (n=471): Sí=174, No=82,
+          N/A=215.'
+        operations: [filter, group, compare]
+      vendedorpreguntocomolequedaoquecambiaria:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Validación. Sí: pregunta activamente por ajuste/comodidad/opinión durante o después de
+          la prueba. Verificado (n=471): Sí=104, No=152, N/A=215.'
+        operations: [filter, group, compare]
+      vendedormanejoobjecionesconace:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Manejo de objeciones. Sí sólo si cumple las 3 funciones A.C.E. (Aceptar, Clarificar,
+          Explicar/Explorar) ante una objeción real. Ver semantic_dependencies.ace_method. Verificado (n=471):
+          Sí=9, No=62, N/A=400.'
+        operations: [filter, group, compare]
+      vendedorofrecioventacomplementariapertinente:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Venta complementaria. Sí: propone activamente un producto adicional (no reemplazo) una
+          vez resuelta o encaminada la necesidad principal. Verificado (n=471): Sí=44, No=141, N/A=286.'
+        operations: [filter, group, compare]
+      vendedorrealizopreguntaexplicitadecierre:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Cierre. Sí: cualquier intervención verbal explícita del vendedor para concretar o hacer
+          avanzar la compra ante una señal clara de decisión (pregunta, confirmación, invitación, indicación o
+          propuesta; no exige forma interrogativa; incluye preparar producto, pasar a caja, proceder al pago, o
+          "vamos para que canceles" donde cancelar=pagar). Se evalúa si antes del desenlace realiza al menos una
+          acción explícita de cierre sin penalizar señales preliminares mientras se explora.
+          Verificado (n=471): Sí=48, No=175, N/A=248.'
+        operations: [filter, group, compare]
+      vendedoragradecioysedespidio:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Despedida. Sí requiere AMBOS componentes: agradecimiento Y despedida cordial. Verificado
+          (n=471): Sí=171, No=85, N/A=215.'
+        operations: [filter, group, compare]
+      vendedorinvitoaregresar:
+        configured_values: *si_no_na
+        observed_values: *si_no_na
+        type: text
+        nullable: false
+        description: 'Despedida y relación. Sí: invita explícitamente a regresar durante la despedida (compartir
+          un WhatsApp/contacto no cuenta por sí solo). Verificado (n=471): Sí=101, No=155, N/A=215.'
+        operations: [filter, group, compare]
+  categorical_insights:
+    source: dashboard_v2.vw_shoe_box_insights_categoricos_generales
+    use_when: Falta de stock, ofrecimiento de alternativa, ofrecimiento de complementario y motivo de venta perdida a nivel conversación.
+    grain: Una fila por conversación.
+    profile: standard_conversation
+    fields:
+      hubo_falta_stock:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: 'true sólo si se indica explícitamente que talla/color/modelo/marca/variante no está
+          disponible (ante duda, false). Verificado (n=471): true=132, false=339.'
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_alternativa:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: 'true si el vendedor propone activamente otra opción para la misma necesidad (ante duda,
+          false). Verificado (n=471): true=122, false=349.'
+        operations: [filter, group, compare]
+      hubo_ofrecimiento_complementario:
+        type: boolean
+        configured_values: [false, true]
+        observed_values: [false, true]
+        nullable: false
+        description: 'true si el vendedor propone activamente un producto adicional que complementa (no
+          reemplaza) la necesidad principal. Verificado (n=471): true=43, false=428.'
+        operations: [filter, group, compare]
+      motivo_de_venta_perdida:
+        type: text
+        configured_values:
+        - condiciones_cambio_o_garantia
+        - disponibilidad_sin_color
+        - disponibilidad_sin_modelo
+        - disponibilidad_sin_talla
+        - no_aplica
+        - no_determinado
+        - objecion_ajuste_incomodidad
+        - objecion_calidad_o_autenticidad
+        - objecion_estilo_o_diseno
+        - otra_tienda_o_competencia
+        - otro
+        - precio_o_presupuesto
+        - sin_urgencia_o_deja_pensar
+        observed_values:
+        - disponibilidad_sin_color
+        - disponibilidad_sin_modelo
+        - disponibilidad_sin_talla
+        - no_aplica
+        - no_determinado
+        - objecion_ajuste_incomodidad
+        - otra_tienda_o_competencia
+        - precio_o_presupuesto
+        - sin_urgencia_o_deja_pensar
+        nullable: true
+        description: 'Causa principal verbalizada por la cual no se concretó la venta. Resuelto con evidencia observable
+          directa. En tipoInteraccion="compra" es siempre "no_aplica". En "no_compra" no comercial (saludos, consultas
+          operativas sin interés comercial) es "no_aplica". Si la transcripción está demasiado degradada (diarización colapsada,
+          audio truncado, bucles/alucinaciones ASR, cliente ausente) se clasifica "no_determinado" (nunca "no_aplica"). En no_compra
+          comercial con hubo_falta_stock=true debe asignarse la variante disponibilidad_* correspondiente (talla, color, o
+          disponibilidad_sin_modelo si no se precisa) salvo evidencia posterior más fuerte de otro freno. Abandonos o postergaciones
+          legibles sin causa sustantiva ("lo voy a pensar", "vuelvo después", "lo dejo acá") van a "sin_urgencia_o_deja_pensar" (no
+          "no_determinado"). "no_determinado" cubre conversaciones legibles sin señal de motivo o audios degradados. No confundir
+          falta de talla en stock (disponibilidad_sin_talla) con incomodidad/calce al probar (objecion_ajuste_incomodidad). En el
+          histórico previo a v5 contiene NULL (931/1291 filas). Verificado en v5/v7 (n=360 no nulos): no_determinado=129, no_aplica=125,
+          sin_urgencia_o_deja_pensar=39, disponibilidad_sin_talla=35, disponibilidad_sin_modelo=18, objecion_ajuste_incomodidad=6,
+          disponibilidad_sin_color=6, otra_tienda_o_competencia=1, precio_o_presupuesto=1.'
+        operations: [filter, group, compare]
+  descriptive_insights:
+    source: dashboard_v2.vw_shoe_box_insights_descriptivos_generales
+    use_when: Resumen textual de la conversación.
+    grain: Una fila por conversación; texto libre no agregable.
+    profile: standard_conversation
+    fields:
+      resumen_conversacion:
+        type: text
+        nullable: true
+        description: 'Resume qué buscaba el cliente, qué opciones fueron relevantes, qué ocurrió durante la
+          atención y si hubo compra observable. Coherente con tipoInteraccion y con motivo_de_venta_perdida. Si el
+          resumen afirma una razón de no-compra (ej. "no había la talla", "el cliente lo dejó para pensarlo"),
+          motivo_de_venta_perdida no puede ser "no_determinado". No atribuye motivos no expresados.'
+        operations: [select_evidence]
+  categorical_product_insights:
+    source: dashboard_v2.vw_shoe_box_insights_categoricos_por_producto
+    use_when: Rol del producto en la conversación y si se compró.
+    grain: Una fila por conversation_id + producto_index.
+    profile: standard_conversation
+    fields:
+      producto_index:
+        type: integer
+        nullable: false
+        description: Índice del producto dentro de la conversación. Clave de join con descriptive_product_insights.
+        operations: [join_key, filter]
+      rol_producto:
+        configured_values: [alternativo, complementario, no_claro, principal]
+        observed_values: [alternativo, complementario, no_claro, principal]
+        type: text
+        nullable: false
+        description: 'principal: centro de la necesidad. alternativo: reemplazo/competidor de otro producto.
+          complementario: se agrega a un producto principal. no_claro: asignado cuando hay compra global inequívoca
+          pero no puede identificarse con precisión qué producto fue comprado. Verificado (n=413 productos):
+          principal=319, complementario=41, alternativo=39, no_claro=14.'
+        operations: [filter, group, compare]
+      resultado_producto:
+        configured_values: [comprado, no_claro, no_comprado]
+        observed_values: [comprado, no_claro, no_comprado]
+        type: text
+        nullable: false
+        description: 'Determinado tras resolver tipoInteraccion. comprado: evidencia observable suficiente de compra
+          de ese producto, o producto vinculado a una compra global inequívoca (rol_producto="no_claro" si no se
+          identifica el artículo). no_comprado: evidencia clara de descarte/rechazo (no marcar sólo porque la
+          interacción general sea no_compra). no_claro: desenlace abierto o audio incompleto sin descarte claro.
+          Si tipoInteraccion="compra", al menos un producto queda comprado; si "no_compra", ninguno queda comprado.
+          Verificado (n=413): no_claro=198, comprado=112, no_comprado=103.'
+        operations: [filter, group, compare]
+  descriptive_product_insights:
+    source: dashboard_v2.vw_shoe_box_insights_descriptivos_por_producto
+    use_when: Producto mencionado, marca/modelo, talla y color por producto — todo texto libre observado.
+    grain: Una fila por conversation_id + producto_index; texto libre no agregable como categoría.
+    profile: standard_conversation
+    fields:
+      producto_index: {type: integer, nullable: false, description: Índice del producto; unir con la vista categórica usando conversation_id + producto_index., operations: [join_key, filter]}
+      producto_mencionado: {type: text, nullable: true, description: 'Descripción breve del producto (ej. "tenis para correr", "sandalias"). NULL si no puede identificarse razonablemente.', operations: [select_evidence]}
+      marca_modelo: {type: text, nullable: true, description: Marca y/o modelo verbalizados. Nunca completado por conocimiento externo del catálogo. NULL si no se menciona., operations: [select_evidence]}
+      talla: {type: text, nullable: true, description: Talla verbalizada, sin conversión de sistemas salvo que la conversación lo haga explícito. NULL si no aparece., operations: [select_evidence]}
+      color: {type: text, nullable: true, description: Color verbalizado. Nunca inferido por modelo o marca. NULL si no aparece., operations: [select_evidence]}
+limitations:
+- Compra y resultado son inferencias conversacionales del modelo, no tickets ni ventas certificadas.
+- 'Volumen: al 2026-09-28 la base tiene 471 conversaciones (299 analizables). El volumen ya permite tasas
+  razonables a nivel cliente, pero cortes finos (por vendedor o tienda) pueden quedar con bases chicas -declarar
+  siempre la base evaluada-. Casing, columnas muertas y dual-source todavía no se re-auditaron con este volumen.'
+- No existe información de demografía del cliente (género, necesidad, decisión, precio, urgencia) para este
+  cliente — la vista demography sólo expone tipointeraccion.
+- El mapa no responde organización, conectividad, gamificación, roleplays ni dominios de otros clientes.

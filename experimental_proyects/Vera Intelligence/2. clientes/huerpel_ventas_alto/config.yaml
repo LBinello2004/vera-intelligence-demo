@@ -2,7 +2,7 @@ client_id: huerpel_ventas
 display_name: "Huerpel Ventas"
 tenant: "Huerpel"
 model: gemini-3.7-flash
-data_map: "2. clientes/huerpel_ventas_alto/data_map/VI Data Map Huerpel Ventas V3.yaml"
+data_map: "2. clientes/huerpel_ventas_alto/data_map/VI Data Map Huerpel Ventas V4.yaml"
 
 # Sub-marca "Ventas" del grupo Huerpel (México): asesoría comercial de piso (APV) que
 # continúa la atención después de la recepción de Hostess/Hostess Seminuevos. Es la

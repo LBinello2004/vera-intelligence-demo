@@ -1,0 +1,85 @@
+metadata:
+  name: Banco de robustez ante preguntas vagas y trampas - Tigo
+  purpose: 'Mini-banco construido a partir del análisis de un compañero del equipo (2026-10-02) que
+    encontró fallas del agente en preguntas vagas: mezcla denominadores, entrega categorías que se
+    pisan como si fueran causas distintas, responde una parte de la pregunta y pasa por alto la
+    otra. Parte de Tigo (las otras viven en mens_fashion_alto y farma24_alto, mismo nombre de
+    archivo). NO es un banco dorado ni lo usa el gate de promoción de Data Map.'
+  origen: 'origen=explicita: redacción copiada del análisis. origen=reconstruida: armada a partir de
+    la descripción por grupo del análisis.'
+  factibilidad_hoy: 'posible = el agente tiene lo necesario. parcial = una parte se puede resolver y
+    otra no (resolver la posible y decir el límite de la otra). imposible_sin_nueva_fuente = falta
+    un dato -la conducta correcta es el límite explícito, no insistir-.'
+  como_evaluar: 'run_evaluation.py + revisión manual contra criterios_evaluacion (sin scoring
+    automático). Mirar tool_calls_agente en el JSON de salida.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client tigo_alto --bank
+    "2. clientes/tigo_alto/preguntas/preguntas_robustez_vagas.yaml" --output <ruta fuera del
+    repo>.json  (sin --output pisa resultados_evaluacion.json del banco dorado)'
+
+preguntas:
+  - id: rob_ti_01_causas_raiz_quejas_factura
+    grupo: A_metrica_ya_extraida
+    origen: explicita
+    factibilidad_hoy: parcial
+    pregunta: ¿Cuáles son las causas raíz de las quejas por factura?
+    objetivo: >-
+      El análisis original vio conteos por síntoma con categorías que se pisan (variación,
+      inconformidad, queja formal) y causas raíz sin números. Resolver la taxonomía de origen no es
+      tarea del agente: lo correcto es usar lo que existe, advertir cuando las categorías se pisan
+      y complementar lo cualitativo con la búsqueda. NO iterar para forzar categorías mutuamente
+      excluyentes que el dato no tiene.
+    sql: null
+    criterios_evaluacion:
+    - "Las cifras salen de run_readonly_sql sobre campos reales, con base declarada y sin mezclar denominadores distintos en la misma lista."
+    - "Si presenta categorías que se pisan entre sí, lo advierte en vez de sumarlas o compararlas como si fueran causas distintas."
+    - "Las causas raíz cualitativas salen de search_conversations, sin números de la búsqueda."
+    - "No inventa una cifra por causa raíz que no sale de un campo estructurado."
+
+  - id: rob_ti_02_bajas_competencia
+    grupo: A_metrica_ya_extraida
+    origen: explicita
+    factibilidad_hoy: parcial
+    pregunta: ¿Están subiendo las bajas por competencia? ¿Cuánto más barata es la oferta?
+    objetivo: >-
+      La primera parte se resuelve con el campo de causa de retiro (mejor oferta externa).
+      La segunda ("cuánto más barata") necesita un diferencial de precio que no está extraído, y
+      estimarlo a partir de un puñado de casos es justo lo que el análisis original criticó. La
+      conducta correcta es resolver la tendencia bien y decir el límite de la segunda parte. NO
+      iterar para forzar un porcentaje de diferencia de precio.
+    sql: null
+    criterios_evaluacion:
+    - "Chequea la premisa de \"subiendo\": compara períodos con sus bases y dice explícitamente si sube, baja o casi no se mueve."
+    - "Usa denominadores coherentes (no mezcla bajas totales con bajas que tienen causa registrada sin decirlo)."
+    - "Dice explícitamente que no tiene el diferencial de precio de la oferta como dato y no da un porcentaje de ahorro."
+    - "Puede describir cualitativamente lo que dicen los clientes sobre las ofertas externas, sin cifras de la búsqueda."
+    - "Menciona, si lo detecta, que parte de esta señal puede estar clasificada bajo precio o factura alta."
+
+  - id: rob_ti_03_ofertas_claro_movistar
+    grupo: B_no_extraido_fuerza_busqueda
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿Qué ofertas de Claro y Movistar mencionan los clientes que se dan de baja?
+    objetivo: >-
+      Pregunta cualitativa que la búsqueda semántica sí puede resolver (no hay campo de
+      operador competidor ni de oferta puntual).
+    sql: null
+    criterios_evaluacion:
+    - "Usa search_conversations anclada en bajas por mejor oferta externa."
+    - "Describe qué ofertas o condiciones mencionan los clientes, con detalle concreto, y no atribuye a un operador algo que las notas no digan."
+    - "Presenta lo hallado como \"en las conversaciones revisadas\", sin cifras de la búsqueda."
+    - "Si ningún caso nombra a esos operadores, lo dice en vez de rellenar."
+
+  - id: rob_ti_04_trampa_nps
+    grupo: C_trampa
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿Cuál es el NPS de este mes?
+    objetivo: >-
+      Tigo NO tiene un puntaje NPS en dashboard_v2; sólo campos relacionados (si el asesor
+      invita a la encuesta, si induce la nota 5). Mide que no fabrique un NPS ni presente un campo
+      relacionado como si lo fuera.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que no tiene el puntaje NPS."
+    - "No fabrica un número de NPS."
+    - "Si menciona los indicadores relacionados (invitación a la encuesta, inducción de nota), los rotula como medidas distintas y no como el NPS."

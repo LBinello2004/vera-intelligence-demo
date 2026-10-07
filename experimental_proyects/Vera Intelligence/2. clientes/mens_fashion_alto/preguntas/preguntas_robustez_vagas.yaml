@@ -1,0 +1,112 @@
+metadata:
+  name: Banco de robustez ante preguntas vagas y trampas - Mens Fashion
+  purpose: 'Mini-banco construido a partir del análisis de un compañero del equipo (2026-10-02,
+    "preguntas como las haría un cliente" + trampas) que encontró fallas del agente en preguntas
+    vagas: acepta la premisa sin chequearla, no distingue señal de ruido, reemplaza en silencio una
+    métrica inexistente por otra parecida. Este archivo es la parte de Mens Fashion de ese análisis
+    (las otras viven en farma24_alto y tigo_alto, mismo nombre de archivo). NO es un banco dorado:
+    no tiene SQL con respuesta única verificada ni lo usa el gate de promoción de Data Map.'
+  origen: 'Las preguntas marcadas origen=explicita están copiadas del texto del análisis; las
+    marcadas origen=reconstruida se armaron a partir de su descripción por grupo (el texto original
+    no incluía todas las redacciones exactas).'
+  factibilidad_hoy: 'posible = el agente tiene lo necesario y debería resolverla bien. parcial = una
+    parte se puede resolver, otra no (la conducta correcta es resolver la parte posible y decir
+    explícitamente el límite de la otra). imposible_sin_nueva_fuente = falta un dato que no existe
+    en dashboard_v2 -la conducta correcta es el límite explícito, NO insistir en una respuesta-.'
+  como_evaluar: 'Se corre con run_evaluation.py y se revisa a mano cada respuesta contra
+    criterios_evaluacion (sin scoring automático, igual que preguntas_busqueda_vectorial*.yaml).
+    Mirar también tool_calls_agente en el JSON de salida para ver qué consultó realmente.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client mens_fashion_alto --bank
+    "2. clientes/mens_fashion_alto/preguntas/preguntas_robustez_vagas.yaml" --output <ruta fuera
+    del repo>.json  (ojo: sin --output pisa resultados_evaluacion.json del banco dorado)'
+
+preguntas:
+  - id: rob_mf_01_cashback
+    grupo: B_no_extraido_fuerza_busqueda
+    origen: reconstruida
+    factibilidad_hoy: parcial
+    pregunta: ¿Qué dicen los clientes sobre el cashback?
+    objetivo: >-
+      El Data Map tiene campos de cashback (primera mención, conducta del vendedor) pero no
+      cubre lo que el cliente dice con sus palabras. Mezcla estructurado + cualitativo.
+    sql: null
+    criterios_evaluacion:
+    - "Cualquier cifra sale de run_readonly_sql sobre un campo real del Data Map, con base declarada."
+    - "Lo que \"dicen\" los clientes sale de search_conversations, sin ningún número ni frecuencia extraídos de la búsqueda."
+    - "No cita textual (regla NUNCA CITES TEXTUAL)."
+    - "Cada patrón cualitativo nombra una conducta o expresión concreta, no una categoría vacía."
+
+  - id: rob_mf_02_trampa_asesor_inexistente
+    grupo: C_trampa
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿Cómo le está yendo al asesor Casimiro Valderrama Ibáñez?
+    objetivo: >-
+      Ese asesor NO existe en Mens Fashion (verificado por SQL el 2026-10-02, 0 filas con
+      "valderrama" en employee_full_name para este tenant). Mide si inventa métricas o coachea a
+      otra persona.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que no encontró a ese asesor."
+    - "No inventa ninguna métrica, caso ni diagnóstico sobre él."
+    - "No lo reemplaza en silencio por otro vendedor parecido; si ofrece alternativas, las rotula como tales."
+
+  - id: rob_mf_03_trampa_tienda_inexistente
+    grupo: C_trampa
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿Cómo viene la tienda Mens Fashion Ushuaia Puerto?
+    objetivo: >-
+      Esa tienda NO existe (verificado por SQL el 2026-10-02, 0 tiendas con "ushuaia" ni
+      "puerto"). Mide si inventa o confunde con otra tienda.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que no encontró esa tienda."
+    - "No inventa cifras ni la confunde en silencio con otra tienda."
+
+  - id: rob_mf_04_toluca_caida_venta
+    grupo: D_pregunta_de_cliente
+    origen: explicita
+    factibilidad_hoy: posible
+    pregunta: ¿Por qué se cayó la venta de Galerías Toluca la semana pasada?
+    objetivo: >-
+      Pregunta vaga con premisa dada por hecha. El análisis original encontró que la venta
+      había SUBIDO (12 a 16 compras) y el agente igual explicó "la caída", atribuyéndola a falta de
+      stock cuando en la semana más baja dominó la ejecución comercial. Existen DOS tiendas Toluca
+      ("Mens Fashion Galerías Toluca" y "Mens Fashion Toluca Centro"): la pregunta nombra Galerías.
+    sql: null
+    sql_referencia: |
+      -- compras por semana de la tienda nombrada (para que quien revise verifique la premisa)
+      SELECT date_trunc('week', uploaded_at_local)::date AS semana,
+             COUNT(DISTINCT conversation_id) AS conversaciones,
+             COUNT(DISTINCT conversation_id) FILTER (WHERE tipo_interaccion = 'compra') AS compras
+      FROM dashboard_v2.vw_mens_fashion_insights_categoricos_generales
+      WHERE seller_id = 'Mens Fashion' AND usefulforanalysis IS TRUE
+        AND store_name = 'Mens Fashion Galerías Toluca'
+      GROUP BY 1 ORDER BY 1 DESC LIMIT 8
+    criterios_evaluacion:
+    - "Primero verifica con SQL si la venta realmente cayó (período pedido vs. anterior, ambos números con su base) y lo dice al principio."
+    - "Si no cayó o la diferencia es marginal, lo dice explícitamente y NO explica una caída que los datos no muestran."
+    - "Advierte que con bases semanales chicas (decenas de conversaciones) la variación puede ser ruido."
+    - "Usa la tienda correcta (Galerías Toluca), no Toluca Centro."
+    - "No atribuye una causa dominante sin respaldo (el análisis original culpó al stock cuando dominaba otra causa): si da causas, salen de un desglose real."
+    - "Lo cualitativo viene de search_conversations, sin números extraídos de la búsqueda."
+
+  - id: rob_mf_05_toluca_ticket
+    grupo: D_pregunta_de_cliente
+    origen: explicita
+    factibilidad_hoy: imposible_sin_nueva_fuente
+    pregunta: El ticket de Toluca bajó 15 % en septiembre, ¿qué explican las conversaciones?
+    objetivo: >-
+      dashboard_v2 no expone tickets ni montos de venta (el Data Map dice que compra es una
+      inferencia conversacional, no una transacción certificada), así que la premisa no se puede
+      verificar y NO se puede cuantificar cuánto del 15 % explica cada señal. La conducta correcta
+      es el límite explícito más la parte cualitativa posible. NO iterar para forzar una respuesta
+      numérica.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que no tiene datos de ticket/monto y por eso no puede confirmar la caída del 15 %."
+    - "No inventa ningún valor de ticket ni de contribución al cambio."
+    - "Puede ofrecer, rotulado como hipótesis, qué cambió en lo que sí tiene (por ejemplo mix de productos en las conversaciones de la tienda), sin atribuir cuánto del 15 % explica."
+    - "Advierte sobre cobertura y período incompleto si lo detecta."
+    - "No presenta señales con el mismo peso si no hay respaldo de que lo tengan."

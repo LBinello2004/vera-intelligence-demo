@@ -2,7 +2,7 @@ client_id: shoe_box
 display_name: "Shoe Box"
 tenant: "Shoe Box"
 model: gemini-3.7-flash
-data_map: "2. clientes/shoe_box_bajo/data_map/VI Data Map Shoe Box V2.yaml"
+data_map: "2. clientes/shoe_box_bajo/data_map/VI Data Map Shoe Box V4.yaml"
 
 sources:
   dashboard_v2.vw_shoe_box_demografia:

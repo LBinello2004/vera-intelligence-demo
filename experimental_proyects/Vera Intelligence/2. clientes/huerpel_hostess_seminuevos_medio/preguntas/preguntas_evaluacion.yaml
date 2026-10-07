@@ -73,11 +73,11 @@ preguntas:
       total de conversaciones como base, sino sólo donde correspondía exigir el registro).
     sql: |
       SELECT
-        COUNT(*) FILTER (WHERE registro_completo = true) AS completos,
-        COUNT(*) FILTER (WHERE aplica_registro_completo = true) AS base
+        COUNT(*) FILTER (WHERE registro_completo = 'true') AS completos,
+        COUNT(*) FILTER (WHERE aplica_registro_completo = 'true') AS base
       FROM dashboard_v2.vw_huerpel_hostess_seminuevos_insights_categoricos
       WHERE seller_id = 'Huerpel'
-    respuesta_esperada: '81 de 470 (17,2%) -tasa baja, es un hallazgo real documentado, no un
+    respuesta_esperada: '72 de 395 (18,2%; al 2026-10-07, antes 81 de 470) -tasa baja, es un hallazgo real documentado, no un
       error de la medición'
 
   - id: q07_cita_vs_promocion_trap

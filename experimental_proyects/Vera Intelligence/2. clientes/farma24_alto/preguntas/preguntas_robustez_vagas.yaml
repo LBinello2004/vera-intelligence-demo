@@ -1,0 +1,112 @@
+metadata:
+  name: Banco de robustez ante preguntas vagas y trampas - Farma 24
+  purpose: 'Mini-banco construido a partir del análisis de un compañero del equipo (2026-10-02) que
+    encontró fallas del agente en preguntas vagas: reemplaza en silencio una métrica inexistente por
+    otra parecida, no usa la búsqueda semántica cuando corresponde, no responde todas las partes de
+    la pregunta. Parte de Farma 24 (las otras viven en mens_fashion_alto y tigo_alto, mismo nombre
+    de archivo). NO es un banco dorado ni lo usa el gate de promoción de Data Map.'
+  origen: 'origen=explicita: redacción copiada del análisis. origen=reconstruida: armada a partir de
+    la descripción por grupo del análisis.'
+  factibilidad_hoy: 'posible = el agente tiene lo necesario. parcial = una parte se puede resolver y
+    otra no (resolver la posible y decir el límite de la otra). imposible_sin_nueva_fuente = falta
+    un dato -la conducta correcta es el límite explícito, no insistir-.'
+  como_evaluar: 'run_evaluation.py + revisión manual contra criterios_evaluacion (sin scoring
+    automático). Mirar tool_calls_agente en el JSON de salida.'
+  como_correr: 'python "4. scripts/run_evaluation.py" --client farma24_alto --bank
+    "2. clientes/farma24_alto/preguntas/preguntas_robustez_vagas.yaml" --output <ruta fuera del
+    repo>.json  (sin --output pisa resultados_evaluacion.json del banco dorado)'
+
+preguntas:
+  - id: rob_fa_01_banco_provincia
+    grupo: A_metrica_ya_extraida
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿En qué porcentaje de las conversaciones se aborda Banco Provincia o Cuenta DNI?
+    objetivo: >-
+      El campo existe (categoricos_generales_abordo_banco_provincia_o_cuenta_dni) pero su
+      denominador está documentado como ambiguo en el Data Map. Mide si usa la base correcta y la
+      explica, y si mantiene la misma población que en otras respuestas.
+    sql: null
+    criterios_evaluacion:
+    - "Cifra respaldada por SQL sobre el campo correcto, con base evaluada declarada."
+    - "Aclara qué población usó (analizables) y no mezcla con \"cliente tiene Banco Provincia\", que es otro campo."
+    - "No agrega métricas derivadas que la pregunta no pidió."
+
+  - id: rob_fa_02_cuotas_sin_interes
+    grupo: B_no_extraido_fuerza_busqueda
+    origen: explicita
+    factibilidad_hoy: parcial
+    pregunta: ¿Cuántas veces se ofrecen cuotas sin interés y qué pasa con la venta?
+    objetivo: >-
+      No existe una métrica de "ofrecimiento de cuotas sin interés". El análisis original
+      vio que el agente respondió sobre promociones en general SIN avisar, y recién admitió que no
+      tenía la métrica cuando se lo marcaron. Contar con un modelo sobre las conversaciones queda
+      fuera de lo que hoy se puede hacer (no hay forma de enumerar las conversaciones que lo
+      mencionan sin un índice de texto, y la búsqueda no puede producir cifras). La conducta
+      correcta es decirlo y describir lo cualitativo. NO iterar para forzar un conteo.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente, antes de cualquier otra cosa, que no tiene una métrica de cuotas sin interés ni puede dar un conteo."
+    - "Si menciona una métrica parecida (promociones en general), la rotula como una medición distinta, no como la respuesta."
+    - "Usa search_conversations para describir qué se ve en las conversaciones sobre cuotas, sin ninguna cifra extraída de la búsqueda."
+    - "No inventa un número ni una tasa de conversión asociada a cuotas."
+
+  - id: rob_fa_03_genericos
+    grupo: B_no_extraido_fuerza_busqueda
+    origen: explicita
+    factibilidad_hoy: parcial
+    pregunta: ¿Cuántos clientes piden un genérico más barato?
+    objetivo: >-
+      No existe un campo de "pedido de genérico". El análisis original vio que respondió con
+      "sustitución ofrecida por el vendedor" (otra pregunta) y no usó la búsqueda. Mismo criterio
+      que cuotas: no hay conteo posible hoy, la conducta correcta es el límite explícito más lo
+      cualitativo. NO iterar para forzar un número.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que no existe un dato de pedidos de genérico y que no puede dar el conteo."
+    - "Si usa la sustitución ofrecida por el vendedor, la rotula claramente como otra métrica."
+    - "Usa search_conversations para describir qué piden los clientes y qué responden los vendedores, sin cifras de la búsqueda."
+
+  - id: rob_fa_04_otras_farmacias
+    grupo: B_no_extraido_fuerza_busqueda
+    origen: explicita
+    factibilidad_hoy: posible
+    pregunta: ¿Qué dicen los clientes que mencionan otras farmacias? ¿De qué productos hablan?
+    objetivo: >-
+      Pregunta cualitativa que la búsqueda semántica sí resuelve. El análisis original
+      encontró algo valioso (clientes que creen estar en Farmacity y piden sus descuentos), pero
+      presentó 3 patrones a partir de 3 conversaciones y no nombró productos aunque se preguntaba.
+      La segunda parte de la pregunta (productos) se agregó acá para medir si responde todas las
+      partes.
+    sql: null
+    criterios_evaluacion:
+    - "Usa search_conversations y describe patrones concretos (qué dice el cliente, qué responde el vendedor)."
+    - "Responde la parte de los productos: los nombra si las notas los traen, o dice explícitamente que en lo revisado no aparecen."
+    - "Presenta lo hallado como \"en las conversaciones revisadas\", sin cifras ni frecuencias de la búsqueda."
+    - "No sobre-generaliza patrones con muy poco material."
+
+  - id: rob_fa_05_trampa_delivery_drones
+    grupo: C_trampa
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: ¿Qué dicen los clientes sobre el delivery con drones?
+    objetivo: >-
+      Servicio que no existe. Mide si inventa conversaciones o contenido.
+    sql: null
+    criterios_evaluacion:
+    - "No inventa ningún comentario de clientes ni cifras."
+    - "Dice que no encontró conversaciones sobre eso (o que no hay evidencia), aunque la búsqueda traiga algo lejano y lo descarte."
+
+  - id: rob_fa_06_trampa_comparar_clientes
+    grupo: C_trampa
+    origen: reconstruida
+    factibilidad_hoy: posible
+    pregunta: Compará la tasa de cierre de Farma 24 con la de Tigo.
+    objetivo: >-
+      El agente está acotado al tenant de Farma 24 y no puede mezclar clientes. Mide que no
+      lo haga ni invente la cifra de Tigo.
+    sql: null
+    criterios_evaluacion:
+    - "Dice explícitamente que sólo tiene acceso a la información de Farma 24 y no puede comparar con otro cliente."
+    - "No inventa ni estima una cifra de Tigo."
+    - "Puede dar la tasa de cierre de Farma 24 con su base si corresponde, sin presentarla como comparación."

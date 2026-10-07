@@ -36,15 +36,22 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
+import os
 import re
 import sys
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
+import data_map_gate
+import data_map_log
+import data_map_store as dms
 import vi_agent
 from business_rules import BusinessRulesRepository
 from client_config import ClientConfig
@@ -57,6 +64,25 @@ CLIENTS_ROOT = PROJECT_ROOT / "2. clientes"
 
 MAX_GOLDEN_QUESTIONS = 10
 MAX_REGENERATION_TOOL_CALLS = 25
+
+# Reintentos automáticos (2026-10-07). Hasta ahora un cambio rechazado por el gate quedaba olvidado (la foto de prompts se actualizaba al
+# detectarlo) y un humano tenía que "decirle que lo vuelva a ver". Ahora el cambio queda PENDIENTE hasta promoverse y se reintenta
+# solo, con tope para no gastar Gemini en vano. Sólo se pide revisión humana cuando se agotan los intentos de esa versión.
+RUN_ATTEMPTS = 2                  # intentos (regenerar + gate) dentro de una misma corrida
+MAX_ATTEMPTS_PER_VERSION = 4      # intentos totales por cambio de prompt, sumando corridas
+REGENERATION_REPAIRS = 2          # veces que se le devuelve a Gemini un YAML/formato inválido para que lo corrija
+LOCK_TTL_SECONDS = 90 * 60        # un candado de otra corrida se considera muerto después de esto
+
+# Abaratar sin empeorar (2026-10-07):
+# - Un cambio de prompt que sólo toca espacios, mayúsculas, tildes o puntuación no cambia ninguna regla: se marca como procesado sin regenerar.
+# - Un cambio recién detectado espera SETTLE_HOURS antes de regenerarse: en el historial 5 de 20 eventos fueron el mismo cliente editando
+#   su prompt varias veces en pocos días (se regeneraba, y se pagaba, cada vez). 18 h y no 24 para que un cron diario (misma hora cada
+#   día, con segundos de diferencia) siempre las cumpla. 0 lo desactiva.
+# - Cascada de modelo: el primer intento regenera con un modelo más barato (VI_REGEN_CHEAP_MODEL; vacío = desactivado) y si el gate lo
+#   rechaza los intentos siguientes usan el modelo del cliente. El gate es la red de seguridad en ambos casos.
+SETTLE_HOURS_DEFAULT = 0.0
+REGEN_CHEAP_MODEL_ENV = "VI_REGEN_CHEAP_MODEL"
+SETTLE_HOURS_ENV = "VI_SETTLE_HOURS"
 
 # Costo del gate (2026-09-17, pedido explícito de bajar el costo al mínimo): cada pregunta del
 # banco dorado corre DOS VECES (vieja vs. candidata, ver docstring del módulo), así que estos dos
@@ -143,6 +169,79 @@ def detect_rulebook_changes(client_config: ClientConfig) -> list[RulebookChange]
             )
         )
     return changes
+
+
+def detect_pending_changes(
+    client_config: ClientConfig, store, client_folder: str
+) -> tuple[list[RulebookChange], dict[str, int | str]]:
+    """Cambios de prompt SIN PROCESAR de un cliente, y la versión actual de cada rulebook.
+
+    Compara la versión de Langfuse contra las versiones YA PROCESADAS del almacén (no contra la foto que usa el agente para responder,
+    que se refresca apenas se mira). Así un cambio cuyo Data Map no se promovió sigue pendiente y se reintenta. Primera vez que se ve
+    un rulebook: si el agente ya tenía una foto vieja, esa es la línea de base; si no, se siembra la actual (no es un "cambio")."""
+    repository = BusinessRulesRepository(client_config, PROJECT_ROOT)
+    processed = store.processed_versions(client_folder)
+    pending = store.pending(client_folder)
+    changes: list[RulebookChange] = []
+    current: dict[str, int | str] = {}
+    for key in repository.available_rulebooks():
+        old_payload = repository._read_cache(key)  # lo que el agente venía usando, antes de refrescar
+        new_payload = json.loads(repository.get(key, refresh=True))
+        new_version = new_payload["rules_version"]  # int en Langfuse; la cadena "local" en los rulebooks del repo
+        current[key] = new_version
+        baseline = processed.get(key)
+        if baseline is None:
+            if old_payload is None:
+                continue  # primera vez que se ve: línea de base, no es un cambio
+            baseline = old_payload["rules_version"]
+        if new_version == baseline:
+            continue
+        remembered = pending.get(key) or {}
+        if old_payload is not None and old_payload["rules_version"] == baseline:
+            old_text = old_payload["criteria_text"]
+        elif remembered.get("old_version") == baseline:
+            old_text = remembered.get("old_text")  # un reintento: el agente ya refrescó su foto, el texto viejo quedó guardado
+        else:
+            old_text = None
+        changes.append(RulebookChange(key=key, business_scope=new_payload["business_scope"], old_version=baseline,
+                                      new_version=new_version, old_text=old_text, new_text=new_payload["criteria_text"]))
+    if changes:
+        now = time.time()
+        store.put_pending(client_folder, {
+            c.key: {"old_version": c.old_version, "new_version": c.new_version, "old_text": c.old_text,
+                    "first_seen_at": (pending.get(c.key) or {}).get("first_seen_at")
+                    if (pending.get(c.key) or {}).get("new_version") == c.new_version and (pending.get(c.key) or {}).get("first_seen_at")
+                    else now} for c in changes})
+    return changes, current
+
+
+def _squash(text: str) -> str:
+    plain = "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+    return re.sub(r"[\W_]+", "", plain)
+
+
+def is_cosmetic_change(change: RulebookChange) -> bool:
+    """True si el texto nuevo sólo difiere del viejo en espacios, mayúsculas, tildes o puntuación. Sin texto viejo no se puede afirmar."""
+    return change.old_text is not None and _squash(change.old_text) == _squash(change.new_text)
+
+
+def settle_hours(override: float | None = None) -> float:
+    if override is not None:
+        return float(override)
+    try:
+        return float(os.environ.get(SETTLE_HOURS_ENV, SETTLE_HOURS_DEFAULT))
+    except ValueError:
+        return SETTLE_HOURS_DEFAULT
+
+
+def regen_model_for_attempt(client_config: ClientConfig, attempt: int) -> str:
+    """Modelo de la regeneración: el barato configurado en el primer intento y el del cliente en los siguientes."""
+    cheap = (os.environ.get(REGEN_CHEAP_MODEL_ENV) or "").strip()
+    return cheap if (cheap and attempt <= 1) else client_config.model
+
+
+def _change_signature(changes: list[RulebookChange]) -> str:
+    return ",".join(sorted(f"{c.key}@{c.new_version}" for c in changes))
 
 
 def _unified_diff(change: RulebookChange) -> str:
@@ -232,7 +331,9 @@ def _next_data_map_path(current_path: Path) -> tuple[Path, str, str]:
             f"No se pudo inferir el número de versión del nombre de archivo: {current_path.name}"
         )
     current_number = int(match.group(1))
-    next_number = current_number + 1
+    stem_prefix = current_path.name[: match.start()]
+    existing = [dms.version_number(f.name) for f in current_path.parent.glob("*.yaml") if f.name.startswith(stem_prefix)]
+    next_number = max([current_number] + [v for v in existing if v is not None]) + 1
     stem_without_version = current_path.name[: match.start()]
     next_name = f"{stem_without_version} V{next_number}.yaml"
     return current_path.with_name(next_name), f"V{next_number}", f"{next_number}.0.0"
@@ -253,7 +354,46 @@ def _extract_delimited(raw_answer: str) -> tuple[str, str]:
     return yaml_match.group(1).strip(), changelog_match.group(1).strip()
 
 
-def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChange]) -> RegenerationResult:
+def _parse_candidate(raw_answer: str) -> tuple[str, str]:
+    """(yaml, changelog) de la respuesta de Gemini; ValueError/YAMLError si no tiene el formato o la forma esperada."""
+    data_map_yaml, changelog = _extract_delimited(raw_answer)
+    parsed = yaml.safe_load(data_map_yaml)
+    if not isinstance(parsed, dict) or "metadata" not in parsed or "sources" not in parsed:
+        raise ValueError("El YAML generado no tiene la forma esperada (falta metadata o sources).")
+    return data_map_yaml, changelog
+
+
+def gate_feedback(detail: dict) -> str:
+    """Por qué el gate rechazó un candidato, en lenguaje que el regenerador pueda usar en el intento siguiente."""
+    lines: list[str] = []
+    for problem in detail.get("gate_structural_problems") or []:
+        lines.append(f"- Estructura: {problem}.")
+    for q in detail.get("gate_detail") or []:
+        if not isinstance(q, dict):
+            continue
+        if q.get("dropped_fields"):
+            lines.append(f"- La pregunta {q.get('id')} usa campos que el mapa vigente declaraba y el candidato perdió: {'; '.join(q['dropped_fields'])}. Conservalos.")
+        if q.get("regression"):
+            lines.append(f"- Con tu mapa, la respuesta a {q.get('id')} dejó de incluir {', '.join(q.get('missing_numbers') or [])} "
+                         f"(el mapa vigente sí lo incluía). Respuesta obtenida: {(q.get('answer') or '')[:300]!r}. "
+                         "Revisá qué cambiaste en los campos o reglas que esa pregunta usa.")
+        if q.get("error"):
+            lines.append(f"- Error al responder {q.get('id')}: {q['error']}")
+    for item in detail.get("column_drift") or []:
+        lines.append(f"- Deriva de columnas: {item}")
+    return "\n".join(lines)
+
+
+def _repair_message(exc: Exception) -> str:
+    return (f"Tu respuesta no se pudo usar: {exc}. Devolvé de nuevo el YAML COMPLETO corregido y el changelog, con exactamente los "
+            "mismos delimitadores (===DATA_MAP_YAML=== ... ===END_DATA_MAP_YAML=== y ===CHANGELOG=== ... ===END_CHANGELOG===), "
+            "sin llamar más herramientas y sin texto fuera de los delimitadores. Cuidado con los ':' dentro de valores de texto: "
+            "poné entre comillas los valores que los contengan.")
+
+
+def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChange], *, store=None,
+                        client_folder: str | None = None, model: str | None = None,
+                        feedback: str | None = None) -> RegenerationResult:
     if not changes:
         return RegenerationResult()
 
@@ -289,7 +429,7 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
         http_options=types.HttpOptions(timeout=vi_agent._GENAI_HTTP_TIMEOUT_MS),
     )
     chat = client.chats.create(
-        model=client_config.model,
+        model=model or client_config.model,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             tools=[vi_agent.run_readonly_sql],
@@ -300,27 +440,34 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
     tool_calls_log: list[dict] = []
     message: object = (
         "Actualizá el Data Map siguiendo exactamente las reglas e instrucciones del system prompt."
+        + (f"\n\nUn intento anterior fue RECHAZADO por el control automático. Corregí exactamente eso, sin tocar lo demás:\n{feedback}"
+           if feedback else "")
     )
     tool_call_count = 0
 
-    for _ in range(MAX_REGENERATION_TOOL_CALLS + 5):
+    repairs_left = REGENERATION_REPAIRS
+    for _ in range(MAX_REGENERATION_TOOL_CALLS + 5 + REGENERATION_REPAIRS):
         response = vi_agent._send_message_with_retry(chat, message, debug=False)
         function_calls = response.function_calls or []
         if not function_calls:
             raw_answer = (response.text or "").strip()
             try:
-                data_map_yaml, changelog = _extract_delimited(raw_answer)
-                parsed = yaml.safe_load(data_map_yaml)
-                if not isinstance(parsed, dict) or "metadata" not in parsed or "sources" not in parsed:
-                    raise ValueError(
-                        "El YAML generado no tiene la forma esperada (falta metadata o sources)."
-                    )
+                data_map_yaml, changelog = _parse_candidate(raw_answer)
             except (ValueError, yaml.YAMLError) as exc:
+                if repairs_left > 0:
+                    # Visto en el historial (roberts_alto, 16/9): un YAML con un ':' sin comillas tiró la regeneración entera. Se le
+                    # devuelve el error a Gemini para que lo corrija en la misma conversación, en vez de abandonar.
+                    repairs_left -= 1
+                    message = _repair_message(exc)
+                    continue
                 return RegenerationResult(
                     tool_calls=tool_calls_log,
                     error=f"Respuesta de Gemini inválida, no se escribió ningún archivo: {exc}",
                 )
-            next_path.write_text(data_map_yaml, encoding="utf-8")
+            if store is not None and client_folder:
+                next_path = store.put_data_map(client_folder, next_path.name, data_map_yaml)
+            else:
+                next_path.write_text(data_map_yaml, encoding="utf-8")
             return RegenerationResult(
                 candidate_path=next_path,
                 changelog=changelog,
@@ -627,6 +774,49 @@ def run_gate(client_config: ClientConfig, candidate_data_map_path: Path, client_
     )
 
 
+def run_gate_v2(client_config: ClientConfig, candidate_data_map_path: Path, client_folder: str, *, assume_all_affected: bool = False) -> dict:
+    """Gate contra el SQL dorado (ver data_map_gate.py): estructura, campos, números de verdad y respuesta del candidato."""
+    bank_path = CLIENTS_ROOT / client_folder / "preguntas" / "preguntas_evaluacion.yaml"
+    bank = yaml.safe_load(bank_path.read_text(encoding="utf-8"))
+    old_data_map = yaml.safe_load(client_config.data_map_path.read_text(encoding="utf-8")) or {}
+    new_text = candidate_data_map_path.read_text(encoding="utf-8")
+    new_data_map = yaml.safe_load(new_text) or {}
+    new_instruction = _build_system_instruction(client_config, new_text)
+
+    old_instruction = _build_system_instruction(client_config, client_config.data_map_path.read_text(encoding="utf-8"))
+
+    def make_ask(instruction: str):
+        def ask(question: str) -> str:
+            chat = vi_agent.build_chat(system_instruction=instruction, thinking_level=GATE_THINKING_LEVEL)
+            answer = vi_agent.run_tool_loop(chat, question, max_tool_calls=GATE_MAX_TOOL_CALLS_PER_QUESTION, debug=False)
+            return vi_agent.extract_suggestion_blocks(answer)[0]
+        return ask
+
+    ask, baseline_ask = make_ask(new_instruction), make_ask(old_instruction)
+
+    def run_sql(sql: str):
+        vi_agent.validate_readonly_sql(sql, client_config)
+        return vi_agent.run_readonly_sql(sql)
+
+    # Lo que el Data Map vigente responde no cambia mientras el vigente no cambie: se mide una vez y se guarda (ahorra preguntas en cada
+    # reintento y en cada corrida). Si el almacén falla, el gate sigue funcionando sin caché.
+    store, map_hash, cache = None, hashlib.sha256(client_config.data_map_path.read_bytes()).hexdigest(), {}
+    try:
+        store = dms.get_store()
+        cache = store.gate_baseline(client_folder, map_hash)
+    except Exception:  # noqa: BLE001
+        store = None
+    report = data_map_gate.run_gate_v2(old_data_map=old_data_map, new_data_map=new_data_map, bank=bank, run_sql=run_sql, ask=ask,
+                                       baseline_ask=baseline_ask, baseline_cache=cache, max_questions=MAX_GOLDEN_QUESTIONS,
+                                       assume_all_affected=assume_all_affected)
+    if store is not None and cache:
+        try:
+            store.set_gate_baseline(client_folder, map_hash, cache)
+        except Exception:  # noqa: BLE001
+            pass
+    return report
+
+
 # --------------------------------------------------------------------------
 # 4. Promoción (config.yaml -> nueva versión) y registro auditable
 # --------------------------------------------------------------------------
@@ -677,10 +867,27 @@ def _write_audit_log(client_id: str, payload: dict) -> Path:
 # --------------------------------------------------------------------------
 
 
-def run_for_client(client_id: str, *, dry_run: bool = False) -> dict:
+def run_for_client(client_id: str, *, dry_run: bool = False, gate: str = "v2", store=None, lock_owner: str | None = None,
+                   run_attempts: int = RUN_ATTEMPTS, settle: float | None = None) -> dict:
     """``client_id`` acá es el nombre real de carpeta bajo ``clientes/`` (lo que llega por
     ``--client``, típicamente listado dinámicamente por el poller) -no necesariamente igual
-    a ``ClientConfig.client_id`` (la identidad estable del cliente, ver `run_gate`)."""
+    a ``ClientConfig.client_id`` (la identidad estable del cliente, ver `run_gate`).
+
+    Con candado por cliente: si otro proceso ya está actualizando este cliente, devuelve `en_curso_por_otro_proceso` sin hacer nada.
+    `lock_owner`: el dueño de un candado que ya tomó quien lanzó este proceso (ver data_map_refresh.py); se suelta al terminar."""
+    store = store or dms.get_store()
+    owner = lock_owner or dms.new_owner("poller")
+    if lock_owner is None and not store.acquire_lock(client_id, owner, LOCK_TTL_SECONDS):
+        return {"client_id": client_id, "status": "en_curso_por_otro_proceso"}
+    try:
+        summary = _run_locked(client_id, dry_run=dry_run, gate=gate, store=store, run_attempts=run_attempts, settle=settle)
+        store.set_last_check(client_id)
+        return summary
+    finally:
+        store.release_lock(client_id, owner)
+
+
+def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts: int, settle: float | None = None) -> dict:
     client_folder = client_id
     vi_agent.configure_client(client_id)
     vi_agent.load_environment()
@@ -688,91 +895,139 @@ def run_for_client(client_id: str, *, dry_run: bool = False) -> dict:
 
     bank_warnings = _lint_bank_for_client(client_folder)
 
-    changes = detect_rulebook_changes(client_config)
+    def finish(summary: dict) -> dict:
+        if bank_warnings:
+            summary["golden_bank_relative_language_warnings"] = bank_warnings
+        store.write_run(client_id, summary)
+        return summary
+
+    changes, current_versions = detect_pending_changes(client_config, store, client_folder)
     if not changes:
-        summary = {"client_id": client_id, "status": "sin_cambios"}
-        if bank_warnings:
-            summary["golden_bank_relative_language_warnings"] = bank_warnings
-        _write_audit_log(client_id, summary)
-        return summary
+        store.set_processed(client_id, current_versions)  # siembra la línea de base y deja al cliente al día
+        return finish({"client_id": client_id, "status": "sin_cambios"})
 
-    regeneration = regenerate_data_map(client_config, changes)
-    if regeneration.error:
-        summary = {
-            "client_id": client_id,
-            "status": "error_regeneracion",
-            "changes": [c.key for c in changes],
-            "error": regeneration.error,
-            "tool_calls": len(regeneration.tool_calls),
-        }
-        if bank_warnings:
-            summary["golden_bank_relative_language_warnings"] = bank_warnings
-        _write_audit_log(client_id, summary)
-        return summary
+    cosmetic = [c for c in changes if is_cosmetic_change(c)]
+    if len(cosmetic) == len(changes):
+        # Todos los cambios son de forma (espacios, mayúsculas, tildes, puntuación): ninguna regla cambió, no hay nada que regenerar.
+        store.set_processed(client_id, current_versions)
+        store.clear_pending(client_id)
+        return finish({"client_id": client_id, "status": "cambio_cosmetico_sin_regenerar",
+                       "changes": [{"key": c.key, "old_version": c.old_version, "new_version": c.new_version} for c in changes]})
+    changes = [c for c in changes if c not in cosmetic]
 
-    if dry_run:
-        summary = {
-            "client_id": client_id,
-            "status": "candidata_generada_sin_gate_dry_run",
-            "candidate_path": str(regeneration.candidate_path),
-            "changelog": regeneration.changelog,
-        }
-        if bank_warnings:
-            summary["golden_bank_relative_language_warnings"] = bank_warnings
-        _write_audit_log(client_id, summary)
-        return summary
+    signature = _change_signature(changes)
+    changes_summary = [{"key": c.key, "old_version": c.old_version, "new_version": c.new_version} for c in changes]
+    wait_hours = settle_hours(settle)
+    if wait_hours > 0 and not dry_run:
+        seen = [float((store.pending(client_id).get(c.key) or {}).get("first_seen_at") or 0) for c in changes]
+        ready_at = (max(seen) if seen else 0) + wait_hours * 3600
+        if time.time() < ready_at:
+            return finish({"client_id": client_id, "status": "esperando_estabilidad", "changes": changes_summary,
+                           "regenera_a_partir_de": datetime.fromtimestamp(ready_at, timezone.utc).isoformat(),
+                           "note": f"El prompt cambió hace menos de {wait_hours:g} h: se espera por si lo siguen editando (ahorra regenerar varias veces)."})
+    if store.attempts(client_id, signature) >= MAX_ATTEMPTS_PER_VERSION:
+        return finish({"client_id": client_id, "status": "reintentos_agotados", "changes": changes_summary,
+                       "attempts": store.attempts(client_id, signature),
+                       "note": "Se agotaron los intentos automáticos para este cambio de prompt: hace falta revisión humana."})
 
-    gate = run_gate(client_config, regeneration.candidate_path, client_folder)
-    summary = {
-        "client_id": client_id,
-        "changes": [{"key": c.key, "old_version": c.old_version, "new_version": c.new_version} for c in changes],
-        "candidate_path": str(regeneration.candidate_path),
-        "changelog": regeneration.changelog,
-        "gate_bank_size": gate.bank_size,
-        "gate_questions_evaluated": gate.questions_evaluated,
-        "gate_skipped_over_cap": gate.skipped_over_cap,
-        "gate_passed": gate.passed,
-        "gate_detail": [
-            {
-                "id": q.id,
-                "sql_ok": q.sql_ok,
-                "sql_error": q.sql_error,
-                "numbers_ok": q.numbers_ok,
-                "missing_numbers": q.missing_numbers,
-                "added_numbers": q.added_numbers,
-                "old_answer": q.old_answer,
-                "new_answer": q.new_answer,
-                "error": q.error,
-                "auto_relaxed_tolerance": q.auto_relaxed_tolerance,
-            }
-            for q in gate.questions
-        ],
-    }
-    if bank_warnings:
-        summary["golden_bank_relative_language_warnings"] = bank_warnings
+    failure: dict = {}
+    feedback: str | None = None
+    for _ in range(max(1, run_attempts)):
+        attempt = store.add_attempt(client_id, signature)
+        model = regen_model_for_attempt(client_config, attempt)
+        regeneration = regenerate_data_map(client_config, changes, store=store, client_folder=client_folder, model=model, feedback=feedback)
+        if regeneration.error:
+            failure = {"status": "error_regeneracion", "changes": [c.key for c in changes], "error": regeneration.error,
+                       "tool_calls": len(regeneration.tool_calls)}
+        elif dry_run:
+            return finish({"client_id": client_id, "status": "candidata_generada_sin_gate_dry_run",
+                           "candidate_path": str(regeneration.candidate_path), "changelog": regeneration.changelog})
+        else:
+            outcome = _evaluate_candidate(client_config, regeneration, client_folder, gate)
+            if outcome["passed"]:
+                summary = {"client_id": client_id, "changes": changes_summary, "candidate_path": str(regeneration.candidate_path),
+                           "changelog": regeneration.changelog, "attempt": attempt, "regeneration_model": model,
+                           "version_anterior": dms.version_number(client_config.data_map_path),
+                           "version_nueva": dms.version_number(regeneration.candidate_path), **outcome["detail"]}
+                try:
+                    clients_root = getattr(store, "clients_root", CLIENTS_ROOT)
+                    old_dm = yaml.safe_load(client_config.data_map_path.read_text(encoding="utf-8")) or {}
+                    new_dm = yaml.safe_load(regeneration.candidate_path.read_text(encoding="utf-8")) or {}
+                    entry = data_map_log.build_entry(
+                        tipo="promovido", client=client_id, old_version=summary["version_anterior"], new_version=summary["version_nueva"],
+                        old_file=client_config.data_map_path.name, new_file=regeneration.candidate_path.name, prompts=changes_summary,
+                        change_summary=data_map_log.summarize_change(old_dm, new_dm), changelog=regeneration.changelog or "",
+                        gate={"gate": outcome["detail"].get("gate"), "passed": True,
+                              "questions_evaluated": outcome["detail"].get("gate_questions_evaluated"),
+                              "llm_questions_checked": outcome["detail"].get("gate_llm_questions_checked")},
+                        model=model, attempts=attempt)
+                    md_path, _ = data_map_log.append_entry(clients_root, client_folder, entry)
+                    summary["registro_de_cambios"] = str(md_path)
+                except Exception as exc:  # noqa: BLE001 - el registro no debe impedir una promoción ya validada
+                    summary["registro_de_cambios_error"] = str(exc)[:200]
+                store.promote(client_folder, regeneration.candidate_path, rules_versions=current_versions,
+                              changelog=regeneration.changelog or "")
+                try:
+                    promote(regeneration.candidate_path, client_folder)  # config.yaml: ruta de repo (best-effort si no es escribible)
+                    summary["config_yaml_actualizado"] = True
+                except Exception as exc:  # noqa: BLE001
+                    summary["config_yaml_actualizado"] = False
+                    summary["config_yaml_error"] = str(exc)[:200]
+                summary["status"] = "promovido"
+                return finish(summary)
+            failure = {"client_id": client_id, "changes": changes_summary, "candidate_path": str(regeneration.candidate_path),
+                       "changelog": regeneration.changelog, "attempt": attempt, "status": outcome["status"], **outcome["detail"]}
+            feedback = gate_feedback(outcome["detail"]) or None
+        if store.attempts(client_id, signature) >= MAX_ATTEMPTS_PER_VERSION:
+            break
 
-    # Guardia de deriva de columnas (2026-09-24, ver data_map_column_drift.py): un candidato que
-    # declara campos inexistentes en la vista real no se promueve aunque el gate de números pase
-    # -el gate no lo detecta si la pregunta afectada está fuera de las primeras MAX_GOLDEN_QUESTIONS-.
-    column_drift: list[dict] = []
-    if gate.passed:
-        try:
-            from data_map_column_drift import check_client
+    failure.setdefault("client_id", client_id)
+    failure["attempts"] = store.attempts(client_id, signature)
+    if failure["attempts"] < MAX_ATTEMPTS_PER_VERSION:
+        # Todavía quedan intentos: el cambio sigue pendiente y se reintenta solo en la próxima corrida (no requiere a nadie).
+        failure["status_del_intento"] = failure["status"]
+        failure["status"] = "reintento_pendiente"
+    return finish(failure)
 
-            column_drift = check_client(client_folder, regeneration.candidate_path)
-        except Exception as exc:  # noqa: BLE001 - la guardia no debe romper la corrida si la base no responde
-            summary["column_drift_check_error"] = str(exc)[:200]
-    if column_drift:
-        summary["column_drift"] = column_drift
-        summary["status"] = "deriva_de_columnas_no_promovido"
-    elif gate.passed:
-        promote(regeneration.candidate_path, client_folder)
-        summary["status"] = "promovido"
+
+def _evaluate_candidate(client_config: ClientConfig, regeneration: RegenerationResult, client_folder: str, gate_mode: str) -> dict:
+    """Gate + guardia de deriva de columnas. Devuelve {'passed', 'status' (si falló), 'detail' (para el registro)}."""
+    detail: dict = {}
+    if gate_mode == "legacy":
+        gate = run_gate(client_config, regeneration.candidate_path, client_folder)
+        passed = gate.passed
+        detail.update({
+            "gate": "legacy", "gate_bank_size": gate.bank_size, "gate_questions_evaluated": gate.questions_evaluated,
+            "gate_skipped_over_cap": gate.skipped_over_cap, "gate_passed": gate.passed,
+            "gate_detail": [{
+                "id": q.id, "sql_ok": q.sql_ok, "sql_error": q.sql_error, "numbers_ok": q.numbers_ok,
+                "missing_numbers": q.missing_numbers, "added_numbers": q.added_numbers, "old_answer": q.old_answer,
+                "new_answer": q.new_answer, "error": q.error, "auto_relaxed_tolerance": q.auto_relaxed_tolerance,
+            } for q in gate.questions]})
     else:
-        summary["status"] = "gate_fallo_no_promovido"
+        report = run_gate_v2(client_config, regeneration.candidate_path, client_folder)
+        passed = report["passed"]
+        detail.update({
+            "gate": "v2", "gate_bank_size": report["bank_size"], "gate_questions_evaluated": report["questions_evaluated"],
+            "gate_llm_questions_checked": report["llm_questions_checked"], "gate_passed": passed,
+            "gate_structural_problems": report["structural_problems"], "gate_detail": report["questions"],
+            "gate_questions_affected": report.get("questions_affected"), "gate_footprint": report.get("footprint"),
+            "gate_bank_problems": report.get("bank_problems") or []})
+    if not passed:
+        return {"passed": False, "status": "gate_fallo_no_promovido", "detail": detail}
+    # Guardia de deriva de columnas (2026-09-24, ver data_map_column_drift.py): un candidato que declara campos inexistentes en la
+    # vista real no se promueve aunque el gate pase.
+    try:
+        from data_map_column_drift import check_client
 
-    _write_audit_log(client_id, summary)
-    return summary
+        drift = check_client(client_folder, regeneration.candidate_path)
+    except Exception as exc:  # noqa: BLE001 - la guardia no debe romper la corrida si la base no responde
+        detail["column_drift_check_error"] = str(exc)[:200]
+        drift = []
+    if drift:
+        detail["column_drift"] = drift
+        return {"passed": False, "status": "deriva_de_columnas_no_promovido", "detail": detail}
+    return {"passed": True, "status": "promovido", "detail": detail}
 
 
 def parse_args() -> argparse.Namespace:
@@ -789,15 +1044,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Genera la versión candidata pero no corre el gate ni promueve (para inspección manual).",
     )
+    parser.add_argument("--gate", choices=("v2", "legacy"), default="v2",
+                        help="v2 (por defecto): contra el SQL dorado, segundos a pocos minutos. legacy: respuesta vieja contra nueva, 20-25 min.")
+    parser.add_argument("--attempts", type=int, default=RUN_ATTEMPTS, help="Intentos (regenerar + gate) dentro de esta corrida.")
+    parser.add_argument("--settle-hours", type=float, default=None,
+                        help=f"Horas que debe llevar sin cambiar un prompt antes de regenerar (por defecto {SETTLE_HOURS_DEFAULT:g}; 0 lo desactiva).")
+    parser.add_argument("--lock-owner", default=None,
+                        help="Uso interno: dueño de un candado ya tomado por quien lanzó este proceso (data_map_refresh.py).")
     return parser.parse_args()
 
 
-NEEDS_HUMAN_STATUSES = {"gate_fallo_no_promovido", "error_regeneracion"}
+NEEDS_HUMAN_STATUSES = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados"}
 
 
 def main() -> None:
     args = parse_args()
-    summary = run_for_client(args.client, dry_run=args.dry_run)
+    summary = run_for_client(args.client, dry_run=args.dry_run, gate=args.gate, lock_owner=args.lock_owner,
+                             run_attempts=args.attempts, settle=args.settle_hours)
     status = summary.get("status")
     if status in NEEDS_HUMAN_STATUSES:
         # Banner explícito, imposible de pasar por alto en un log o en la salida del poller:
@@ -817,6 +1080,8 @@ def main() -> None:
             flush=True,
         )
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    # Código de salida para un programador de tareas o un monitor: distinto de cero si alguien tiene que mirar este cliente.
+    sys.exit(1 if status in NEEDS_HUMAN_STATUSES else 0)
 
 
 if __name__ == "__main__":

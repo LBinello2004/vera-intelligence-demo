@@ -2,7 +2,7 @@ client_id: huerpel_hostess
 display_name: "Huerpel Hostess"
 tenant: "Huerpel"
 model: gemini-3.7-flash
-data_map: "2. clientes/huerpel_hostess_alto/data_map/VI Data Map Huerpel Hostess V3.yaml"
+data_map: "2. clientes/huerpel_hostess_alto/data_map/VI Data Map Huerpel Hostess V4.yaml"
 
 # Huerpel es un grupo concesionario Nissan (México) con TRES sub-marcas en Langfuse
 # (Hostess, Hostess Seminuevos, Ventas). A diferencia de Dalton (donde sólo UNA de dos

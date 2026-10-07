@@ -39,6 +39,7 @@ from answer_verification import (
 )
 from business_rules import BusinessRulesRepository  # noqa: E402
 from question_planner import build_plan, conversation_context, planner_enabled  # noqa: E402
+import data_map_store
 from stats_tool import compute_json as _compute_stats_json
 from client_config import ClientConfig, available_client_ids, load_client_config  # noqa: E402
 from rag_sources import RagSourceRepository  # noqa: E402
@@ -268,6 +269,11 @@ def configure_client(client_id: str = "mens_fashion_alto", *, model_override: st
     global _USAGE_RECORDER, _INTERACTION_OUTCOME_RECORDER, _CLIENT_INTERNAL_IDENTIFIERS
 
     CLIENT_CONFIG = load_client_config(client_id)
+    # Data Map ACTIVO del almacén (data_map_store.py): si la actualización automática promovió una versión más nueva que la de
+    # config.yaml, rige esa. Fail-open: sin almacén o ante cualquier problema rige la de config.yaml.
+    _effective_data_map = data_map_store.effective_data_map_path(client_id, CLIENT_CONFIG.data_map_path)
+    if _effective_data_map != CLIENT_CONFIG.data_map_path:
+        CLIENT_CONFIG = dataclasses.replace(CLIENT_CONFIG, data_map_path=_effective_data_map)
     if model_override:
         CLIENT_CONFIG = dataclasses.replace(CLIENT_CONFIG, model=model_override)
     DATA_MAP_PATH = CLIENT_CONFIG.data_map_path
