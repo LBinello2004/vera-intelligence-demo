@@ -400,7 +400,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout-minutes", type=float, default=DEFAULT_TIMEOUT_MINUTES, help="Límite por cliente.")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Reintentos ante fallas de proceso (no ante rechazos del gate).")
     parser.add_argument("--dry-run", action="store_true", help="Genera candidatas sin gate ni promoción ni publicación.")
+    parser.add_argument("--test-notify", action="store_true", help="Manda un mensaje de prueba al webhook (VI_NOTIFY_WEBHOOK) y termina.")
     return parser.parse_args(argv)
+
+
+def load_env() -> None:
+    """Carga el `.env` de la raíz del repo (sin pisar variables ya exportadas): ahí viven VI_NOTIFY_WEBHOOK y VI_NOTIFY_HEARTBEAT.
+    Los procesos de cada cliente lo cargan solos (vi_agent.load_environment); este envoltorio también lo necesita para avisar."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(PROJECT_ROOT.parents[1] / ".env", override=False)
+        load_dotenv(PROJECT_ROOT / ".env", override=False)
+    except Exception:  # noqa: BLE001 - sin python-dotenv o sin .env, rigen las variables del entorno
+        pass
 
 
 def main() -> None:
@@ -409,7 +422,13 @@ def main() -> None:
             stream.reconfigure(encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
-    sys.exit(run_daily(parse_args()))
+    load_env()
+    args = parse_args()
+    if args.test_notify:
+        sent = alert("✅ Prueba del refresco diario del Data Map: si ves este mensaje, el aviso por Slack está bien configurado.")
+        print("Mensaje de prueba enviado." if sent else "NO se pudo enviar: falta VI_NOTIFY_WEBHOOK o el webhook rechazó el mensaje.", file=sys.stderr)
+        sys.exit(0 if sent else EXIT_CANNOT_START)
+    sys.exit(run_daily(args))
 
 
 if __name__ == "__main__":

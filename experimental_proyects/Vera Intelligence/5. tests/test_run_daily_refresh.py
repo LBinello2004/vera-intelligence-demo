@@ -301,6 +301,18 @@ class LockAndHelpersTests(unittest.TestCase):
         with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": ""}):
             self.assertFalse(rdr.notify(loud, "x", post=lambda u, p: self.fail("sin webhook no avisa")))
 
+    def test_load_env_lee_el_env_de_la_raiz_sin_pisar_lo_exportado(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a" / "b").mkdir(parents=True)
+            (root / ".env").write_text("VI_NOTIFY_WEBHOOK=https://hooks.example/desde-env\nVI_NOTIFY_HEARTBEAT=1\n", encoding="utf-8")
+            with patch.object(rdr, "PROJECT_ROOT", root / "a" / "b"), patch.dict(os.environ, {"VI_NOTIFY_HEARTBEAT": "0"}, clear=False):
+                os.environ.pop("VI_NOTIFY_WEBHOOK", None)
+                rdr.load_env()
+                self.assertEqual(os.environ["VI_NOTIFY_WEBHOOK"], "https://hooks.example/desde-env")
+                self.assertEqual(os.environ["VI_NOTIFY_HEARTBEAT"], "0")          # lo ya exportado manda
+                os.environ.pop("VI_NOTIFY_WEBHOOK", None)
+
     def test_el_latido_opcional_avisa_un_todo_bien_corto_solo_si_se_activa(self) -> None:
         quiet = {"promoted": [], "needs_human": [], "errors": [], "publication": None, "date": "2026-10-08", "clients_run": 19}
         sent: list[dict] = []

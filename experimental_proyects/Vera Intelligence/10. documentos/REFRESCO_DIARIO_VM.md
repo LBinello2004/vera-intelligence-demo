@@ -57,11 +57,11 @@ PGPASSWORD=...               # Postgres (la conexión es de solo lectura por ses
 LANGFUSE_PUBLIC_KEY=...
 LANGFUSE_SECRET_KEY=...
 LANGFUSE_BASE_URL=...
-# Opcionales (ver sección 4):
+# Aviso por Slack (opcional pero muy recomendado; cómo conseguir la URL: sección 4.1):
 VI_NOTIFY_WEBHOOK=https://hooks.slack.com/services/...
 VI_NOTIFY_HEARTBEAT=1
 ```
-No hace falta `JEV_API` ni nada de Firestore.
+No hace falta `JEV_API` ni nada de Firestore. Con el webhook cargado, probar el aviso: `... run_daily_refresh.py --test-notify` (sección 4.1).
 
 **Paso 4 — Prueba sin tocar nada** (desde `vera-demo/`):
 ```bash
@@ -125,6 +125,27 @@ Estados posibles por cliente: `sin_cambios`, `promovido`, `cambio_cosmetico_sin_
 | Push fallido (exit 3) | Hay algo promovido y commiteado en la VM que no llegó a GitHub | Revisar la clave de despliegue/red; la próxima corrida lo vuelve a intentar antes de hacer nada más |
 
 **Lo que NO cubre:** si la VM está apagada, el cron se cayó o el disco se perdió, **no hay nadie que pueda avisar que no corrió**. Para eso está el latido opcional: con `VI_NOTIFY_HEARTBEAT=1` (y webhook configurado) llega todos los días un mensaje corto `✅ Refresco del <fecha>: N clientes revisados, sin cambios`. **Si un día hábil no llega, hay que mirar la VM.**
+
+### 4.1 Cómo armar el aviso por Slack (una sola vez, ~5 minutos)
+
+1. Entrar a <https://api.slack.com/apps> con una cuenta del workspace → **Create New App** → **From scratch** → nombre (por ejemplo `Vera refresco Data Map`) → elegir el workspace.
+2. En el menú de la izquierda, **Incoming Webhooks** → activar **Activate Incoming Webhooks**.
+3. Abajo, **Add New Webhook to Workspace** → elegir el canal donde tiene que llegar (uno que mire el equipo, por ejemplo `#vera-alertas`) → **Allow**. Si el workspace exige aprobación de un administrador para apps nuevas, hay que pedirla.
+4. Copiar la **Webhook URL** (empieza con `https://hooks.slack.com/services/...`). **Es un secreto**: quien la tenga puede escribir en ese canal. No se pega en el chat, en un commit ni en el repo.
+5. En la VM, agregarla al `.env` del clon (el mismo archivo del paso 3):
+   ```
+   VI_NOTIFY_WEBHOOK=https://hooks.slack.com/services/...
+   VI_NOTIFY_HEARTBEAT=1        # recomendado: un "todo bien" corto por día; si un día hábil no llega, mirar la VM
+   ```
+6. Probar el aviso sin esperar un incidente (desde `vera-demo/`):
+   ```bash
+   .venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --test-notify
+   ```
+   Tiene que aparecer en el canal `✅ Prueba del refresco diario del Data Map...` y el comando termina con código 0. Si imprime `NO se pudo enviar`, falta la variable en el `.env` o Slack rechazó el mensaje (URL mal copiada o webhook revocado).
+   Prueba alternativa sin el script: `curl -X POST -H 'Content-type: application/json' --data '{"text":"prueba"}' "$VI_NOTIFY_WEBHOOK"`.
+7. Si la URL se filtra: en la misma página de la app de Slack, **Revoke** del webhook y crear otro (pasos 3 a 6).
+
+Notas: el aviso usa el formato `{"text": ...}` de Slack. Otros canales (Teams, Discord) usan otros formatos y no funcionarían tal cual. Para que el mensaje notifique a todo el canal, un administrador puede configurar el canal para que avise por cada mensaje; el script no agrega `@channel`.
 
 ---
 
