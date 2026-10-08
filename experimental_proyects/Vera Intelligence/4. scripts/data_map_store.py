@@ -231,6 +231,14 @@ class LocalStore:
     def set_gate_baseline(self, client: str, map_hash: str, missing: dict) -> None:
         self._write(client, "gate_baseline.json", {"map_hash": map_hash, "missing": missing})
 
+    # ------------------------------------------------------------------ prompts que no se pudieron leer (corridas seguidas)
+    def unavailable(self, client: str) -> dict:
+        return dict(self._read(client, "unavailable.json", {}) or {})
+
+    def set_unavailable(self, client: str, counts: dict) -> None:
+        if counts or self._read(client, "unavailable.json", None) is not None:
+            self._write(client, "unavailable.json", counts)
+
     def last_check(self, client: str) -> float | None:
         value = self._read(client, "meta.json", {})
         ts = value.get("last_check") if isinstance(value, dict) else None

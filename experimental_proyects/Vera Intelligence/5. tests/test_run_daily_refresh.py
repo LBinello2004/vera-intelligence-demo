@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -312,6 +313,18 @@ class LockAndHelpersTests(unittest.TestCase):
                 self.assertEqual(os.environ["VI_NOTIFY_WEBHOOK"], "https://hooks.example/desde-env")
                 self.assertEqual(os.environ["VI_NOTIFY_HEARTBEAT"], "0")          # lo ya exportado manda
                 os.environ.pop("VI_NOTIFY_WEBHOOK", None)
+
+    def test_un_prompt_inaccesible_cuenta_como_revision_humana_aunque_haya_otro_resultado(self) -> None:
+        problem = {"key": "rb", "prompt": "clientes/GAC/checklist", "http_status": 404, "needs_human": True}
+        item = {"client_id": "gac_ventas_medio", "status": "promovido", "rulebook_problems": [problem]}
+        self.assertTrue(rdr.needs_human(item))
+        self.assertTrue(rdr.needs_human({"client_id": "x", "status": "prompt_no_disponible"}))
+        self.assertFalse(rdr.needs_human({"client_id": "x", "status": "sin_cambios", "rulebook_problems": [{"needs_human": False}]}))
+        report = rdr.build_report([item], datetime(2026, 10, 8, tzinfo=timezone.utc), datetime(2026, 10, 8, tzinfo=timezone.utc), None)
+        self.assertEqual(report["needs_human"], ["gac_ventas_medio"])
+        text = rdr.render_markdown(report)
+        self.assertIn("ACCIÓN REQUERIDA: gac_ventas_medio", text)
+        self.assertIn("clientes/GAC/checklist", text)
 
     def test_el_latido_opcional_avisa_un_todo_bien_corto_solo_si_se_activa(self) -> None:
         quiet = {"promoted": [], "needs_human": [], "errors": [], "publication": None, "date": "2026-10-08", "clients_run": 19}

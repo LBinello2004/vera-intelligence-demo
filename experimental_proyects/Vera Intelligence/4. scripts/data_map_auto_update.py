@@ -171,15 +171,23 @@ def detect_rulebook_changes(client_config: ClientConfig) -> list[RulebookChange]
     return changes
 
 
+UNAVAILABLE_RUNS_BEFORE_ALERT = 3   # corridas seguidas sin poder leer un prompt (error que no es 404) antes de pedir revisión
+
+
 def detect_pending_changes(
-    client_config: ClientConfig, store, client_folder: str
+    client_config: ClientConfig, store, client_folder: str, problems: list[dict] | None = None
 ) -> tuple[list[RulebookChange], dict[str, int | str]]:
     """Cambios de prompt SIN PROCESAR de un cliente, y la versión actual de cada rulebook.
 
     Compara la versión de Langfuse contra las versiones YA PROCESADAS del almacén (no contra la foto que usa el agente para responder,
     que se refresca apenas se mira). Así un cambio cuyo Data Map no se promovió sigue pendiente y se reintenta. Primera vez que se ve
-    un rulebook: si el agente ya tenía una foto vieja, esa es la línea de base; si no, se siembra la actual (no es un "cambio")."""
+    un rulebook: si el agente ya tenía una foto vieja, esa es la línea de base; si no, se siembra la actual (no es un "cambio").
+
+    `problems` (parámetro de salida): prompts que no se pudieron leer de Langfuse y para los que el agente sigue usando su copia guardada
+    (`last_known_good`). Un 404 (el prompt se renombró o se borró: lo que le pasó a GAC el 2026-10-07, que durante días figuró como
+    "sin_cambios") pide revisión humana de inmediato; cualquier otro error, recién tras UNAVAILABLE_RUNS_BEFORE_ALERT corridas seguidas."""
     repository = BusinessRulesRepository(client_config, PROJECT_ROOT)
+    unavailable = dict(store.unavailable(client_folder)) if hasattr(store, "unavailable") else {}
     processed = store.processed_versions(client_folder)
     pending = store.pending(client_folder)
     changes: list[RulebookChange] = []
@@ -187,6 +195,18 @@ def detect_pending_changes(
     for key in repository.available_rulebooks():
         old_payload = repository._read_cache(key)  # lo que el agente venía usando, antes de refrescar
         new_payload = json.loads(repository.get(key, refresh=True))
+        if new_payload.get("source_status") == "last_known_good":
+            error = repository.fetch_errors.get(key)
+            status_code = getattr(getattr(error, "response", None), "status_code", None)
+            runs = int(unavailable.get(key, 0)) + 1
+            unavailable[key] = runs
+            rulebook = client_config.business_rulebooks[key]
+            if problems is not None:
+                problems.append({"key": key, "prompt": getattr(rulebook, "name", key), "http_status": status_code,
+                                 "error": str(error)[:200] if error else None, "consecutive_runs": runs,
+                                 "needs_human": status_code == 404 or runs >= UNAVAILABLE_RUNS_BEFORE_ALERT})
+            continue  # sin lectura nueva no hay nada que comparar: el agente sigue con su copia, pero queda avisado
+        unavailable.pop(key, None)
         new_version = new_payload["rules_version"]  # int en Langfuse; la cadena "local" en los rulebooks del repo
         current[key] = new_version
         baseline = processed.get(key)
@@ -205,6 +225,8 @@ def detect_pending_changes(
             old_text = None
         changes.append(RulebookChange(key=key, business_scope=new_payload["business_scope"], old_version=baseline,
                                       new_version=new_version, old_text=old_text, new_text=new_payload["criteria_text"]))
+    if hasattr(store, "set_unavailable"):
+        store.set_unavailable(client_folder, unavailable)
     if changes:
         now = time.time()
         store.put_pending(client_folder, {
@@ -898,10 +920,18 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
     def finish(summary: dict) -> dict:
         if bank_warnings:
             summary["golden_bank_relative_language_warnings"] = bank_warnings
+        if rulebook_problems:
+            summary["rulebook_problems"] = rulebook_problems
+            if summary.get("status") == "sin_cambios" and any(p["needs_human"] for p in rulebook_problems):
+                # No es "sin cambios": no se pudo leer un prompt (renombrado o borrado en Langfuse) y el agente sigue con una copia vieja.
+                summary["status"] = "prompt_no_disponible"
+                summary["note"] = ("Un prompt de este cliente no se puede leer de Langfuse (ver rulebook_problems): el agente usa su última copia "
+                                   "guardada. Hay que apuntar el rulebook en config.yaml al nombre nuevo o restaurar el prompt.")
         store.write_run(client_id, summary)
         return summary
 
-    changes, current_versions = detect_pending_changes(client_config, store, client_folder)
+    rulebook_problems: list[dict] = []
+    changes, current_versions = detect_pending_changes(client_config, store, client_folder, problems=rulebook_problems)
     if not changes:
         store.set_processed(client_id, current_versions)  # siembra la línea de base y deja al cliente al día
         return finish({"client_id": client_id, "status": "sin_cambios"})
@@ -1054,7 +1084,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-NEEDS_HUMAN_STATUSES = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados"}
+NEEDS_HUMAN_STATUSES = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados",
+                        "prompt_no_disponible"}
 
 
 def main() -> None:
@@ -1081,7 +1112,8 @@ def main() -> None:
         )
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
     # Código de salida para un programador de tareas o un monitor: distinto de cero si alguien tiene que mirar este cliente.
-    sys.exit(1 if status in NEEDS_HUMAN_STATUSES else 0)
+    problem_alert = any(p.get("needs_human") for p in summary.get("rulebook_problems") or [])
+    sys.exit(1 if (status in NEEDS_HUMAN_STATUSES or problem_alert) else 0)
 
 
 if __name__ == "__main__":

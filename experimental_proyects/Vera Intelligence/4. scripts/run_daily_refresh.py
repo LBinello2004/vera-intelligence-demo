@@ -50,7 +50,13 @@ LOCK_STALE_SECONDS = 6 * 3600
 DEFAULT_TIMEOUT_MINUTES = 60
 DEFAULT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 30
-NEEDS_HUMAN = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados"}
+NEEDS_HUMAN = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados",
+               "prompt_no_disponible"}
+
+
+def needs_human(item: dict) -> bool:
+    """Un cliente pide revisión por su estado o porque un prompt de sus rulebooks no se puede leer (aunque haya otro cambio promovido)."""
+    return item.get("status") in NEEDS_HUMAN or any(p.get("needs_human") for p in item.get("rulebook_problems") or [])
 PROCESS_ERROR = "error_de_proceso"
 DATA_MAP_LINE = re.compile(r'^data_map:\s*"(.*)"[ \t]*$', re.MULTILINE)
 
@@ -250,7 +256,7 @@ def build_report(results: list[dict], started: datetime, finished: datetime, pub
     return {
         "date": started.date().isoformat(), "started_at": started.isoformat(), "finished_at": finished.isoformat(),
         "clients_run": len(results), "counts": counts,
-        "needs_human": sorted(i["client_id"] for i in results if i.get("status") in NEEDS_HUMAN),
+        "needs_human": sorted(i["client_id"] for i in results if needs_human(i)),
         "errors": sorted(i["client_id"] for i in results if i.get("status") == PROCESS_ERROR),
         "promoted": sorted(i["client_id"] for i in results if i.get("status") == "promovido"),
         "publication": publication, "results": results,
@@ -271,8 +277,11 @@ def render_markdown(report: dict) -> str:
         lines.append("Publicación: " + ("publicado" if publication.get("published") else
                                           f"NO publicado ({publication.get('error') or publication.get('reason')})"))
     for item in report["results"]:
-        if item.get("status") in NEEDS_HUMAN or item.get("status") == PROCESS_ERROR:
+        if needs_human(item) or item.get("status") == PROCESS_ERROR:
             detail = item.get("error") or item.get("note") or item.get("candidate_path") or ""
+            for problem in item.get("rulebook_problems") or []:
+                if problem.get("needs_human"):
+                    detail = f"{detail} | prompt no disponible: {problem.get('prompt')} (HTTP {problem.get('http_status')})".strip(" |")
             lines.append(f"- {item['client_id']}: {item['status']} {str(detail)[:200]}")
     return "\n".join(lines) + "\n"
 

@@ -44,6 +44,7 @@ class BusinessRulesRepository:
         self.client = client
         self.cache_dir = project_root / ".runtime" / "business_rules" / client.client_id
         self._memory_cache: dict[str, dict] = {}
+        self.fetch_errors: dict[str, Exception] = {}
 
     def available_rulebooks(self) -> tuple[str, ...]:
         return tuple(sorted(self.client.business_rulebooks))
@@ -91,7 +92,9 @@ class BusinessRulesRepository:
                 # entorno no permita persistir el snapshot local.
                 pass
             source_status = "current"
-        except (KeyError, RuntimeError, requests.RequestException, ValueError):
+            self.fetch_errors.pop(key, None)
+        except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+            self.fetch_errors[key] = exc   # el refresco automático lo usa para avisar que un prompt desapareció (no se expone al agente)
             payload = self._read_cache(key)
             if payload is None:
                 raise OperationalUnavailable(

@@ -25,9 +25,10 @@ class FakeRepository:
     """BusinessRulesRepository mínimo: `get(refresh=True)` devuelve la versión de 'Langfuse' y refresca la foto del agente."""
     langfuse = {"version": 1, "text": "regla v1"}
     cache: dict | None = None
+    fail_status: int | None = None     # simula un prompt que Langfuse no entrega (404 u otro código); el agente cae a su última copia
 
     def __init__(self, client_config, project_root) -> None:
-        pass
+        self.fetch_errors = {}
 
     def available_rulebooks(self):
         return ("rb",)
@@ -37,6 +38,11 @@ class FakeRepository:
 
     def get(self, key, refresh=False):
         payload = {"rules_version": self.langfuse["version"], "business_scope": "ventas", "criteria_text": self.langfuse["text"]}
+        if FakeRepository.fail_status is not None:
+            error = RuntimeError("fallo de Langfuse")
+            error.response = SimpleNamespace(status_code=FakeRepository.fail_status)
+            self.fetch_errors[key] = error
+            return json.dumps({**(FakeRepository.cache or payload), "source_status": "last_known_good"})
         if refresh:
             FakeRepository.cache = dict(payload)
         return json.dumps(payload)
@@ -52,8 +58,9 @@ class PipelineCase(unittest.TestCase):
         self.v1 = self.maps / "VI Data Map Acme V1.yaml"
         self.v1.write_text("metadata: {name: v1}\nsources: {a: {source: dashboard_v2.vw_a, fields: {x: {}}}}\n", encoding="utf-8")
         self.store = dms.LocalStore(project_root=self.project)
-        FakeRepository.cache, FakeRepository.langfuse = None, {"version": 1, "text": "regla v1"}
-        self.config = SimpleNamespace(data_map_path=self.v1, display_name="Acme", model="m", client_id="acme", tenant="Acme")
+        FakeRepository.cache, FakeRepository.langfuse, FakeRepository.fail_status = None, {"version": 1, "text": "regla v1"}, None
+        self.config = SimpleNamespace(data_map_path=self.v1, display_name="Acme", model="m", client_id="acme", tenant="Acme",
+                                      business_rulebooks={"rb": SimpleNamespace(name="clientes/Acme/Ventas/checklist")})
         patcher = patch.object(dmu, "BusinessRulesRepository", FakeRepository)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -83,6 +90,34 @@ class DetectPendingChangesTests(PipelineCase):
         self.detect()                                            # detecta y refresca la foto del agente a v2
         changes, _ = self.detect()                               # segunda corrida: la foto ya dice v2, pero v2 nunca se promovió
         self.assertEqual([(c.old_version, c.new_version, c.old_text) for c in changes], [(1, 2, "regla v1")])
+
+    def test_un_prompt_que_da_404_pide_revision_de_inmediato_y_no_es_un_cambio(self) -> None:
+        self.detect()                                           # el agente ya tiene su copia
+        FakeRepository.fail_status = 404
+        problems: list = []
+        changes, current = dmu.detect_pending_changes(self.config, self.store, CLIENT, problems=problems)
+        self.assertEqual((changes, current), ([], {}))
+        self.assertEqual(len(problems), 1)
+        self.assertEqual((problems[0]["http_status"], problems[0]["needs_human"], problems[0]["prompt"]),
+                         (404, True, "clientes/Acme/Ventas/checklist"))
+
+    def test_un_error_que_no_es_404_solo_pide_revision_si_se_repite_y_se_olvida_al_recuperarse(self) -> None:
+        self.detect()
+        FakeRepository.fail_status = 503
+        flags = []
+        for _ in range(dmu.UNAVAILABLE_RUNS_BEFORE_ALERT):
+            problems: list = []
+            dmu.detect_pending_changes(self.config, self.store, CLIENT, problems=problems)
+            flags.append(problems[0]["needs_human"])
+        self.assertEqual(flags, [False] * (dmu.UNAVAILABLE_RUNS_BEFORE_ALERT - 1) + [True])
+        FakeRepository.fail_status = None
+        recovered: list = []
+        dmu.detect_pending_changes(self.config, self.store, CLIENT, problems=recovered)
+        self.assertEqual((recovered, self.store.unavailable(CLIENT)), ([], {}))
+        FakeRepository.fail_status = 503
+        again: list = []
+        dmu.detect_pending_changes(self.config, self.store, CLIENT, problems=again)
+        self.assertEqual((again[0]["consecutive_runs"], again[0]["needs_human"]), (1, False))     # el conteo vuelve a empezar
 
     def test_un_rulebook_local_tiene_version_texto_y_no_rompe_ni_cuenta_como_cambio(self) -> None:
         # Caso real (2026-10-07): coaching_playbook es local y su rules_version es la cadena "local"; un int() la tumbaba.
@@ -136,7 +171,7 @@ class RunForClientTests(PipelineCase):
             (dmu.vi_agent, ("load_environment", lambda *a, **k: None)),
             (dmu.vi_agent, ("CLIENT_CONFIG", self.config)),
             (dmu, ("_lint_bank_for_client", lambda folder: [])),
-            (dmu, ("detect_pending_changes", lambda cfg, store, folder: ([self.change], {"rb": 2}))),
+            (dmu, ("detect_pending_changes", lambda cfg, store, folder, problems=None: ([self.change], {"rb": 2}))),
             (dmu, ("regenerate_data_map", self._regenerate)),
             (dmu, ("_evaluate_candidate", self._evaluate)),
             (dmu, ("promote", self._promote)),
@@ -229,7 +264,7 @@ class RunForClientTests(PipelineCase):
 
     # ---- otros caminos
     def test_sin_cambios_siembra_la_linea_de_base(self) -> None:
-        with patch.object(dmu, "detect_pending_changes", lambda cfg, store, folder: ([], {"rb": 5})):
+        with patch.object(dmu, "detect_pending_changes", lambda cfg, store, folder, problems=None: ([], {"rb": 5})):
             summary = self.run_client()
         self.assertEqual(summary["status"], "sin_cambios")
         self.assertEqual(self.store.processed_versions(CLIENT), {"rb": 5})
@@ -267,6 +302,30 @@ class RunForClientTests(PipelineCase):
         runs = list((self.project / ".runtime" / "data_map_updates" / CLIENT).glob("*.json"))
         self.assertEqual(len(runs), 1)
         self.assertEqual(json.loads(runs[0].read_text(encoding="utf-8"))["status"], "promovido")
+
+    def test_sin_cambios_pero_con_un_prompt_inaccesible_no_se_informa_sin_cambios(self) -> None:
+        problem = {"key": "rb", "prompt": "clientes/Acme/Ventas/checklist", "http_status": 404, "error": "x", "consecutive_runs": 1, "needs_human": True}
+
+        def detect(cfg, store, folder, problems=None):
+            problems.append(problem)
+            return [], {}
+
+        with patch.object(dmu, "detect_pending_changes", detect):
+            summary = self.run_client()
+        self.assertEqual(summary["status"], "prompt_no_disponible")
+        self.assertEqual(summary["rulebook_problems"], [problem])
+        self.assertIn("prompt_no_disponible", dmu.NEEDS_HUMAN_STATUSES)
+
+    def test_un_problema_que_aun_no_pide_revision_se_registra_pero_sigue_siendo_sin_cambios(self) -> None:
+        problem = {"key": "rb", "prompt": "p", "http_status": 503, "error": "x", "consecutive_runs": 1, "needs_human": False}
+
+        def detect(cfg, store, folder, problems=None):
+            problems.append(problem)
+            return [], {}
+
+        with patch.object(dmu, "detect_pending_changes", detect):
+            summary = self.run_client()
+        self.assertEqual((summary["status"], summary["rulebook_problems"]), ("sin_cambios", [problem]))
 
     # ---- cambios cosméticos, espera de estabilidad, cascada de modelo y registro de cambios
     def test_un_cambio_cosmetico_se_acepta_sin_regenerar_ni_gastar(self) -> None:
@@ -307,7 +366,7 @@ class RunForClientTests(PipelineCase):
     def test_si_algunos_cambios_son_cosmeticos_solo_se_regenera_por_los_reales(self) -> None:
         cosmetic = dmu.RulebookChange("a", "x", 1, 2, "Regla A.", "regla a")
         real = dmu.RulebookChange("b", "y", 3, 4, "regla b", "regla b modificada")
-        with patch.object(dmu, "detect_pending_changes", lambda cfg, store, folder: ([cosmetic, real], {"a": 2, "b": 4})):
+        with patch.object(dmu, "detect_pending_changes", lambda cfg, store, folder, problems=None: ([cosmetic, real], {"a": 2, "b": 4})):
             summary = self.run_client()
         self.assertEqual(summary["status"], "promovido")
         self.assertEqual([c.key for c in self.regenerated_changes[0]], ["b"])
