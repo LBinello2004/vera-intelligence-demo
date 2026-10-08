@@ -422,7 +422,7 @@ class NaturalBusinessWordsRegressionTests(unittest.TestCase):
             "sentimiento",
             "El sentimiento del cliente sobre la región fue positivo.",
         )
-        for client_id in ("gac_medio", "hyundai_bajo"):
+        for client_id in ("gac_ventas_medio", "hyundai_bajo"):
             with self.subTest(client_id=client_id):
                 self._assert_word_not_blocked(
                     client_id, "saludo", "El vendedor comenzó con un saludo cordial."

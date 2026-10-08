@@ -2,7 +2,7 @@ client_id: gac
 display_name: "GAC"
 tenant: "GAC"
 model: gemini-3.7-flash
-data_map: "2. clientes/gac_medio/data_map/VI Data Map GAC V1.yaml"
+data_map: "2. clientes/gac_ventas_medio/data_map/VI Data Map GAC V1.yaml"
 
 # GAC es un cliente de "schema delgado" (2 vistas, sin insights) y de volumen chico
 # (98 conversaciones totales) -mismo patrón que Agrosuper/Hyundai/Dalton, ver README.
@@ -14,7 +14,7 @@ sources:
 
 business_rulebooks:
   sales_evaluation:
-    name: "clientes/GAC/checklist"
+    name: "clientes/GAC/Ventas/checklist"
     label: production
     business_scope: "Criterios de atención y desempeño del asesor en concesionaria de vehículos (GAC)"
   # Generalizado a todos los clientes (2026-09-11) -source local, NO Langfuse: contenido
