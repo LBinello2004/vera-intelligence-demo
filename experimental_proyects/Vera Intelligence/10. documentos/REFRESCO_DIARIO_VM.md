@@ -40,6 +40,14 @@ Requisitos: Linux con Python 3.11+ y git, salida a internet hacia GitHub, Langfu
 
 **Paso 1 — Clave de despliegue con permiso de escritura.** En GitHub, repo `LBinello2004/vera-intelligence-demo` → Settings → Deploy keys → Add deploy key → pegar la clave pública de la VM y tildar **Allow write access**. (Alternativa: un token fino limitado a ese repo.)
 
+En la VM, para generar la clave: `ssh-keygen -t ed25519 -C "vera-vm-refresco" -f ~/.ssh/vera_deploy -N ""` y mostrar la pública con `cat ~/.ssh/vera_deploy.pub` (la privada nunca sale de la VM). Después, agregar a `~/.ssh/config` estas tres líneas:
+```
+Host github.com
+  IdentityFile ~/.ssh/vera_deploy
+  IdentitiesOnly yes
+```
+y, con la clave ya cargada en GitHub, `ssh -T git@github.com` tiene que decir que autenticó.
+
 **Paso 2 — Clonar e instalar.**
 ```bash
 git clone git@github.com:LBinello2004/vera-intelligence-demo.git vera-demo
@@ -75,7 +83,7 @@ Tiene que terminar con `sin_cambios` (la primera vez solo "siembra" la línea de
 ```
 Recorre todos los clientes. Si justo hubo un cambio de prompt y se promueve algo, queda commiteado solo en local. Revisar `.runtime/daily_refresh/<fecha>.md`.
 
-**Paso 6 — Probar el push a mano:** `git push` desde el clon (con algo trivial) para confirmar que la clave de despliegue escribe.
+**Paso 6 — Probar el push sin ensuciar `main`:** `git push origin HEAD:refs/heads/prueba-vm` y después `git push origin --delete prueba-vm`. Si el primero sale bien, la clave de despliegue escribe.
 
 **Paso 7 — Programar el cron** (`crontab -e`; revisar la zona horaria de la VM):
 ```
