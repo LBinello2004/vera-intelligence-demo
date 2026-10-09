@@ -30,7 +30,7 @@ Una VM con un cron que, todos los días hábiles, revisa si cambió algún promp
 | 4 | Crear el `.env` con las credenciales (guía, paso 3) | La persona de la VM, con lo que le pase quien tenga las credenciales | El archivo existe y **no** está versionado (`git status` no lo muestra) |
 | 5 | Prueba sin tocar nada: `--dry-run` (guía, paso 4) | La persona de la VM | Termina con `sin_cambios` |
 | 6 | Configurar Slack: el dueño del workspace crea el webhook (guía, sección 4.1), lo pasa **por un medio privado** y se pega en `.env`. Probar con `--test-notify` | Dueño de Slack + persona de la VM | El mensaje `✅ Prueba del refresco diario...` aparece en el canal y el comando termina con código 0 |
-| 7 | Prueba completa sin publicar: `--no-push` (guía, paso 5) | La persona de la VM | Se genera `.runtime/daily_refresh/<fecha>.md` sin `ACCIÓN REQUERIDA` |
+| 7 | Prueba completa sin publicar: `--no-push` (guía, paso 5) | La persona de la VM | Se genera `experimental_proyects/Vera Intelligence/.runtime/daily_refresh/<fecha>.md` sin `ACCIÓN REQUERIDA` |
 | 8 | Probar que el push funciona sin ensuciar `main` (comandos abajo) | La persona de la VM | El push a la rama de prueba sale bien y después se borra |
 | 9 | Programar el cron (guía, paso 7) | La persona de la VM | `crontab -l` muestra la línea; al día siguiente existe el reporte del día |
 | 10 | Desactivar la rutina de Claude `vera-intelligence-data-map-poller` (si no, dos sistemas promoverían lo mismo) | El dueño de esa rutina | Ya no aparece activa |
@@ -53,7 +53,7 @@ git push origin --delete prueba-vm
 
 - **Un paso por vez.** No des el siguiente hasta que la persona confirme el resultado del anterior.
 - **Nunca pidas ni aceptes secretos en el chat** (claves de Gemini, contraseña de Postgres, claves de Langfuse, URL del webhook de Slack, clave privada SSH). Que los peguen directo en el `.env` de la VM.
-- **No edites `config.yaml` ni los Data Maps a mano** y no borres `.runtime/` (ahí vive el estado: versiones de prompt ya procesadas, intentos y candados). Si hace falta volver atrás, usá `revert_data_map.py` (guía, sección 5).
+- **No edites `config.yaml` ni los Data Maps a mano** y no borres `experimental_proyects/Vera Intelligence/.runtime/` (ahí vive el estado: versiones de prompt ya procesadas, intentos y candados). Si hace falta volver atrás, usá `revert_data_map.py` (guía, sección 5).
 - **No uses `git add -A` ni hagas commits a mano en el clon de la VM.** El script solo commitea lo que promovió y el repo tiene que estar limpio para que el refresco corra.
 - **Ante cualquier error, pará y pedí el texto exacto** (comando y salida completa). No lo tapes con permisos amplios ni desactivando chequeos.
 - No inventes: si algo de la guía no coincide con lo que ves, decíselo a la persona.
@@ -61,19 +61,21 @@ git push origin --delete prueba-vm
 ## Después de armada: dónde se mira
 
 - **Slack** (si está configurado `VI_NOTIFY_WEBHOOK`): mensajes `⚠️ ACCIÓN REQUERIDA` cuando algo necesita revisión humana, y un "todo bien" diario con `VI_NOTIFY_HEARTBEAT=1`. **Si un día hábil no llega ningún mensaje, hay que mirar la VM** (nadie puede avisar que el cron no corrió).
-- **En la VM:** `.runtime/daily_refresh/AAAA-MM-DD.md`. Sin webhook, este archivo es el único aviso.
+- **En la VM:** `experimental_proyects/Vera Intelligence/.runtime/daily_refresh/AAAA-MM-DD.md`. Sin webhook, este archivo es el único aviso.
 - Qué significa cada estado y qué hacer: guía, sección 4.
 
 ## Cómo tratar cada error
 
-Dónde mirar siempre primero: `.runtime/daily_refresh/AAAA-MM-DD.md` (resumen del día), el `.json` de al lado (todo el detalle) y el log del cron. El detalle de un cliente puntual está en `.runtime/data_map_updates/<cliente>/<fecha>.json`.
+**Ojo con la ruta:** `.runtime/` está en `experimental_proyects/Vera Intelligence/.runtime/`, **no** en la raíz del clon (un `rm` o un `cat` con `.runtime/...` desde la raíz no encuentra nada). Todas las rutas de esta página lo escriben completo.
+
+Dónde mirar siempre primero: `experimental_proyects/Vera Intelligence/.runtime/daily_refresh/AAAA-MM-DD.md` (resumen del día), el `.json` de al lado (todo el detalle) y el log del cron. El detalle de un cliente puntual está en `experimental_proyects/Vera Intelligence/.runtime/data_map_updates/<cliente>/<fecha>.json`.
 Para repetir un solo cliente sin publicar nada: `.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --clients <cliente> --no-pull --no-push`.
 
 ### Si el refresco no pudo ni empezar (código de salida 2)
 
 | Mensaje o síntoma | Causa | Qué hacer |
 |---|---|---|
-| "Ya hay un refresco en curso" | Un candado de una corrida anterior: o sigue corriendo o murió sin soltarlo (por ejemplo, reinicio de la VM) | Verificar que no esté corriendo (`ps aux \| grep run_daily_refresh`). Si no hay proceso, borrar `.runtime/daily_refresh.lock`. Solo vence a las 6 h. El candado por cliente (`.runtime/store/<cliente>/lock.json`) vence a los 90 min |
+| "Ya hay un refresco en curso" | Un candado de una corrida anterior: o sigue corriendo o murió sin soltarlo (por ejemplo, reinicio de la VM) | Verificar que no esté corriendo (`ps aux \| grep run_daily_refresh`). Si no hay proceso, borrar `experimental_proyects/Vera Intelligence/.runtime/daily_refresh.lock`. Solo vence a las 6 h. El candado por cliente (`experimental_proyects/Vera Intelligence/.runtime/store/<cliente>/lock.json`) vence a los 90 min |
 | Avisa de "cambios ajenos sin commitear" | Alguien tocó archivos versionados dentro del clon; el script no toca nada para no pisar trabajo | `git status`. Si los cambios no importan: `git restore <archivo>`. **No uses `git add -A` ni commitees a mano en el clon** |
 | `git pull --ff-only` falla | El clon tiene un commit local que GitHub no tiene (o la historia divergió) | `git log origin/main..HEAD` para ver qué es. Si es una promoción que no se publicó, la corrida siguiente la publica sola; si es otra cosa, avisar antes de forzar nada |
 
@@ -99,7 +101,7 @@ Falló el push. Causas típicas: la deploy key no tiene **Allow write access**, 
 
 Si el error dice "No pude iniciar el análisis en este momento", falta `VERA_AI_API_KEY` o `PGPASSWORD` en el `.env`.
 
-**Si el error de un cliente es `ServerError: 504 DEADLINE_EXCEEDED`** (le pasó a Farma 24 el 2026-10-09): Gemini no alcanzó a responder dentro del plazo. Con el código actual la regeneración tiene un plazo de 10 minutos, así que si aparece de nuevo, el Data Map de ese cliente es enorme o Gemini está degradado: repetir ese cliente solo (comando de arriba) y, si persiste, avisar. Cada intento fallido **consume uno de los 4 intentos** del cambio (`.runtime/store/<cliente>/attempts.json`); si se agotaron por un problema ya arreglado, borrar ese `attempts.json` para que reintente con el código nuevo.
+**Si el error de un cliente es `ServerError: 504 DEADLINE_EXCEEDED`** (le pasó a Farma 24 el 2026-10-09): Gemini no alcanzó a responder dentro del plazo. Con el código actual la regeneración tiene un plazo de 10 minutos, así que si aparece de nuevo, el Data Map de ese cliente es enorme o Gemini está degradado: repetir ese cliente solo (comando de arriba) y, si persiste, avisar. Cada intento fallido **consume uno de los 4 intentos** del cambio (`experimental_proyects/Vera Intelligence/.runtime/store/<cliente>/attempts.json`); si se agotaron por un problema ya arreglado, borrar ese `attempts.json` para que reintente con el código nuevo.
 
 ### Si no llega el aviso de Slack
 - Probar `... run_daily_refresh.py --test-notify`. Si dice "NO se pudo enviar": falta `VI_NOTIFY_WEBHOOK` en el `.env` o la URL está mal copiada o revocada.

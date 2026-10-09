@@ -36,7 +36,9 @@ Garantías que importan:
 
 ## 2. Qué hay que hacer en la VM (una sola vez)
 
-Requisitos: Linux con Python 3.11+ y git, salida a internet hacia GitHub, Langfuse, Gemini y Postgres, y **disco que persista** (el estado vive en `.runtime/` dentro del clon).
+**Dónde vive el estado:** `.runtime/` está dentro de la carpeta del proyecto, o sea en `experimental_proyects/Vera Intelligence/.runtime/` (**no** en la raíz del clon). Todas las rutas de esta guía lo escriben completo.
+
+Requisitos: Linux con Python 3.11+ y git, salida a internet hacia GitHub, Langfuse, Gemini y Postgres, y **disco que persista** (el estado vive en `experimental_proyects/Vera Intelligence/.runtime/` dentro del clon).
 
 **Paso 1 — Clave de despliegue con permiso de escritura.** En GitHub, repo `LBinello2004/vera-intelligence-demo` → Settings → Deploy keys → Add deploy key → pegar la clave pública de la VM y tildar **Allow write access**. (Alternativa: un token fino limitado a ese repo.)
 
@@ -81,7 +83,7 @@ Tiene que terminar con `sin_cambios` (la primera vez solo "siembra" la línea de
 ```bash
 .venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" --no-push
 ```
-Recorre todos los clientes. Si justo hubo un cambio de prompt y se promueve algo, queda commiteado solo en local. Revisar `.runtime/daily_refresh/<fecha>.md`.
+Recorre todos los clientes. Si justo hubo un cambio de prompt y se promueve algo, queda commiteado solo en local. Revisar `experimental_proyects/Vera Intelligence/.runtime/daily_refresh/<fecha>.md`.
 
 **Paso 6 — Probar el push sin ensuciar `main`:** `git push origin HEAD:refs/heads/prueba-vm` y después `git push origin --delete prueba-vm`. Si el primero sale bien, la clave de despliegue escribe.
 
@@ -115,10 +117,10 @@ Estados posibles por cliente: `sin_cambios`, `promovido`, `cambio_cosmetico_sin_
 | Dónde | Qué ve la persona | Cuándo |
 |---|---|---|
 | **Webhook** (`VI_NOTIFY_WEBHOOK`, formato `{"text": ...}` de Slack; sirve cualquier canal que lo acepte) | Un mensaje que empieza con `⚠️ ACCIÓN REQUERIDA: <clientes>` y lista cada cliente con su estado y el motivo | Cuando algún cliente requiere revisión, hubo un error de proceso, falló el push, o el refresco no pudo ni empezar (otra corrida en curso, repo con cambios ajenos, `git pull` fallido). **También avisa cuando se promueve algo** (informativo, sin la línea de acción) |
-| **Reporte del día** en la VM: `.runtime/daily_refresh/AAAA-MM-DD.md` (y `.json` con todo el detalle) | La primera línea dice `⚠️ ACCIÓN REQUERIDA: ...` si hace falta algo | Siempre se escribe |
+| **Reporte del día** en la VM: `experimental_proyects/Vera Intelligence/.runtime/daily_refresh/AAAA-MM-DD.md` (y `.json` con todo el detalle) | La primera línea dice `⚠️ ACCIÓN REQUERIDA: ...` si hace falta algo | Siempre se escribe |
 | **Log de cron** (`vi_refresh.log` según el cron del paso 7) | Lo mismo que el reporte, impreso | Siempre |
 | **Código de salida** del proceso | `0` bien · `1` algún cliente requiere revisión o falló · `2` no pudo empezar · `3` se promovió pero falló el push · `4` error inesperado del propio script (también avisa por webhook con el texto del error) | Útil si algún monitor ya mira cron |
-| **Detalle por cliente** `.runtime/data_map_updates/<cliente>/<fecha>.json` | Candidata, changelog, preguntas del gate y por qué falló | Para entender un caso puntual |
+| **Detalle por cliente** `experimental_proyects/Vera Intelligence/.runtime/data_map_updates/<cliente>/<fecha>.json` | Candidata, changelog, preguntas del gate y por qué falló | Para entender un caso puntual |
 
 **Qué estados piden revisión humana y qué hacer:**
 
@@ -216,7 +218,7 @@ Cómo se mantiene bajo: el gate solo le pregunta al agente lo que el cambio pued
 - **Un cambio de prompt en Farma 24:** regeneración 155 s + gate 183 s ≈ 6 minutos en total. Antes del arreglo la regeneración fallaba tras ~25 minutos por intento (3 intentos = 74 minutos).
 - **Por qué fallaba:** el SDK de Gemini manda el timeout HTTP como plazo del servidor; con 120 s, reescribir un Data Map de 76 KB vencía siempre con `504 DEADLINE_EXCEEDED`. La regeneración ahora tiene su propio plazo de 10 minutos y razonamiento bajo.
 - **Topes para que un cliente lento no frene al resto:** **90 minutos** por cliente (un timeout **no** se reintenta, pero **devuelve el intento** y suelta el candado del cliente: el límite es nuestro, no un rechazo del candidato), 4 clientes a la vez, y la regeneración tiene presupuesto: 4 consultas SQL y 6 minutos si solo cambiaron reglas, 12 consultas y 10 minutos si cambiaron campos. Al agotarse no falla: se le pide a Gemini el YAML final con lo que alcanzó a verificar y decide el gate.
-- Cada resultado trae `timings` (segundos de regeneración y de gate por intento) en `.runtime/data_map_updates/<cliente>/<fecha>.json`.
+- Cada resultado trae `timings` (segundos de regeneración y de gate por intento) en `experimental_proyects/Vera Intelligence/.runtime/data_map_updates/<cliente>/<fecha>.json`.
 
 ---
 
@@ -246,5 +248,5 @@ Cómo se mantiene bajo: el gate solo le pregunta al agente lo que el cambio pued
 - Chequeo semanal de los bancos de preguntas (SQL roto o vacío).
 - Límite más corto por consulta de verificación de la regeneración.
 - Clasificar los cambios triviales de prompt y actualizar solo la versión, sin regenerar (ahorra tiempo y gasto, pero puede dejar desactualizada la descripción de un criterio).
-- Guardar las versiones de prompt procesadas dentro del repo (para sobrevivir a la pérdida de `.runtime/` en la VM).
+- Guardar las versiones de prompt procesadas dentro del repo (para sobrevivir a la pérdida de `experimental_proyects/Vera Intelligence/.runtime/` en la VM).
 
