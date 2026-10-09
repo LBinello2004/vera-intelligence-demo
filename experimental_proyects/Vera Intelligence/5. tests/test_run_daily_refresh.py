@@ -245,7 +245,7 @@ class DailyRunTests(RepoCase):
 
     def test_si_la_etl_esta_refrescando_espera_y_arranca_cuando_termina(self) -> None:
         sleeps: list = []
-        code, report = self.run_with_etl([True, True, False], sleeps=sleeps)
+        code, report = self.run_with_etl([True, True, False], "--wait-etl-minutes", "10", sleeps=sleeps)
         self.assertEqual((code, len(sleeps)), (rdr.EXIT_OK, 2))
         self.assertEqual(sleep_total(sleeps), 2 * rdr.ETL_POLL_SECONDS)
         self.assertTrue(any("esperé 2 min y arranqué cuando terminó" in note for note in report["notes"]))
@@ -271,6 +271,12 @@ class DailyRunTests(RepoCase):
         self.assertEqual((code, len(sleeps), peak[0]), (rdr.EXIT_OK, 3, 1))
         self.assertTrue(any("de a un cliente" in note for note in report["notes"]))
 
+    def test_por_defecto_no_se_espera_a_la_etl(self) -> None:
+        self.assertEqual(rdr.DEFAULT_WAIT_ETL_MINUTES, 0)
+        sleeps: list = []
+        code, report = self.run_with_etl([True], sleeps=sleeps)
+        self.assertEqual((code, sleeps, report["notes"]), (rdr.EXIT_OK, [], []))
+
     def test_con_la_espera_en_cero_no_se_consulta_a_la_etl(self) -> None:
         sleeps: list = []
         code, report = self.run_with_etl([True], "--wait-etl-minutes", "0", sleeps=sleeps)
@@ -279,7 +285,7 @@ class DailyRunTests(RepoCase):
 
     def test_si_no_se_puede_consultar_la_etl_no_se_frena_nada(self) -> None:
         sleeps: list = []
-        code, _ = self.run_with_etl([None], sleeps=sleeps)
+        code, _ = self.run_with_etl([None], "--wait-etl-minutes", "10", sleeps=sleeps)
         self.assertEqual((code, sleeps), (rdr.EXIT_OK, []))
 
     def test_los_clientes_a_la_vez_salen_del_env_y_la_opcion_gana(self) -> None:

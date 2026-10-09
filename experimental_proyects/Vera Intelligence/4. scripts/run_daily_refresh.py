@@ -52,7 +52,7 @@ UPDATER = SCRIPT_DIR / "data_map_auto_update.py"
 LOCK_STALE_SECONDS = 12 * 3600      # peor caso: 19 clientes en tandas de 4 con el tope por cliente
 DEFAULT_TIMEOUT_MINUTES = 90     # límite por cliente (el 2026-10-09 se subió de 15 a 90): uno colgado no puede frenar al resto para siempre
 DEFAULT_PARALLEL = 4            # clientes corriendo a la vez (cada uno en su propio proceso); se cambia con --parallel o VI_REFRESH_PARALLEL en el .env
-DEFAULT_WAIT_ETL_MINUTES = 10   # cuánto esperar a que la ETL termine sus REFRESH MATERIALIZED VIEW antes de arrancar (0 = no esperar); VI_REFRESH_WAIT_ETL_MINUTES
+DEFAULT_WAIT_ETL_MINUTES = 0    # apagado (2026-10-09): la ETL refresca cada ~15 min, cruzarse es normal e inofensivo (solo lecturas); con N minutos espera a que no haya un REFRESH activo; VI_REFRESH_WAIT_ETL_MINUTES
 ETL_POLL_SECONDS = 60
 DEFAULT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 30
