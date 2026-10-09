@@ -326,6 +326,21 @@ class LockAndHelpersTests(unittest.TestCase):
         self.assertIn("ACCIÓN REQUERIDA: gac_ventas_medio", text)
         self.assertIn("clientes/GAC/checklist", text)
 
+    def test_un_error_inesperado_avisa_por_webhook_y_sale_con_codigo_4(self) -> None:
+        sent: list[dict] = []
+        args = rdr.parse_args([])
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x"}),                 patch.object(rdr, "run_daily", side_effect=KeyError("config")), patch.object(rdr.traceback, "print_exc"):
+            code = rdr.run_guarded(args, post=lambda url, payload: sent.append(payload))
+        self.assertEqual(code, rdr.EXIT_CRASH)
+        self.assertEqual(rdr.EXIT_CRASH, 4)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("ACCIÓN REQUERIDA", sent[0]["text"])
+        self.assertIn("KeyError", sent[0]["text"])
+
+    def test_sin_error_run_guarded_devuelve_el_codigo_de_run_daily_y_no_avisa(self) -> None:
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x"}), patch.object(rdr, "run_daily", return_value=1):
+            self.assertEqual(rdr.run_guarded(rdr.parse_args([]), post=lambda u, p: self.fail("no debía avisar")), 1)
+
     def test_el_latido_opcional_avisa_un_todo_bien_corto_solo_si_se_activa(self) -> None:
         quiet = {"promoted": [], "needs_human": [], "errors": [], "publication": None, "date": "2026-10-08", "clients_run": 19}
         sent: list[dict] = []

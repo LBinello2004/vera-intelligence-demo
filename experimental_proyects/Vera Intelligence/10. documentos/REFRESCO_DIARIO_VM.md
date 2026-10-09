@@ -117,7 +117,7 @@ Estados posibles por cliente: `sin_cambios`, `promovido`, `cambio_cosmetico_sin_
 | **Webhook** (`VI_NOTIFY_WEBHOOK`, formato `{"text": ...}` de Slack; sirve cualquier canal que lo acepte) | Un mensaje que empieza con `⚠️ ACCIÓN REQUERIDA: <clientes>` y lista cada cliente con su estado y el motivo | Cuando algún cliente requiere revisión, hubo un error de proceso, falló el push, o el refresco no pudo ni empezar (otra corrida en curso, repo con cambios ajenos, `git pull` fallido). **También avisa cuando se promueve algo** (informativo, sin la línea de acción) |
 | **Reporte del día** en la VM: `.runtime/daily_refresh/AAAA-MM-DD.md` (y `.json` con todo el detalle) | La primera línea dice `⚠️ ACCIÓN REQUERIDA: ...` si hace falta algo | Siempre se escribe |
 | **Log de cron** (`vi_refresh.log` según el cron del paso 7) | Lo mismo que el reporte, impreso | Siempre |
-| **Código de salida** del proceso | `0` bien · `1` algún cliente requiere revisión o falló · `2` no pudo empezar · `3` se promovió pero falló el push | Útil si algún monitor ya mira cron |
+| **Código de salida** del proceso | `0` bien · `1` algún cliente requiere revisión o falló · `2` no pudo empezar · `3` se promovió pero falló el push · `4` error inesperado del propio script (también avisa por webhook con el texto del error) | Útil si algún monitor ya mira cron |
 | **Detalle por cliente** `.runtime/data_map_updates/<cliente>/<fecha>.json` | Candidata, changelog, preguntas del gate y por qué falló | Para entender un caso puntual |
 
 **Qué estados piden revisión humana y qué hacer:**

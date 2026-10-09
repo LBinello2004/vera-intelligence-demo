@@ -77,6 +77,10 @@ Para repetir un solo cliente sin publicar nada: `.venv/bin/python "experimental_
 | Avisa de "cambios ajenos sin commitear" | Alguien tocó archivos versionados dentro del clon; el script no toca nada para no pisar trabajo | `git status`. Si los cambios no importan: `git restore <archivo>`. **No uses `git add -A` ni commitees a mano en el clon** |
 | `git pull --ff-only` falla | El clon tiene un commit local que GitHub no tiene (o la historia divergió) | `git log origin/main..HEAD` para ver qué es. Si es una promoción que no se publicó, la corrida siguiente la publica sola; si es otra cosa, avisar antes de forzar nada |
 
+### Si el script falló por un error inesperado (código 4)
+
+Es un error que el script no contemplaba (un bug, un archivo ilegible). Deja el traceback completo en el log del cron y manda a Slack `⚠️ ACCIÓN REQUERIDA: el refresco del Data Map falló con un error inesperado (<tipo>: <mensaje>)`. Qué hacer: abrir el log, copiar el traceback completo y pasárselo a quien mantiene el código; no hay nada que arreglar a mano en los datos. **Lo que este aviso no cubre:** si Python ni siquiera arranca (falta una dependencia, el venv se rompió), el error ocurre antes de que el script pueda avisar; en ese caso solo se nota porque falta el mensaje diario del latido.
+
 ### Si algo se promovió pero no se publicó (código 3)
 
 Falló el push. Causas típicas: la deploy key no tiene **Allow write access**, o no hay red hacia GitHub. Probar `ssh -T git@github.com` y `git push origin HEAD:refs/heads/prueba-vm` (y borrar la rama). Lo promovido queda commiteado en la VM y **la corrida siguiente lo publica antes de hacer nada más**. Mientras tanto la app sigue con el Data Map anterior.

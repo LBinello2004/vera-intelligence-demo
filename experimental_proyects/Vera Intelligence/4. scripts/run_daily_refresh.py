@@ -16,7 +16,7 @@ Qué hace, en orden:
 7. Avisa por webhook (opcional: `VI_NOTIFY_WEBHOOK`, compatible con Slack) si hubo promociones, clientes a revisar, errores o un push fallido.
 
 Códigos de salida: 0 todo bien (haya o no promociones) · 1 algún cliente requiere revisión o falló · 2 no se pudo empezar (candado, repo
-sucio, pull) · 3 se promovió pero falló la publicación.
+sucio, pull) · 3 se promovió pero falló la publicación · 4 error inesperado del propio script (avisa por webhook).
 
 Uso (desde cualquier carpeta):  python "<repo>/experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py"
 Opciones: --clients a,b · --no-pull · --no-push · --gate v2|legacy · --timeout-minutes 60 · --retries 2 · --dry-run
@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -60,7 +61,7 @@ def needs_human(item: dict) -> bool:
 PROCESS_ERROR = "error_de_proceso"
 DATA_MAP_LINE = re.compile(r'^data_map:\s*"(.*)"[ \t]*$', re.MULTILINE)
 
-EXIT_OK, EXIT_ATTENTION, EXIT_CANNOT_START, EXIT_PUBLISH_FAILED = 0, 1, 2, 3
+EXIT_OK, EXIT_ATTENTION, EXIT_CANNOT_START, EXIT_PUBLISH_FAILED, EXIT_CRASH = 0, 1, 2, 3, 4
 
 
 # --------------------------------------------------------------------------------------------- git
@@ -413,6 +414,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_guarded(args: argparse.Namespace, post: Callable[[str, dict], None] | None = None) -> int:
+    """`run_daily` + red de seguridad: un error inesperado (un bug, un archivo ilegible) deja el traceback en el log, AVISA por webhook
+    y sale con código 4, en vez de morir en silencio (sin esto, el latido diario faltaría pero nadie sabría por qué)."""
+    try:
+        return run_daily(args)
+    except Exception as exc:  # noqa: BLE001 -justamente para no perder ningún error
+        traceback.print_exc()
+        alert(f"⚠️ ACCIÓN REQUERIDA: el refresco del Data Map falló con un error inesperado ({type(exc).__name__}: {str(exc)[:300]}). "
+              "Mirar el log de la VM.", post)
+        return EXIT_CRASH
+
+
 def load_env() -> None:
     """Carga el `.env` de la raíz del repo (sin pisar variables ya exportadas): ahí viven VI_NOTIFY_WEBHOOK y VI_NOTIFY_HEARTBEAT.
     Los procesos de cada cliente lo cargan solos (vi_agent.load_environment); este envoltorio también lo necesita para avisar."""
@@ -437,7 +450,7 @@ def main() -> None:
         sent = alert("✅ Prueba del refresco diario del Data Map: si ves este mensaje, el aviso por Slack está bien configurado.")
         print("Mensaje de prueba enviado." if sent else "NO se pudo enviar: falta VI_NOTIFY_WEBHOOK o el webhook rechazó el mensaje.", file=sys.stderr)
         sys.exit(0 if sent else EXIT_CANNOT_START)
-    sys.exit(run_daily(args))
+    sys.exit(run_guarded(args))
 
 
 if __name__ == "__main__":
