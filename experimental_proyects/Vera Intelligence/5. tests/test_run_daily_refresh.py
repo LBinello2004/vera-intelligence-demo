@@ -170,6 +170,63 @@ class DailyRunTests(RepoCase):
         result = rdr.run_client_process("acme_alto", gate="v2", dry_run=False, timeout_seconds=5, runner=runner)
         self.assertTrue(result["error"].startswith("código 1: google.genai.errors.ClientError: 429"))
 
+    def test_una_caida_transitoria_de_infraestructura_se_reintenta_pero_una_de_configuracion_no(self) -> None:
+        def runner_for(payload):
+            calls = []
+
+            def runner(cmd, **kwargs):
+                calls.append(1)
+                return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+            return runner, calls
+
+        transient, calls = runner_for({"client_id": "x", "status": "infraestructura_no_disponible", "needs_human": False})
+        rdr.run_with_retries("x", retries=2, sleep=lambda s: None, gate="v2", dry_run=False, timeout_seconds=5, runner=transient)
+        self.assertEqual(len(calls), 3)
+        config, calls = runner_for({"client_id": "x", "status": "infraestructura_no_disponible", "needs_human": True, "kind": "configuracion"})
+        result = rdr.run_with_retries("x", retries=2, sleep=lambda s: None, gate="v2", dry_run=False, timeout_seconds=5, runner=config)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(rdr.needs_human(result))
+
+    def run_with_preflight(self, preflight_fn, *argv):
+        args = rdr.parse_args(list(argv))
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x"}):
+            return rdr.run_daily(args, git=rdr.Git(self.project), runner=self.fake_runner, sleep=lambda s: None,
+                                 post=lambda url, payload: self.posts.append(payload), clients_root=self.clients_root,
+                                 project_root=self.project, report_dir=self.report_dir, lock_path=self.lock, preflight_fn=preflight_fn)
+
+    def test_si_la_verificacion_previa_falla_no_corre_ningun_cliente_y_avisa_una_vez(self) -> None:
+        code = self.run_with_preflight(lambda: ["Gemini no responde: ServerError: 503", "Postgres no responde: OperationalError"])
+        self.assertEqual(code, rdr.EXIT_CANNOT_START)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Gemini no responde", self.posts[0]["text"])
+        self.assertIn("Postgres no responde", self.posts[0]["text"])
+
+    def test_si_la_verificacion_previa_pasa_corre_normal_y_se_puede_omitir(self) -> None:
+        self.assertEqual(self.run_with_preflight(lambda: []), rdr.EXIT_OK)
+        self.assertEqual(sorted(self.calls), ["acme_alto", "beta_medio"])
+        self.calls.clear()
+        self.assertEqual(self.run_with_preflight(lambda: ["no debía llamarse"], "--no-preflight"), rdr.EXIT_OK)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_la_verificacion_previa_detecta_variables_faltantes_sin_tocar_la_red(self) -> None:
+        with patch.dict(os.environ, {"VERA_AI_API_KEY": "", "PGPASSWORD": "x", "LANGFUSE_PUBLIC_KEY": "x", "LANGFUSE_SECRET_KEY": "x",
+                                     "LANGFUSE_BASE_URL": "https://x"}):
+            problems = rdr.preflight()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("VERA_AI_API_KEY", problems[0])
+
+    def test_el_reporte_trae_la_duracion_y_el_cliente_mas_lento(self) -> None:
+        self.run_daily()
+        report = json.loads((self.report_dir / f"{time.strftime('%Y-%m-%d', time.gmtime())}.json").read_text(encoding="utf-8"))
+        self.assertIn("duration_seconds", report)
+        self.assertTrue(all("seconds" in item for item in report["results"]))
+        self.assertEqual(len(report["slowest"]), 2)
+        slow = {"date": "2026-10-09", "clients_run": 1, "counts": {"promovido": 1}, "needs_human": [], "errors": [], "promoted": [],
+                "publication": None, "results": [], "duration_seconds": 1800.0, "slowest": [{"client_id": "farma24_alto", "seconds": 1500.0}]}
+        self.assertIn("más lento: farma24_alto (25.0 min)", rdr.render_markdown(slow))
+
     def test_un_timeout_no_se_reintenta_y_no_frena_a_los_demas(self) -> None:
         self.outcomes = {"acme_alto": "timeout"}
         self.assertEqual(self.run_daily("--retries", "2"), rdr.EXIT_ATTENTION)

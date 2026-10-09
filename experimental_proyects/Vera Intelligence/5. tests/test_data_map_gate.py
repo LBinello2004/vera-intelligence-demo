@@ -314,6 +314,36 @@ class RunGateTests(unittest.TestCase):
         self.assertEqual(cache["q1"], [2])
         self.assertTrue(all(isinstance(i, int) for i in cache["q1"]))
 
+    def test_si_gemini_no_respondio_no_es_un_rechazo_sino_infraestructura(self) -> None:
+        def ask(question):
+            raise ConnectionError("Gemini no responde")
+
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank=self.bank(), run_sql=lambda sql: result([[250804]]),
+                                  ask=ask, infra_check=lambda exc: isinstance(exc, ConnectionError))
+        self.assertFalse(report["passed"])
+        self.assertTrue(report["infra_unavailable"])
+
+    def test_un_error_de_infraestructura_mezclado_con_una_regresion_sigue_siendo_rechazo(self) -> None:
+        questions = [{"id": "q1", "pregunta": "caida", "sql": SQL_TOTAL, "max_missing_numbers": 0},
+                     {"id": "q2", "pregunta": "mal", "sql": SQL_TOTAL, "max_missing_numbers": 0}]
+
+        def ask(question):
+            if question == "caida":
+                raise ConnectionError("x")
+            return "Hay 100."
+
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank={"preguntas": questions},
+                                  run_sql=lambda sql: result([[250804]]), ask=ask, infra_check=lambda exc: isinstance(exc, ConnectionError))
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["infra_unavailable"])
+
+    def test_sin_infra_check_un_error_del_agente_sigue_rechazando_como_siempre(self) -> None:
+        def ask(question):
+            raise RuntimeError("boom")
+
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank=self.bank(), run_sql=lambda sql: result([[250804]]), ask=ask)
+        self.assertEqual((report["passed"], report["infra_unavailable"]), (False, False))
+
     def test_el_contexto_de_mas_no_lo_rechaza(self) -> None:
         # El caso real de Farma 24 (17/9): la respuesta nueva agrega el total y el % de cobertura.
         report, _ = self.run_gate(answers=["Hay **250.804** analizables sobre 261.823 interacciones (95,8 % de cobertura)."])

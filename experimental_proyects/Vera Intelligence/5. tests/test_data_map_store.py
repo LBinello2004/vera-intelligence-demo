@@ -176,6 +176,20 @@ class FactoryTests(unittest.TestCase):
         self.assertIn("no implementado", str(ctx.exception))
 
 
+class AttemptRefundTests(unittest.TestCase):
+    def test_un_intento_devuelto_no_baja_de_cero_y_la_racha_de_caidas_se_guarda(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = dms.LocalStore(project_root=Path(tmp))
+            self.assertEqual(store.add_attempt("acme_alto", "rb@2"), 1)
+            self.assertEqual(store.refund_attempt("acme_alto", "rb@2"), 0)
+            self.assertEqual(store.refund_attempt("acme_alto", "rb@2"), 0)
+            self.assertEqual(store.infra_failures("acme_alto"), {})
+            store.set_infra_failures("acme_alto", {"count": 2, "last_date": "2026-10-09"})
+            self.assertEqual(store.infra_failures("acme_alto"), {"count": 2, "last_date": "2026-10-09"})
+            store.set_infra_failures("acme_alto", {})
+            self.assertEqual(store.infra_failures("acme_alto"), {})
+
+
 class GateBaselineCacheTests(unittest.TestCase):
     def test_el_cache_vale_solo_para_el_mismo_texto_de_data_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

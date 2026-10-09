@@ -237,7 +237,7 @@ def run_gate_v2(
     *, old_data_map: dict, new_data_map: dict, bank: dict, run_sql: Callable[[str], str | dict],
     ask: Callable[[str], str], max_questions: int = 10, llm_questions: int = DEFAULT_LLM_QUESTIONS,
     baseline_ask: Callable[[str], str] | None = None, baseline_cache: dict | None = None,
-    assume_all_affected: bool = False,
+    assume_all_affected: bool = False, infra_check: Callable[[Exception], bool] | None = None,
 ) -> dict:
     """Devuelve un dict auditable: `passed`, `structural_problems`, `questions` (una entrada por pregunta) y contadores.
 
@@ -341,15 +341,20 @@ def run_gate_v2(
         except Exception as exc:  # noqa: BLE001
             record["numbers_ok"] = False
             record["error"] = str(exc)[:300]
+            if infra_check is not None and infra_check(exc):
+                record["infra_error"] = True     # Gemini o la base no respondieron: no se pudo verificar, no es culpa del candidato
 
     # Las preguntas al agente corren a la vez (cada una es una conversación independiente con Gemini; el SQL que hagan se serializa solo por el
     # candado de la conexión). Antes iban una detrás de otra: 4 preguntas con varios intentos eran la mayor parte del gate.
     if to_check:
         with ThreadPoolExecutor(max_workers=len(to_check)) as pool:
             list(pool.map(lambda pair: check_llm(*pair), to_check))
+    failing = [r for r in records if not (r["sql_ok"] and not r["dropped_fields"] and r["numbers_ok"] and r["error"] is None)]
+    # Solo infraestructura: todo lo que falla es porque Gemini o la base no respondieron. Ese resultado no es un rechazo (no gasta intentos).
+    infra_unavailable = bool(failing) and not structural and all(r.get("infra_error") for r in failing)
     passed = not structural and all(
         r["sql_ok"] and not r["dropped_fields"] and r["numbers_ok"] and r["error"] is None for r in records)
-    return {"passed": passed, "structural_problems": structural, "questions": records, "footprint": {
+    return {"passed": passed, "infra_unavailable": infra_unavailable, "structural_problems": structural, "questions": records, "footprint": {
                 "tables": {k: sorted(v) for k, v in footprint["tables"].items()}, "global": footprint["global"],
                 "limitations": footprint["limitations"]},
             "bank_problems": [{"id": r["id"], "error": r["bank_problem"]} for r in records if r.get("bank_problem")],

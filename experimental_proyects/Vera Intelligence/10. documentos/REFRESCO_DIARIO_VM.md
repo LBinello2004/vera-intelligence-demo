@@ -98,7 +98,7 @@ Una sola corrida por día alcanza. Un candado impide que dos corridas se pisen (
 ## 3. Qué pasa cada día, en concreto
 
 1. Toma el candado global. Publica primero lo que haya quedado promovido y sin publicar de una corrida anterior (push que había fallado).
-2. Exige repo limpio y hace `git pull --ff-only`. Si hay cambios ajenos sin commitear **no toca nada** y avisa.
+2. Exige repo limpio y hace `git pull --ff-only`. Después hace una **verificación previa** (el `.env`, Postgres, Langfuse y Gemini responden; un reintento tras 20 s); si algo falla, **no arranca** y manda UN aviso claro en vez de fallar cliente por cliente (se omite con `--no-preflight`). Si hay cambios ajenos sin commitear **no toca nada** y avisa.
 3. Corre cada cliente en su propio proceso, con límite de 60 minutos y hasta 2 reintentos solo ante fallas de proceso o de red.
 4. Escribe el reporte del día.
 5. Si algo se promovió: un solo commit que incluye exactamente, por cliente, `config.yaml`, el Data Map nuevo y los archivos `CAMBIOS_AUTOMATICOS`; push (si el remoto avanzó, hace `pull --rebase` y reintenta una vez).
@@ -128,6 +128,7 @@ Estados posibles por cliente: `sin_cambios`, `promovido`, `cambio_cosmetico_sin_
 | `reintentos_agotados` | Los intentos ya estaban agotados de corridas anteriores y el cambio sigue sin resolverse | Igual que el anterior (el sistema no vuelve a gastar hasta que alguien lo resuelva o el prompt cambie de nuevo) |
 | `reintento_pendiente` | El gate lo rechazó pero quedan intentos | **Nada**: se reintenta en la corrida siguiente, con el motivo del rechazo como pista para Gemini. No genera aviso de acción |
 | `prompt_no_disponible` (o un cliente con `rulebook_problems` en el reporte) | Un prompt de Langfuse del cliente no se puede leer: dio **404** (se renombró o se borró; avisa de inmediato) o falló 3 corridas seguidas por otro error. El agente sigue usando su última copia guardada, así que el cliente no se rompe, pero ya no ve los cambios del prompt. Es lo que le pasó a GAC el 2026-10-07 cuando Langfuse lo dividió en Hostess y Ventas | Ver el nombre del prompt en el aviso. Si se renombró, apuntar el rulebook de `config.yaml` (`business_rulebooks.<área>.name`) al nombre nuevo; si se borró por error, restaurarlo en Langfuse |
+| `infraestructura_no_disponible` | Gemini (5xx, 429), la base o la red no respondieron. **No es un rechazo del candidato**: el cambio sigue pendiente y no se gasta ningún intento. Pide revisión solo si es de configuración (Gemini 400/401/403/404: clave, permisos o modelo mal) o si se repite 3 días seguidos (`needs_human` en el reporte) | Si es de configuración: revisar `VERA_AI_API_KEY` y el modelo. Si se repite: ver si Gemini o la base tienen un problema sostenido |
 | `error_regeneracion` | Gemini no devolvió un YAML válido ni después de 2 correcciones | Reintentar al día siguiente; si se repite, revisar el prompt diff |
 | `deriva_de_columnas_no_promovido` | El candidato declara campos que no existen en la vista real de Postgres | Revisar si la vista cambió |
 | `error_de_proceso` (errores) | El proceso del cliente se cayó o excedió 60 min, incluso con reintentos | Ver el log |

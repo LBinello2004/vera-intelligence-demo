@@ -183,7 +183,44 @@ def detect_rulebook_changes(client_config: ClientConfig) -> list[RulebookChange]
     return changes
 
 
+INFRA_STATUS = "infraestructura_no_disponible"
+INFRA_DAYS_BEFORE_ALERT = 3         # días seguidos con la misma caída (Gemini, base, red) antes de pedir revisión humana
 UNAVAILABLE_RUNS_BEFORE_ALERT = 3   # corridas seguidas sin poder leer un prompt (error que no es 404) antes de pedir revisión
+
+
+def classify_infrastructure_error(exc: BaseException) -> str | None:
+    """'transitorio' (Gemini 5xx/429, red, base caída), 'configuracion' (Gemini 400/401/403/404: clave, permisos o modelo mal) o None si el error
+    no es de infraestructura (un bug nuestro: ese sí debe romper y verse). Una caída de Gemini no es un rechazo del candidato: no gasta intentos
+    (el 2026-10-09 tres intentos se perdieron en Farma 24 por un 504 de Gemini)."""
+    from google.genai import errors as genai_errors
+
+    status = vi_agent._status_code(exc) if isinstance(exc, genai_errors.APIError) else None
+    if isinstance(exc, genai_errors.APIError):
+        return "configuracion" if status in (400, 401, 403, 404) else "transitorio"
+    if vi_agent._operational_failure(exc) is not None:
+        return "transitorio"
+    import requests
+
+    if isinstance(exc, (requests.RequestException, TimeoutError, ConnectionError)):
+        return "transitorio"
+    return None
+
+
+def _infra_failure(store, client_id: str, exc: BaseException | str, kind: str, signature: str, changes_summary: list[dict]) -> dict:
+    """Resultado de una corrida que no pudo verificar nada por una caída de infraestructura: devuelve el intento, cuenta días seguidos y
+    pide revisión solo si es de configuración o se repite INFRA_DAYS_BEFORE_ALERT días."""
+    store.refund_attempt(client_id, signature)
+    today = datetime.now(timezone.utc).date().isoformat()
+    state = store.infra_failures(client_id) if hasattr(store, "infra_failures") else {}
+    count = int(state.get("count", 0))
+    if state.get("last_date") != today:
+        count += 1
+    if hasattr(store, "set_infra_failures"):
+        store.set_infra_failures(client_id, {"count": count, "last_date": today})
+    text = exc if isinstance(exc, str) else f"{type(exc).__name__}: {str(exc)[:300]}"
+    return {"client_id": client_id, "status": INFRA_STATUS, "kind": kind, "error": text, "changes": changes_summary, "consecutive_days": count,
+            "needs_human": kind == "configuracion" or count >= INFRA_DAYS_BEFORE_ALERT,
+            "note": "Gemini, la base o la red no respondieron: el cambio sigue pendiente y no se gastó ningún intento."}
 
 
 def detect_pending_changes(
@@ -871,7 +908,8 @@ def run_gate_v2(client_config: ClientConfig, candidate_data_map_path: Path, clie
         store = None
     report = data_map_gate.run_gate_v2(old_data_map=old_data_map, new_data_map=new_data_map, bank=bank, run_sql=run_sql, ask=ask,
                                        baseline_ask=baseline_ask, baseline_cache=cache, max_questions=MAX_GOLDEN_QUESTIONS,
-                                       assume_all_affected=assume_all_affected)
+                                       assume_all_affected=assume_all_affected,
+                                       infra_check=lambda exc: classify_infrastructure_error(exc) is not None)
     if store is not None and cache:
         try:
             store.set_gate_baseline(client_folder, map_hash, cache)
@@ -964,6 +1002,8 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
             summary["golden_bank_relative_language_warnings"] = bank_warnings
         if timings:
             summary["timings"] = timings
+        if summary.get("status") != INFRA_STATUS and hasattr(store, "set_infra_failures"):
+            store.set_infra_failures(client_id, {})      # un resultado normal corta la racha de caídas
         if rulebook_problems:
             summary["rulebook_problems"] = rulebook_problems
             if summary.get("status") == "sin_cambios" and any(p["needs_human"] for p in rulebook_problems):
@@ -1011,8 +1051,14 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
         model = regen_model_for_attempt(client_config, attempt)
         started_regen = time.time()
         budget_calls, budget_seconds = regeneration_budget(changes)
-        regeneration = regenerate_data_map(client_config, changes, store=store, client_folder=client_folder, model=model, feedback=feedback,
-                                           tool_budget=budget_calls, soft_deadline_seconds=budget_seconds)
+        try:
+            regeneration = regenerate_data_map(client_config, changes, store=store, client_folder=client_folder, model=model, feedback=feedback,
+                                               tool_budget=budget_calls, soft_deadline_seconds=budget_seconds)
+        except Exception as exc:  # noqa: BLE001
+            kind = classify_infrastructure_error(exc)
+            if kind is None:
+                raise
+            return finish(_infra_failure(store, client_id, exc, kind, signature, changes_summary))
         timing = {"attempt": attempt, "regeneration_seconds": round(time.time() - started_regen, 1), "sql_calls": len(regeneration.tool_calls)}
         timings.append(timing)
         if regeneration.error:
@@ -1024,6 +1070,9 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
         else:
             started_gate = time.time()
             outcome = _evaluate_candidate(client_config, regeneration, client_folder, gate)
+            if outcome.get("status") == INFRA_STATUS:
+                return finish(_infra_failure(store, client_id, outcome.get("error") or "Gemini no respondió en el gate", "transitorio", signature,
+                                             changes_summary))
             timing["gate_seconds"] = round(time.time() - started_gate, 1)
             if outcome["passed"]:
                 summary = {"client_id": client_id, "changes": changes_summary, "candidate_path": str(regeneration.candidate_path),
@@ -1088,6 +1137,9 @@ def _evaluate_candidate(client_config: ClientConfig, regeneration: RegenerationR
     else:
         report = run_gate_v2(client_config, regeneration.candidate_path, client_folder)
         passed = report["passed"]
+        if not passed and report.get("infra_unavailable"):
+            first = next((q for q in report["questions"] if q.get("infra_error")), {})
+            return {"passed": False, "status": INFRA_STATUS, "error": first.get("error"), "detail": detail}
         detail.update({
             "gate": "v2", "gate_bank_size": report["bank_size"], "gate_questions_evaluated": report["questions_evaluated"],
             "gate_llm_questions_checked": report["llm_questions_checked"], "gate_passed": passed,
@@ -1163,7 +1215,7 @@ def main() -> None:
         )
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
     # Código de salida para un programador de tareas o un monitor: distinto de cero si alguien tiene que mirar este cliente.
-    problem_alert = any(p.get("needs_human") for p in summary.get("rulebook_problems") or [])
+    problem_alert = any(p.get("needs_human") for p in summary.get("rulebook_problems") or []) or summary.get("needs_human") is True
     sys.exit(1 if (status in NEEDS_HUMAN_STATUSES or problem_alert) else 0)
 
 

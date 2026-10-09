@@ -187,6 +187,23 @@ class LocalStore:
         self._write(client, "attempts.json", value)
         return value[signature]
 
+    def refund_attempt(self, client: str, signature: str) -> int:
+        """Devuelve un intento: una caída de Gemini, de la base o de la red no es un rechazo del candidato y no debe gastar los 4 intentos."""
+        value = self._read(client, "attempts.json", {})
+        value = value if isinstance(value, dict) else {}
+        value[signature] = max(0, int(value.get(signature, 0)) - 1)
+        self._write(client, "attempts.json", value)
+        return value[signature]
+
+    def infra_failures(self, client: str) -> dict:
+        """{"count": días seguidos con caída de infraestructura, "last_date": 'AAAA-MM-DD'}."""
+        value = self._read(client, "infra_failures.json", {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    def set_infra_failures(self, client: str, value: dict) -> None:
+        if value or self._read(client, "infra_failures.json", None) is not None:
+            self._write(client, "infra_failures.json", value)
+
     # ------------------------------------------------------------------ candado y último chequeo
     def acquire_lock(self, client: str, owner: str, ttl_seconds: float) -> bool:
         """True si este `owner` quedó con el candado. Un candado vencido se pisa."""

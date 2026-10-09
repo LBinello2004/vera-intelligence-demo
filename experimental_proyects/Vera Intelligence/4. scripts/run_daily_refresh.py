@@ -59,7 +59,8 @@ NEEDS_HUMAN = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_colum
 
 def needs_human(item: dict) -> bool:
     """Un cliente pide revisión por su estado o porque un prompt de sus rulebooks no se puede leer (aunque haya otro cambio promovido)."""
-    return item.get("status") in NEEDS_HUMAN or any(p.get("needs_human") for p in item.get("rulebook_problems") or [])
+    return (item.get("status") in NEEDS_HUMAN or item.get("needs_human") is True
+            or any(p.get("needs_human") for p in item.get("rulebook_problems") or []))
 PROCESS_ERROR = "error_de_proceso"
 DATA_MAP_LINE = re.compile(r'^data_map:\s*"(.*)"[ \t]*$', re.MULTILINE)
 
@@ -156,7 +157,8 @@ def run_with_retries(client: str, *, retries: int, sleep: Callable[[float], None
     summary: dict = {}
     for attempt in range(retries + 1):
         summary = run_client_process(client, **kwargs)
-        if summary.get("status") != PROCESS_ERROR or summary.get("timeout"):
+        transient_infra = summary.get("status") == "infraestructura_no_disponible" and not summary.get("needs_human")
+        if (summary.get("status") != PROCESS_ERROR and not transient_infra) or summary.get("timeout"):
             break
         if attempt < retries:
             sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
@@ -276,6 +278,9 @@ def build_report(results: list[dict], started: datetime, finished: datetime, pub
         "errors": sorted(i["client_id"] for i in results if i.get("status") == PROCESS_ERROR),
         "promoted": sorted(i["client_id"] for i in results if i.get("status") == "promovido"),
         "publication": publication, "results": results,
+        "duration_seconds": round((finished - started).total_seconds(), 1),
+        "slowest": sorted(({"client_id": i["client_id"], "seconds": i["seconds"]} for i in results if i.get("seconds") is not None),
+                          key=lambda item: -item["seconds"])[:3],
     }
 
 
@@ -286,6 +291,10 @@ def render_markdown(report: dict) -> str:
         lines.append(f"⚠️ ACCIÓN REQUERIDA: {who}")
     lines.append(f"Refresco del {report['date']}: {report['clients_run']} clientes · " +
                  ", ".join(f"{k}={v}" for k, v in sorted(report["counts"].items())))
+    if report.get("duration_seconds") is not None:
+        slow = report.get("slowest") or []
+        lines.append(f"Duración: {report['duration_seconds'] / 60:.1f} min" +
+                     (f" · más lento: {slow[0]['client_id']} ({slow[0]['seconds'] / 60:.1f} min)" if slow and slow[0]["seconds"] >= 120 else ""))
     if report["promoted"]:
         lines.append("Promovidos: " + ", ".join(report["promoted"]))
     publication = report.get("publication")
@@ -346,7 +355,7 @@ def notify(report: dict, markdown: str, post: Callable[[str, dict], None] | None
 def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Callable[..., subprocess.CompletedProcess] | None = None,
               sleep: Callable[[float], None] = time.sleep, post: Callable[[str, dict], None] | None = None,
               clients_root: Path = CLIENTS_ROOT, project_root: Path = PROJECT_ROOT, report_dir: Path = REPORT_DIR,
-              lock_path: Path = LOCK_PATH) -> int:
+              lock_path: Path = LOCK_PATH, preflight_fn: Callable[[], list[str]] | None = None) -> int:
     started = datetime.now(timezone.utc)
     if not acquire_lock(lock_path):
         print("Ya hay un refresco en curso en esta máquina (candado vigente). No hago nada.", file=sys.stderr)
@@ -379,6 +388,14 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
                     alert("⚠️ ACCIÓN REQUERIDA: refresco del Data Map no corrió. " + message, post)
                     return EXIT_CANNOT_START
 
+        if args.preflight and (preflight_fn is not None or runner is None):
+            problems = (preflight_fn or preflight)()
+            if problems:
+                message = "No arranco: " + " | ".join(problems)
+                print(message, file=sys.stderr)
+                alert("⚠️ ACCIÓN REQUERIDA: refresco del Data Map no corrió. " + message, post)
+                return EXIT_CANNOT_START
+
         try:
             clients = list_clients(clients_root, args.clients.split(",") if args.clients else None)
         except ValueError as exc:
@@ -386,9 +403,11 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
             return EXIT_CANNOT_START
 
         def run_one(client: str) -> dict:
+            started_client = time.time()
             summary = run_with_retries(client, retries=args.retries, sleep=sleep, gate=args.gate, dry_run=args.dry_run,
                                        timeout_seconds=args.timeout_minutes * 60, runner=runner)
-            print(f"[{client}] {summary.get('status')}", flush=True)
+            summary["seconds"] = round(time.time() - started_client, 1)
+            print(f"[{client}] {summary.get('status')} ({summary['seconds']:.0f} s)", flush=True)
             return summary
 
         # Varios clientes a la vez (procesos independientes: cada uno guarda su estado en su propia carpeta). El resultado conserva el orden de la lista.
@@ -429,8 +448,57 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parallel", type=int, default=DEFAULT_PARALLEL, help="Cuántos clientes se procesan a la vez.")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Reintentos ante fallas de proceso (no ante rechazos del gate).")
     parser.add_argument("--dry-run", action="store_true", help="Genera candidatas sin gate ni promoción ni publicación.")
+    parser.add_argument("--no-preflight", dest="preflight", action="store_false",
+                        help="No verificar antes de empezar que el .env, Postgres, Langfuse y Gemini respondan.")
     parser.add_argument("--test-notify", action="store_true", help="Manda un mensaje de prueba al webhook (VI_NOTIFY_WEBHOOK) y termina.")
     return parser.parse_args(argv)
+
+
+REQUIRED_ENV = ("VERA_AI_API_KEY", "PGPASSWORD", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL")
+
+
+def preflight() -> list[str]:
+    """Verifica lo mínimo para que valga la pena arrancar (variables del .env, Postgres, Langfuse y Gemini) y devuelve la lista de problemas.
+    Sin esto, una clave vencida o una caída de red hacía fallar los 19 clientes uno por uno, con mensajes confusos y horas perdidas; ahora es UN aviso
+    claro antes de empezar. Cada chequeo se repite una vez tras una espera corta, para no cortar el día por un parpadeo."""
+    problems: list[str] = []
+    missing = [name for name in REQUIRED_ENV if not (os.environ.get(name) or "").strip()]
+    if missing:
+        return ["Faltan variables en el .env: " + ", ".join(missing)]
+
+    def check_postgres() -> None:
+        sys.path.insert(0, str(PROJECT_ROOT.parents[1]))
+        from utils.postgres import get_postgres_connection
+
+        with get_postgres_connection() as connection:
+            connection.execute("SELECT 1")
+
+    def check_langfuse() -> None:
+        import requests
+
+        base = os.environ["LANGFUSE_BASE_URL"].rstrip("/")
+        requests.get(base + "/api/public/health", timeout=15).raise_for_status()
+
+    def check_gemini() -> None:
+        from google import genai
+
+        client = genai.Client(api_key=os.environ["VERA_AI_API_KEY"])
+        next(iter(client.models.list(config={"page_size": 1})), None)
+
+    for name, check in (("Postgres", check_postgres), ("Langfuse", check_langfuse), ("Gemini", check_gemini)):
+        error: Exception | None = None
+        for attempt in range(2):
+            try:
+                check()
+                error = None
+                break
+            except Exception as exc:  # noqa: BLE001 -cualquier falla acá significa "no se puede trabajar"
+                error = exc
+                if attempt == 0:
+                    time.sleep(20)
+        if error is not None:
+            problems.append(f"{name} no responde: {type(error).__name__}: {str(error)[:200]}")
+    return problems
 
 
 def run_guarded(args: argparse.Namespace, post: Callable[[str, dict], None] | None = None) -> int:

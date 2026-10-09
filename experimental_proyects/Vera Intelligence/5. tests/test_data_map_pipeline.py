@@ -3,6 +3,7 @@ del YAML y código de salida. Todo con dobles: no llama a Langfuse, Gemini ni Po
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import sys
 import tempfile
 import unittest
@@ -182,6 +183,8 @@ class RunForClientTests(PipelineCase):
 
     def _regenerate(self, cfg, changes, *, store=None, client_folder=None, model=None, feedback=None, tool_budget=None, soft_deadline_seconds=None):
         self.calls["regenerate"] += 1
+        if getattr(self, "raises", None) is not None:
+            raise self.raises
         self.feedbacks.append(feedback)
         self.models.append(model)
         self.regenerated_changes.append(list(changes))
@@ -428,6 +431,69 @@ class RunForClientTests(PipelineCase):
         self.gate_passes = False
         self.run_client()
         self.assertEqual(data_map_log.read_entries(self.project / "2. clientes", CLIENT), [])
+
+
+class InfrastructureFailureTests(RunForClientTests):
+    """Una caída de Gemini, de la base o de la red no es un rechazo del candidato: no gasta intentos y solo pide revisión si se repite."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from google.genai import errors as genai_errors
+        self.errors = genai_errors
+        self.raises = None
+
+    def server_error(self, code=504):
+        return self.errors.ServerError(code, {"error": {"message": "Deadline expired", "status": "DEADLINE_EXCEEDED"}})
+
+    def test_un_504_de_gemini_no_gasta_intentos_ni_pide_revision_el_primer_dia(self) -> None:
+        self.raises = self.server_error()
+        summary = self.run_client()
+        self.assertEqual((summary["status"], summary["kind"], summary["consecutive_days"], summary["needs_human"]),
+                         (dmu.INFRA_STATUS, "transitorio", 1, False))
+        self.assertEqual(self.store.attempts(CLIENT, dmu._change_signature([self.change])), 0)      # el intento se devolvió
+        self.assertEqual(self.store.processed_versions(CLIENT), {})                                  # el cambio sigue sin procesar
+
+    def test_el_mismo_dia_no_suma_a_la_racha_y_a_los_3_dias_pide_revision(self) -> None:
+        self.raises = self.server_error()
+        for _ in range(3):
+            summary = self.run_client()
+        self.assertEqual((summary["consecutive_days"], summary["needs_human"]), (1, False))
+        for day in ("2026-10-10", "2026-10-11"):
+            with patch.object(dmu, "datetime") as fake_dt:
+                fake_dt.now.return_value = datetime.fromisoformat(day + "T11:00:00+00:00")
+                summary = self.run_client()
+        self.assertEqual((summary["consecutive_days"], summary["needs_human"]), (3, True))
+
+    def test_un_403_o_un_modelo_inexistente_es_de_configuracion_y_pide_revision_de_inmediato(self) -> None:
+        self.raises = self.errors.ClientError(403, {"error": {"message": "API key not valid", "status": "PERMISSION_DENIED"}})
+        summary = self.run_client()
+        self.assertEqual((summary["kind"], summary["needs_human"]), ("configuracion", True))
+
+    def test_un_bug_nuestro_no_se_disfraza_de_caida_y_rompe(self) -> None:
+        self.raises = KeyError("campo")
+        with self.assertRaises(KeyError):
+            self.run_client()
+
+    def test_un_resultado_normal_corta_la_racha(self) -> None:
+        self.raises = self.server_error()
+        self.run_client()
+        self.assertEqual(self.store.infra_failures(CLIENT)["count"], 1)
+        self.raises = None
+        self.assertEqual(self.run_client()["status"], "promovido")
+        self.assertEqual(self.store.infra_failures(CLIENT), {})
+
+    def test_si_en_el_gate_solo_fallo_gemini_tampoco_se_gastan_intentos(self) -> None:
+        with patch.object(dmu, "_evaluate_candidate", lambda *a, **k: {"passed": False, "status": dmu.INFRA_STATUS, "error": "504 DEADLINE", "detail": {}}):
+            summary = self.run_client()
+        self.assertEqual((summary["status"], summary["error"]), (dmu.INFRA_STATUS, "504 DEADLINE"))
+        self.assertEqual(self.store.attempts(CLIENT, dmu._change_signature([self.change])), 0)
+
+    def test_clasificacion_de_errores(self) -> None:
+        self.assertEqual(dmu.classify_infrastructure_error(self.server_error(503)), "transitorio")
+        self.assertEqual(dmu.classify_infrastructure_error(self.errors.ClientError(429, {"error": {"message": "cuota"}})), "transitorio")
+        self.assertEqual(dmu.classify_infrastructure_error(self.errors.ClientError(400, {"error": {"message": "mal"}})), "configuracion")
+        self.assertEqual(dmu.classify_infrastructure_error(ConnectionError("red")), "transitorio")
+        self.assertIsNone(dmu.classify_infrastructure_error(ValueError("bug")))
 
 
 class NextVersionTests(PipelineCase):
