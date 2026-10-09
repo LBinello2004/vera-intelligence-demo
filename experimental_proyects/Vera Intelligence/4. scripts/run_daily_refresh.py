@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Callable
 
 import data_map_log
+import data_map_store as dms
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -48,8 +49,8 @@ REPORT_DIR = RUNTIME / "daily_refresh"
 LOCK_PATH = RUNTIME / "daily_refresh.lock"
 UPDATER = SCRIPT_DIR / "data_map_auto_update.py"
 
-LOCK_STALE_SECONDS = 6 * 3600
-DEFAULT_TIMEOUT_MINUTES = 15     # límite por cliente: uno lento no puede frenar a los demás (antes 60, con 2 reintentos = hasta 3 h)
+LOCK_STALE_SECONDS = 12 * 3600      # peor caso: 19 clientes en tandas de 4 con el tope por cliente
+DEFAULT_TIMEOUT_MINUTES = 90     # límite por cliente (el 2026-10-09 se subió de 15 a 90): uno colgado no puede frenar al resto para siempre
 DEFAULT_PARALLEL = 4            # clientes corriendo a la vez (cada uno en su propio proceso); se cambia con --parallel o VI_REFRESH_PARALLEL en el .env
 DEFAULT_WAIT_ETL_MINUTES = 10   # cuánto esperar a que la ETL termine sus REFRESH MATERIALIZED VIEW antes de arrancar (0 = no esperar); VI_REFRESH_WAIT_ETL_MINUTES
 ETL_POLL_SECONDS = 60
@@ -135,6 +136,14 @@ def last_error_line(text: str) -> str:
     return lines[-1][:400] if lines else ""
 
 
+def refund_after_timeout(client: str, store=None) -> bool:
+    """El proceso del cliente fue matado por el tope de tiempo: el límite es nuestro, no un rechazo del candidato. Devuelve el intento y suelta el candado."""
+    try:
+        return bool((store or dms.get_store()).refund_inflight(client))
+    except Exception:  # noqa: BLE001 -nunca debe romper el informe del día
+        return False
+
+
 def run_client_process(client: str, *, gate: str, dry_run: bool, timeout_seconds: float,
                        runner: Callable[..., subprocess.CompletedProcess] | None = None) -> dict:
     cmd = [sys.executable, str(UPDATER), "--client", client, "--gate", gate] + (["--dry-run"] if dry_run else [])
@@ -144,7 +153,9 @@ def run_client_process(client: str, *, gate: str, dry_run: bool, timeout_seconds
     except subprocess.TimeoutExpired:
         # `timeout: True`: NO se reintenta (rehacer una regeneración que ya agotó el límite no suele cambiar nada y repite el gasto). El cambio de prompt
         # sigue pendiente y se retoma en la corrida siguiente.
-        return {"client_id": client, "status": PROCESS_ERROR, "timeout": True, "error": f"timeout de {timeout_seconds / 60:.0f} min"}
+        refunded = refund_after_timeout(client)
+        return {"client_id": client, "status": PROCESS_ERROR, "timeout": True, "attempt_refunded": refunded,
+                "error": f"timeout de {timeout_seconds / 60:.0f} min" + (" (el intento se devolvió)" if refunded else "")}
     summary = parse_summary(proc.stdout or "")
     if summary is None or proc.returncode not in (0, 1):
         full = ((proc.stderr or "") + (proc.stdout or "")).strip()

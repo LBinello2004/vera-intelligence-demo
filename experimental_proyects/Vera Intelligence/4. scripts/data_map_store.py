@@ -225,6 +225,32 @@ class LocalStore:
             return True
         return False
 
+    def set_inflight(self, client: str, signature: str) -> None:
+        """Marca el intento que está corriendo (para devolverlo si el proceso muere por el tope de tiempo del envoltorio)."""
+        self._write(client, "inflight.json", {"signature": signature, "started_at": _now()})
+
+    def clear_inflight(self, client: str) -> None:
+        try:
+            (self._dir(client, create=False) / "inflight.json").unlink()
+        except FileNotFoundError:
+            pass
+
+    def refund_inflight(self, client: str) -> bool:
+        """Si había un intento en curso, lo devuelve y libera el candado del cliente (el proceso fue matado y no pudo hacerlo él). True si devolvió algo."""
+        value = self._read(client, "inflight.json")
+        self.force_release_lock(client)
+        if not isinstance(value, dict) or not value.get("signature"):
+            return False
+        self.refund_attempt(client, str(value["signature"]))
+        self.clear_inflight(client)
+        return True
+
+    def force_release_lock(self, client: str) -> None:
+        try:
+            (self._dir(client, create=False) / "lock.json").unlink()
+        except FileNotFoundError:
+            pass
+
     def lock_info(self, client: str) -> dict | None:
         value = self._read(client, "lock.json")
         return value if isinstance(value, dict) else None

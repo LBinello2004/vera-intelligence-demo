@@ -83,7 +83,7 @@ REGEN_STRUCTURE_TOOL_CALLS, REGEN_STRUCTURE_SECONDS = 12, 10 * 60
 RUN_ATTEMPTS = 2                  # intentos (regenerar + gate) dentro de una misma corrida
 MAX_ATTEMPTS_PER_VERSION = 4      # intentos totales por cambio de prompt, sumando corridas
 REGENERATION_REPAIRS = 2          # veces que se le devuelve a Gemini un YAML/formato inválido para que lo corrija
-LOCK_TTL_SECONDS = 90 * 60        # un candado de otra corrida se considera muerto después de esto
+LOCK_TTL_SECONDS = 100 * 60       # un candado de otra corrida se considera muerto después de esto (más que el tope por cliente del envoltorio: 90 min)
 
 # Abaratar sin empeorar (2026-10-07):
 # - Un cambio de prompt que sólo toca espacios, mayúsculas, tildes o puntuación no cambia ninguna regla: se marca como procesado sin regenerar.
@@ -998,6 +998,8 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
     timings: list[dict] = []   # cuánto tarda cada fase por intento (regeneración y gate), para saber dónde se va el tiempo
 
     def finish(summary: dict) -> dict:
+        if hasattr(store, "clear_inflight"):
+            store.clear_inflight(client_id)      # terminó con un resultado: ya no hay un intento "en curso" que devolver
         if bank_warnings:
             summary["golden_bank_relative_language_warnings"] = bank_warnings
         if timings:
@@ -1015,6 +1017,8 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
         return summary
 
     rulebook_problems: list[dict] = []
+    if hasattr(store, "clear_inflight"):
+        store.clear_inflight(client_id)          # un "en curso" viejo de un proceso que murió de otra forma no debe devolverse más tarde
     changes, current_versions = detect_pending_changes(client_config, store, client_folder, problems=rulebook_problems)
     if not changes:
         store.set_processed(client_id, current_versions)  # siembra la línea de base y deja al cliente al día
@@ -1048,6 +1052,8 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
     feedback: str | None = None
     for _ in range(max(1, run_attempts)):
         attempt = store.add_attempt(client_id, signature)
+        if hasattr(store, "set_inflight"):
+            store.set_inflight(client_id, signature)
         model = regen_model_for_attempt(client_config, attempt)
         started_regen = time.time()
         budget_calls, budget_seconds = regeneration_budget(changes)

@@ -309,6 +309,31 @@ class DailyRunTests(RepoCase):
             peaks.append((peak[0], expected))
         self.assertEqual([p for p, _ in peaks], [e for _, e in peaks])
 
+    def test_el_tope_por_cliente_es_de_90_minutos(self) -> None:
+        self.assertEqual(rdr.DEFAULT_TIMEOUT_MINUTES, 90)
+        self.assertEqual(rdr.parse_args([]).timeout_minutes, 90)
+        self.assertGreater(rdr.LOCK_STALE_SECONDS, 19 / 4 * 90 * 60)      # el candado global aguanta el peor caso
+
+    def test_un_timeout_devuelve_el_intento_y_lo_dice_en_el_resultado(self) -> None:
+        from data_map_store import LocalStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LocalStore(project_root=Path(tmp))
+            store.add_attempt("acme_alto", "rb@2")
+            store.set_inflight("acme_alto", "rb@2")
+
+            def timeout_runner(cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, 1)
+
+            with patch.object(rdr.dms, "get_store", lambda: store):
+                result = rdr.run_client_process("acme_alto", gate="v2", dry_run=False, timeout_seconds=1, runner=timeout_runner)
+            self.assertTrue(result["timeout"] and result["attempt_refunded"])
+            self.assertIn("el intento se devolvió", result["error"])
+            self.assertEqual(store.attempts("acme_alto", "rb@2"), 0)
+
+    def test_un_timeout_sin_estado_no_rompe(self) -> None:
+        self.assertFalse(rdr.refund_after_timeout("cliente_inexistente", store=SimpleNamespace(refund_inflight=lambda c: (_ for _ in ()).throw(OSError("x")))))
+
     def test_un_timeout_no_se_reintenta_y_no_frena_a_los_demas(self) -> None:
         self.outcomes = {"acme_alto": "timeout"}
         self.assertEqual(self.run_daily("--retries", "2"), rdr.EXIT_ATTENTION)

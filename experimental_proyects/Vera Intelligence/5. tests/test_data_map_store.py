@@ -176,6 +176,32 @@ class FactoryTests(unittest.TestCase):
         self.assertIn("no implementado", str(ctx.exception))
 
 
+class InflightRefundTests(unittest.TestCase):
+    def test_un_intento_en_curso_se_devuelve_y_el_candado_se_libera(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = dms.LocalStore(project_root=Path(tmp))
+            self.assertTrue(store.acquire_lock("acme_alto", "proc:1", 600))
+            store.add_attempt("acme_alto", "rb@2")
+            store.set_inflight("acme_alto", "rb@2")
+            self.assertTrue(store.refund_inflight("acme_alto"))
+            self.assertEqual(store.attempts("acme_alto", "rb@2"), 0)
+            self.assertIsNone(store.lock_info("acme_alto"))
+            self.assertFalse(store.refund_inflight("acme_alto"))          # ya no queda nada que devolver
+
+    def test_sin_intento_en_curso_no_devuelve_nada_pero_igual_suelta_el_candado(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = dms.LocalStore(project_root=Path(tmp))
+            store.acquire_lock("acme_alto", "proc:1", 600)
+            store.add_attempt("acme_alto", "rb@2")
+            self.assertFalse(store.refund_inflight("acme_alto"))
+            self.assertEqual(store.attempts("acme_alto", "rb@2"), 1)
+            self.assertIsNone(store.lock_info("acme_alto"))
+
+    def test_clear_inflight_sin_archivo_no_falla(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dms.LocalStore(project_root=Path(tmp)).clear_inflight("acme_alto")
+
+
 class AttemptRefundTests(unittest.TestCase):
     def test_un_intento_devuelto_no_baja_de_cero_y_la_racha_de_caidas_se_guarda(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

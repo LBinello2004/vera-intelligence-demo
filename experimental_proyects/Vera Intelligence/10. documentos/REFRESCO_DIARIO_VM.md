@@ -208,12 +208,14 @@ Cómo se mantiene bajo: el gate solo le pregunta al agente lo que el cambio pued
 
 ---
 
+**Qué pasa si un cambio grande se pasa de tiempo.** La regeneración tiene su presupuesto (6 minutos si solo cambiaron reglas, 10 si cambiaron campos) y al agotarse pide el YAML final en vez de fallar; el gate suma unos 3 o 4 minutos. Un cambio estructural grande en Farma 24 puede acercarse a 15–17 minutos (estimado, no medido), por eso el tope por cliente es de 90. Si aun así el proceso llega al tope, se mata, el cliente figura como `error_de_proceso` ("timeout de 90 min", avisa a Slack), **no se promueve nada**, el intento **se devuelve** y el cambio se retoma en la corrida siguiente. Para correr un cliente a mano con más margen: `--clients <cliente> --timeout-minutes 120`.
+
 ## 6.1 Cuánto tarda (medido el 2026-10-09 con el cambio real de Farma 24, el cliente más pesado)
 
 - **Día sin cambios:** unos 6 segundos por cliente; 19 clientes en uno o dos minutos (corren 4 a la vez).
 - **Un cambio de prompt en Farma 24:** regeneración 155 s + gate 183 s ≈ 6 minutos en total. Antes del arreglo la regeneración fallaba tras ~25 minutos por intento (3 intentos = 74 minutos).
 - **Por qué fallaba:** el SDK de Gemini manda el timeout HTTP como plazo del servidor; con 120 s, reescribir un Data Map de 76 KB vencía siempre con `504 DEADLINE_EXCEEDED`. La regeneración ahora tiene su propio plazo de 10 minutos y razonamiento bajo.
-- **Topes para que un cliente lento no frene al resto:** 15 minutos por cliente (un timeout **no** se reintenta), 4 clientes a la vez, y la regeneración tiene presupuesto: 4 consultas SQL y 6 minutos si solo cambiaron reglas, 12 consultas y 10 minutos si cambiaron campos. Al agotarse no falla: se le pide a Gemini el YAML final con lo que alcanzó a verificar y decide el gate.
+- **Topes para que un cliente lento no frene al resto:** **90 minutos** por cliente (un timeout **no** se reintenta, pero **devuelve el intento** y suelta el candado del cliente: el límite es nuestro, no un rechazo del candidato), 4 clientes a la vez, y la regeneración tiene presupuesto: 4 consultas SQL y 6 minutos si solo cambiaron reglas, 12 consultas y 10 minutos si cambiaron campos. Al agotarse no falla: se le pide a Gemini el YAML final con lo que alcanzó a verificar y decide el gate.
 - Cada resultado trae `timings` (segundos de regeneración y de gate por intento) en `.runtime/data_map_updates/<cliente>/<fecha>.json`.
 
 ---

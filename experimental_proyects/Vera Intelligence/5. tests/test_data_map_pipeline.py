@@ -469,6 +469,24 @@ class InfrastructureFailureTests(RunForClientTests):
         summary = self.run_client()
         self.assertEqual((summary["kind"], summary["needs_human"]), ("configuracion", True))
 
+    def test_el_intento_en_curso_queda_marcado_y_se_limpia_al_terminar_con_un_resultado(self) -> None:
+        signature = dmu._change_signature([self.change])
+        self.raises = KeyError("bug")
+        with self.assertRaises(KeyError):
+            self.run_client()
+        self.assertEqual(self.store._read(CLIENT, "inflight.json")["signature"], signature)      # el proceso murió con un intento en curso
+        self.raises = None
+        self.assertEqual(self.run_client()["status"], "promovido")
+        self.assertIsNone(self.store._read(CLIENT, "inflight.json"))
+
+    def test_al_empezar_se_descarta_un_en_curso_viejo(self) -> None:
+        self.store.set_inflight(CLIENT, "rb@1")
+        self.store.add_attempt(CLIENT, "rb@1")
+        self.gate_passes = False                                       # un rechazo no limpia los intentos (una promoción sí)
+        self.run_client()
+        self.assertEqual(self.store.attempts(CLIENT, "rb@1"), 1)       # nunca se devolvió: el en curso viejo se borró al empezar
+        self.assertIsNone(self.store._read(CLIENT, "inflight.json"))
+
     def test_un_bug_nuestro_no_se_disfraza_de_caida_y_rompe(self) -> None:
         self.raises = KeyError("campo")
         with self.assertRaises(KeyError):
