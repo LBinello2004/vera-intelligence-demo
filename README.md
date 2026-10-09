@@ -142,4 +142,6 @@ Es esperable: la guía se probó en Windows, no en Linux. Pasar el comando exact
 
 **10. Cortesía con la ETL.** El refresco no arranca de golpe si la ETL está refrescando vistas: espera hasta 10 minutos (`VI_REFRESH_WAIT_ETL_MINUTES`, `0` = no esperar) y, si sigue ocupada, corre de a un cliente. Los clientes a la vez se fijan en el `.env` con `VI_REFRESH_PARALLEL` (por defecto 4; `--parallel N` tiene prioridad). Ambas cosas quedan anotadas en el reporte del día.
 
+**Idea anotada, sin hacer:** regeneración por parches (que Gemini devuelva solo las secciones que cambian en vez de reescribir el Data Map entero), para mapas grandes como Farma 24. Detalle, costo y cuándo retomarla en la guía, sección 8. El resto de las optimizaciones evaluadas el 2026-10-09 se descartó por ahora.
+
 **Qué falta, y de quién:** el dueño del repo carga la deploy key y el dueño de Slack crea el webhook hacia `#vera-alertas`; Pedro arma la VM Linux (cron `0 11 * * 1-5` en UTC = 8:00 de Argentina); y cuando el cron haya corrido bien un día hábil, la rutina de Claude queda definitivamente fuera (hoy está pausada, no borrada).

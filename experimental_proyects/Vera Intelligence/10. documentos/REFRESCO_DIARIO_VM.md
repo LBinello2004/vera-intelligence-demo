@@ -215,3 +215,23 @@ Cómo se mantiene bajo: el gate solo le pregunta al agente lo que el cambio pued
 - **Falsos rechazos:** se probó que el gate acepta cada Data Map vigente como candidato de sí mismo (19 de 19), no que rechace correctamente uno malo con un modelo real.
 - **Dos repos:** lo que promueva la VM queda en el repo de la demo; el repo principal (`data-sci-vera`) queda desfasado hasta que se sincronice a mano.
 - **Streamlit Cloud ante el push:** según su documentación se refleja casi al instante, pero no se verificó con esta app.
+
+---
+
+## 8. Ideas anotadas (decisión del 2026-10-09: no se hacen por ahora)
+
+### Regeneración por parches (la única que se quiso conservar)
+- **Qué es.** Hoy, ante un cambio de prompt, Gemini reescribe el Data Map **entero** (76 KB en Farma 24, ≈25 mil tokens de salida). La idea es que devuelva solo las secciones que cambian (por ejemplo, la descripción de un campo, un valor de enum, la línea de versión del prompt y el `changes_from_v*`) y que el código las fusione con el Data Map vigente.
+- **Qué mejoraría.** Tiempo (Farma pasaría de ~2,5 min de regeneración a menos de uno), gasto de tokens de salida, y desaparece el riesgo de timeouts en mapas grandes (la causa de la falla de Farma del 2026-10-09). Además se pierde menos contenido "no tocado" por errores de copia del modelo.
+- **Qué cuesta.** Es un rediseño de varias horas: formato de parche para Gemini, un aplicador que respete el YAML (hoy se pide "copiar byte a byte lo no tocado"; al fusionar a nivel de estructura el archivo se reescribiría con otro formato), y rehacer las pruebas del gate y de la regeneración.
+- **Cuándo retomarla.** Si Farma 24 (o algún cliente que crezca) vuelve a acercarse al plazo de la regeneración, o si el costo medido de las regeneraciones resulta alto.
+
+### Evaluadas y no elegidas (por si se vuelven a plantear)
+- Guarda del código que llega por `git pull` (importar módulos y volver al commit anterior si falla).
+- Chequeo diario de deriva de tipos y columnas contra `information_schema`, aunque no cambie ningún prompt.
+- Registro del costo real de la regeneración en el log de uso.
+- Chequeo semanal de los bancos de preguntas (SQL roto o vacío).
+- Límite más corto por consulta de verificación de la regeneración.
+- Clasificar los cambios triviales de prompt y actualizar solo la versión, sin regenerar (ahorra tiempo y gasto, pero puede dejar desactualizada la descripción de un criterio).
+- Guardar las versiones de prompt procesadas dentro del repo (para sobrevivir a la pérdida de `.runtime/` en la VM).
+
