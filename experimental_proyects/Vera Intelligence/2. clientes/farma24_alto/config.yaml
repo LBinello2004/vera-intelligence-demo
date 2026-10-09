@@ -2,7 +2,7 @@ client_id: farma24
 display_name: "Farma 24"
 tenant: "Farma 24"
 model: gemini-3.7-flash
-data_map: "2. clientes/farma24_alto/data_map/VI Data Map Farma24 V10.yaml"
+data_map: "2. clientes/farma24_alto/data_map/VI Data Map Farma24 V11.yaml"
 
 # Cada fuente declara el campo que debe contener el tenant autorizado. El
 # validador SQL exige el filtro de forma deterministica antes de ejecutar.

@@ -2,7 +2,7 @@ client_id: maga
 display_name: "Maga"
 tenant: "Maga"
 model: gemini-3.7-flash
-data_map: "2. clientes/maga_alto/data_map/VI Data Map Maga V2.yaml"
+data_map: "2. clientes/maga_alto/data_map/VI Data Map Maga V6.yaml"
 
 # Cada fuente declara el campo que debe contener el tenant autorizado. El
 # validador SQL exige el filtro de forma deterministica antes de ejecutar.
