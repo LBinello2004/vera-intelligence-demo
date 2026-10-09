@@ -50,7 +50,9 @@ UPDATER = SCRIPT_DIR / "data_map_auto_update.py"
 
 LOCK_STALE_SECONDS = 6 * 3600
 DEFAULT_TIMEOUT_MINUTES = 15     # límite por cliente: uno lento no puede frenar a los demás (antes 60, con 2 reintentos = hasta 3 h)
-DEFAULT_PARALLEL = 4            # clientes corriendo a la vez (cada uno en su propio proceso)
+DEFAULT_PARALLEL = 4            # clientes corriendo a la vez (cada uno en su propio proceso); se cambia con --parallel o VI_REFRESH_PARALLEL en el .env
+DEFAULT_WAIT_ETL_MINUTES = 10   # cuánto esperar a que la ETL termine sus REFRESH MATERIALIZED VIEW antes de arrancar (0 = no esperar); VI_REFRESH_WAIT_ETL_MINUTES
+ETL_POLL_SECONDS = 60
 DEFAULT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 30
 NEEDS_HUMAN = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados",
@@ -295,6 +297,7 @@ def render_markdown(report: dict) -> str:
         slow = report.get("slowest") or []
         lines.append(f"Duración: {report['duration_seconds'] / 60:.1f} min" +
                      (f" · más lento: {slow[0]['client_id']} ({slow[0]['seconds'] / 60:.1f} min)" if slow and slow[0]["seconds"] >= 120 else ""))
+    lines.extend(report.get("notes") or [])
     if report["promoted"]:
         lines.append("Promovidos: " + ", ".join(report["promoted"]))
     publication = report.get("publication")
@@ -355,7 +358,8 @@ def notify(report: dict, markdown: str, post: Callable[[str, dict], None] | None
 def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Callable[..., subprocess.CompletedProcess] | None = None,
               sleep: Callable[[float], None] = time.sleep, post: Callable[[str, dict], None] | None = None,
               clients_root: Path = CLIENTS_ROOT, project_root: Path = PROJECT_ROOT, report_dir: Path = REPORT_DIR,
-              lock_path: Path = LOCK_PATH, preflight_fn: Callable[[], list[str]] | None = None) -> int:
+              lock_path: Path = LOCK_PATH, preflight_fn: Callable[[], list[str]] | None = None,
+              etl_busy_fn: Callable[[], bool | None] | None = None) -> int:
     started = datetime.now(timezone.utc)
     if not acquire_lock(lock_path):
         print("Ya hay un refresco en curso en esta máquina (candado vigente). No hago nada.", file=sys.stderr)
@@ -396,6 +400,17 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
                 alert("⚠️ ACCIÓN REQUERIDA: refresco del Data Map no corrió. " + message, post)
                 return EXIT_CANNOT_START
 
+        run_notes: list[str] = []
+        parallel = int(args.parallel if args.parallel is not None else env_number("VI_REFRESH_PARALLEL", DEFAULT_PARALLEL))
+        wait_minutes = args.wait_etl_minutes if args.wait_etl_minutes is not None else env_number("VI_REFRESH_WAIT_ETL_MINUTES", DEFAULT_WAIT_ETL_MINUTES)
+        if wait_minutes > 0 and (etl_busy_fn is not None or runner is None):
+            etl = wait_for_etl(etl_busy_fn or etl_refreshing, sleep, wait_minutes)
+            if etl["waited_minutes"] > 0 or etl["still_busy"]:
+                run_notes.append(f"La ETL estaba refrescando vistas: esperé {etl['waited_minutes']:g} min" +
+                             ("; seguía ocupada, así que corrí de a un cliente a la vez." if etl["still_busy"] else " y arranqué cuando terminó."))
+            if etl["still_busy"]:
+                parallel = 1
+
         try:
             clients = list_clients(clients_root, args.clients.split(",") if args.clients else None)
         except ValueError as exc:
@@ -411,7 +426,7 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
             return summary
 
         # Varios clientes a la vez (procesos independientes: cada uno guarda su estado en su propia carpeta). El resultado conserva el orden de la lista.
-        with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
             results: list[dict] = list(pool.map(run_one, clients))
 
         publication = None
@@ -423,6 +438,7 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
             publication = publish(git, ours, push=args.push, notes=notes)
 
         report = build_report(results, started, datetime.now(timezone.utc), publication)
+        report["notes"] = run_notes + ([f"Clientes a la vez: {parallel}"] if parallel != DEFAULT_PARALLEL else [])
         markdown = render_markdown(report)
         report_dir.mkdir(parents=True, exist_ok=True)
         stem = started.strftime("%Y-%m-%d")
@@ -445,13 +461,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-push", dest="push", action="store_false", help="Commitear lo promovido pero no hacer push.")
     parser.add_argument("--gate", choices=("v2", "legacy"), default="v2")
     parser.add_argument("--timeout-minutes", type=float, default=DEFAULT_TIMEOUT_MINUTES, help="Límite por cliente (un timeout no se reintenta).")
-    parser.add_argument("--parallel", type=int, default=DEFAULT_PARALLEL, help="Cuántos clientes se procesan a la vez.")
+    parser.add_argument("--parallel", type=int, default=None,
+                        help=f"Cuántos clientes se procesan a la vez (por defecto VI_REFRESH_PARALLEL del .env, o {DEFAULT_PARALLEL}).")
+    parser.add_argument("--wait-etl-minutes", type=float, default=None,
+                        help=f"Minutos máximos de espera a que la ETL termine de refrescar vistas antes de arrancar (por defecto "
+                             f"VI_REFRESH_WAIT_ETL_MINUTES o {DEFAULT_WAIT_ETL_MINUTES}; 0 = no esperar).")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Reintentos ante fallas de proceso (no ante rechazos del gate).")
     parser.add_argument("--dry-run", action="store_true", help="Genera candidatas sin gate ni promoción ni publicación.")
     parser.add_argument("--no-preflight", dest="preflight", action="store_false",
                         help="No verificar antes de empezar que el .env, Postgres, Langfuse y Gemini respondan.")
     parser.add_argument("--test-notify", action="store_true", help="Manda un mensaje de prueba al webhook (VI_NOTIFY_WEBHOOK) y termina.")
     return parser.parse_args(argv)
+
+
+def env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def etl_refreshing() -> bool | None:
+    """¿La ETL está refrescando vistas materializadas ahora? None si no se pudo consultar (en ese caso no se frena nada)."""
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT.parents[1]))
+        from utils.postgres import get_postgres_connection
+
+        with get_postgres_connection() as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid <> pg_backend_pid() "
+                "AND query ILIKE 'refresh materialized view%'").fetchone()
+        return bool(row and row[0] > 0)
+    except Exception:  # noqa: BLE001 -si no se puede mirar, se sigue: esto es cortesía, no un requisito
+        return None
+
+
+def wait_for_etl(busy_fn: Callable[[], bool | None], sleep: Callable[[float], None], max_minutes: float) -> dict:
+    """Espera (hasta `max_minutes`) a que la ETL termine de refrescar vistas. Devuelve {"waited_minutes", "still_busy"}."""
+    waited = 0.0
+    busy = busy_fn()
+    while busy and waited < max_minutes * 60:
+        sleep(ETL_POLL_SECONDS)
+        waited += ETL_POLL_SECONDS
+        busy = busy_fn()
+    return {"waited_minutes": round(waited / 60, 1), "still_busy": bool(busy)}
 
 
 REQUIRED_ENV = ("VERA_AI_API_KEY", "PGPASSWORD", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL")

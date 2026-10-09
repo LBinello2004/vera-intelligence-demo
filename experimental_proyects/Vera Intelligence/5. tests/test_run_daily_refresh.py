@@ -33,6 +33,10 @@ def init_identity(repo: Path) -> None:
     sh(repo, "config", "commit.gpgsign", "false")
 
 
+def sleep_total(sleeps):
+    return sum(sleeps)
+
+
 class RepoCase(unittest.TestCase):
     CLIENTS = ("acme_alto", "beta_medio")
 
@@ -226,6 +230,84 @@ class DailyRunTests(RepoCase):
         slow = {"date": "2026-10-09", "clients_run": 1, "counts": {"promovido": 1}, "needs_human": [], "errors": [], "promoted": [],
                 "publication": None, "results": [], "duration_seconds": 1800.0, "slowest": [{"client_id": "farma24_alto", "seconds": 1500.0}]}
         self.assertIn("más lento: farma24_alto (25.0 min)", rdr.render_markdown(slow))
+
+    def run_with_etl(self, busy_sequence, *argv, sleeps=None):
+        sequence = list(busy_sequence)
+        args = rdr.parse_args(list(argv))
+        waited = sleeps if sleeps is not None else []
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": "https://hooks.example/x"}):
+            code = rdr.run_daily(args, git=rdr.Git(self.project), runner=self.fake_runner, sleep=waited.append,
+                                 post=lambda url, payload: self.posts.append(payload), clients_root=self.clients_root,
+                                 project_root=self.project, report_dir=self.report_dir, lock_path=self.lock,
+                                 etl_busy_fn=lambda: sequence.pop(0) if len(sequence) > 1 else sequence[0], preflight_fn=lambda: [])
+        report = json.loads((self.report_dir / f"{time.strftime('%Y-%m-%d', time.gmtime())}.json").read_text(encoding="utf-8"))
+        return code, report
+
+    def test_si_la_etl_esta_refrescando_espera_y_arranca_cuando_termina(self) -> None:
+        sleeps: list = []
+        code, report = self.run_with_etl([True, True, False], sleeps=sleeps)
+        self.assertEqual((code, len(sleeps)), (rdr.EXIT_OK, 2))
+        self.assertEqual(sleep_total(sleeps), 2 * rdr.ETL_POLL_SECONDS)
+        self.assertTrue(any("esperé 2 min y arranqué cuando terminó" in note for note in report["notes"]))
+        self.assertEqual(sorted(self.calls), ["acme_alto", "beta_medio"])
+
+    def test_si_la_etl_sigue_ocupada_pasado_el_limite_arranca_de_a_un_cliente(self) -> None:
+        import threading
+        active, peak, lock = [0], [0], threading.Lock()
+        original = self.fake_runner
+
+        def slow(cmd, **kwargs):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.2)
+            with lock:
+                active[0] -= 1
+            return original(cmd, **kwargs)
+
+        self.fake_runner = slow
+        sleeps: list = []
+        code, report = self.run_with_etl([True], "--wait-etl-minutes", "3", sleeps=sleeps)
+        self.assertEqual((code, len(sleeps), peak[0]), (rdr.EXIT_OK, 3, 1))
+        self.assertTrue(any("de a un cliente" in note for note in report["notes"]))
+
+    def test_con_la_espera_en_cero_no_se_consulta_a_la_etl(self) -> None:
+        sleeps: list = []
+        code, report = self.run_with_etl([True], "--wait-etl-minutes", "0", sleeps=sleeps)
+        self.assertEqual((code, sleeps), (rdr.EXIT_OK, []))
+        self.assertEqual(report["notes"], [])
+
+    def test_si_no_se_puede_consultar_la_etl_no_se_frena_nada(self) -> None:
+        sleeps: list = []
+        code, _ = self.run_with_etl([None], sleeps=sleeps)
+        self.assertEqual((code, sleeps), (rdr.EXIT_OK, []))
+
+    def test_los_clientes_a_la_vez_salen_del_env_y_la_opcion_gana(self) -> None:
+        with patch.dict(os.environ, {"VI_REFRESH_PARALLEL": "2"}):
+            self.assertEqual(rdr.env_number("VI_REFRESH_PARALLEL", rdr.DEFAULT_PARALLEL), 2)
+        with patch.dict(os.environ, {"VI_REFRESH_PARALLEL": "mucho"}):
+            self.assertEqual(rdr.env_number("VI_REFRESH_PARALLEL", rdr.DEFAULT_PARALLEL), rdr.DEFAULT_PARALLEL)
+        peaks = []
+        for env_value, option, expected in (("1", [], 1), ("1", ["--parallel", "2"], 2)):
+            import threading
+            active, peak, lock = [0], [0], threading.Lock()
+            original = self.fake_runner
+
+            def slow(cmd, _a=active, _p=peak, _l=lock, _o=original, **kwargs):
+                with _l:
+                    _a[0] += 1
+                    _p[0] = max(_p[0], _a[0])
+                time.sleep(0.25)
+                with _l:
+                    _a[0] -= 1
+                return _o(cmd, **kwargs)
+
+            args = rdr.parse_args(option)
+            with patch.dict(os.environ, {"VI_REFRESH_PARALLEL": env_value, "VI_NOTIFY_WEBHOOK": ""}):
+                rdr.run_daily(args, git=rdr.Git(self.project), runner=slow, sleep=lambda s: None, post=lambda u, p: None,
+                              clients_root=self.clients_root, project_root=self.project, report_dir=self.report_dir, lock_path=self.lock)
+            peaks.append((peak[0], expected))
+        self.assertEqual([p for p, _ in peaks], [e for _, e in peaks])
 
     def test_un_timeout_no_se_reintenta_y_no_frena_a_los_demas(self) -> None:
         self.outcomes = {"acme_alto": "timeout"}

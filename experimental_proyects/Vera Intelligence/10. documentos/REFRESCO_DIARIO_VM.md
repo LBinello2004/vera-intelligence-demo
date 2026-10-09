@@ -159,6 +159,14 @@ Notas: el aviso usa el formato `{"text": ...}` de Slack. Otros canales (Teams, D
 
 ---
 
+### 4.2 Cuánta carga pone sobre la base (se puede ajustar en el `.env`)
+
+- **Clientes a la vez:** `VI_REFRESH_PARALLEL=2` (por defecto 4; la opción `--parallel N` del comando tiene prioridad). Menos clientes a la vez = menos presión sobre Postgres y Gemini, a costa de tardar más los días con varios cambios.
+- **Espera a la ETL:** antes de arrancar, el refresco mira si la ETL está haciendo `REFRESH MATERIALIZED VIEW`. Si es así espera, revisando cada minuto, hasta `VI_REFRESH_WAIT_ETL_MINUTES` (por defecto 10; `0` = no esperar; también `--wait-etl-minutes`). Si pasado ese límite la ETL sigue ocupada, corre **de a un cliente** y lo deja anotado en el reporte. Si no puede consultar la base para saberlo, no frena nada.
+- Nuestras consultas son de solo lectura y un `REFRESH ... CONCURRENTLY` está pensado para convivir con lecturas: no hay bloqueos entre ambos. Lo que se evita es sumar presión de disco mientras la ETL trabaja.
+
+---
+
 ## 5. Cómo volver atrás
 
 Cada promoción deja en `CAMBIOS_AUTOMATICOS.md` su comando de reversión. Desde la raíz del clon:
