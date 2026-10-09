@@ -180,7 +180,7 @@ class RunForClientTests(PipelineCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _regenerate(self, cfg, changes, *, store=None, client_folder=None, model=None, feedback=None):
+    def _regenerate(self, cfg, changes, *, store=None, client_folder=None, model=None, feedback=None, tool_budget=None, soft_deadline_seconds=None):
         self.calls["regenerate"] += 1
         self.feedbacks.append(feedback)
         self.models.append(model)

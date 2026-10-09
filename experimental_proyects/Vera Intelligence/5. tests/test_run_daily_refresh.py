@@ -116,7 +116,7 @@ class DailyRunTests(RepoCase):
 
     def test_solo_corre_los_clientes_reales(self) -> None:
         self.run_daily()
-        self.assertEqual(self.calls, ["acme_alto", "beta_medio"])   # _shared no tiene config.yaml
+        self.assertEqual(sorted(self.calls), ["acme_alto", "beta_medio"])   # _shared no tiene config.yaml
 
     def test_lo_promovido_se_publica_en_un_solo_commit_con_exactamente_sus_archivos(self) -> None:
         self.outcomes = {"acme_alto": "promovido"}
@@ -157,9 +157,46 @@ class DailyRunTests(RepoCase):
         self.assertTrue(self.posts and "beta_medio" in self.posts[0]["text"])
 
     def test_una_falla_de_proceso_se_reintenta_y_se_recupera(self) -> None:
-        self.outcomes = {"acme_alto": ["crash", "timeout", "sin_cambios"]}
+        self.outcomes = {"acme_alto": ["crash", "crash", "sin_cambios"]}
         self.assertEqual(self.run_daily("--retries", "2"), rdr.EXIT_OK)
         self.assertEqual(self.calls.count("acme_alto"), 3)
+
+    def test_el_error_de_un_cliente_muestra_la_causa_y_no_el_inicio_del_traceback(self) -> None:
+        trace = ("Traceback (most recent call last):\n  File \"x.py\", line 173, in raise_for_response\n    cls.raise_error(\n"
+                 "google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'message': 'Quota exceeded'}}\n")
+        self.assertTrue(rdr.last_error_line(trace).startswith("google.genai.errors.ClientError: 429"))
+        self.assertEqual(rdr.last_error_line(""), "")
+        runner = lambda cmd, **kw: SimpleNamespace(returncode=1, stdout="", stderr=trace)      # noqa: E731
+        result = rdr.run_client_process("acme_alto", gate="v2", dry_run=False, timeout_seconds=5, runner=runner)
+        self.assertTrue(result["error"].startswith("código 1: google.genai.errors.ClientError: 429"))
+
+    def test_un_timeout_no_se_reintenta_y_no_frena_a_los_demas(self) -> None:
+        self.outcomes = {"acme_alto": "timeout"}
+        self.assertEqual(self.run_daily("--retries", "2"), rdr.EXIT_ATTENTION)
+        self.assertEqual(self.calls.count("acme_alto"), 1)             # rehacer una hora de trabajo no suele cambiar el resultado
+        self.assertEqual(self.calls.count("beta_medio"), 1)
+
+    def test_los_clientes_corren_a_la_vez_y_el_resultado_conserva_el_orden(self) -> None:
+        import threading
+        active, peak, lock = [0], [0], threading.Lock()
+        original = self.fake_runner
+
+        def slow(cmd, **kwargs):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.3)
+            with lock:
+                active[0] -= 1
+            return original(cmd, **kwargs)
+
+        args = rdr.parse_args(["--parallel", "2"])
+        with patch.dict(os.environ, {"VI_NOTIFY_WEBHOOK": ""}):
+            rdr.run_daily(args, git=rdr.Git(self.project), runner=slow, sleep=lambda s: None, post=lambda u, p: None,
+                          clients_root=self.clients_root, project_root=self.project, report_dir=self.report_dir, lock_path=self.lock)
+        self.assertEqual(peak[0], 2)
+        report = json.loads((self.report_dir / f"{time.strftime('%Y-%m-%d', time.gmtime())}.json").read_text(encoding="utf-8"))
+        self.assertEqual([r["client_id"] for r in report["results"]], ["acme_alto", "beta_medio"])
 
     def test_si_la_falla_persiste_queda_como_error_de_proceso(self) -> None:
         self.outcomes = {"acme_alto": "crash"}
@@ -212,7 +249,7 @@ class RepoStateTests(RepoCase):
         self.assertEqual(self.run_daily(), rdr.EXIT_OK)
         self.assertEqual(len(self.remote_log()), 2)
         self.assertIn("experimental_proyects/Vera Intelligence/2. clientes/acme_alto/data_map/VI Data Map acme_alto V2.yaml", self.remote_files())
-        self.assertEqual(self.calls, ["acme_alto", "beta_medio"])        # y siguió con el refresco del día
+        self.assertEqual(sorted(self.calls), ["acme_alto", "beta_medio"])        # y siguió con el refresco del día
 
     def test_si_el_remoto_avanzo_el_push_se_rehace_con_rebase(self) -> None:
         other = Path(self._tmp.name) / "otro"

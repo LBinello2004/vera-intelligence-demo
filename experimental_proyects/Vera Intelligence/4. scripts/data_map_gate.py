@@ -26,6 +26,7 @@ control mecánico de que el candidato no rompe lo que ya se medía.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Callable
 
@@ -253,6 +254,7 @@ def run_gate_v2(
     baseline_cache = baseline_cache if baseline_cache is not None else {}
     records: list[dict] = []
     llm_used = 0
+    to_check: list[tuple[dict, dict]] = []
     for item in questions:
         record = {"id": item.get("id"), "affected_by_change": bool(affected.get(item.get("id")) or item.get("id") == sentinel_id), "sql_ok": True, "sql_error": None, "dropped_fields": [], "truth_numbers": [],
                   "llm_checked": False, "numbers_ok": True, "missing_numbers": [], "attempts": 0, "answer": "", "error": None}
@@ -262,64 +264,89 @@ def run_gate_v2(
                 record["dropped_fields"] = dropped_fields(sql, old_data_map, new_data_map)
             except Exception as exc:  # noqa: BLE001 -un SQL que sqlglot no entiende no es culpa del candidato
                 record["sql_error"] = f"no pude analizar los campos del SQL dorado: {exc}"
-            try:
-                record["truth_numbers"] = truth_from_result(run_sql(sql))
-            except Exception as exc:  # noqa: BLE001 -si no se puede verificar, no se promueve solo
-                record["sql_error"] = str(exc)[:300]
-                if str(getattr(exc, "sqlstate", "") or "").startswith("42"):
-                    # Error determinista del propio SQL dorado (columna que cambió de tipo, vista renombrada): no depende del Data Map, así que
-                    # rechazaría a TODO candidato para siempre. Se informa como problema del banco (hace falta arreglarlo) sin bloquear.
-                    record["bank_problem"] = record["sql_error"]
-                else:
-                    record["sql_ok"] = False       # caída de la base, timeout, permisos: no se pudo verificar
-        if (record["truth_numbers"] and not item.get("omit_from_numeric_gate") and llm_used < llm_questions
-                and record["affected_by_change"]):
+            # El SQL dorado solo se ejecuta si va a servir de verdad (pregunta afectada por el cambio y todavía hay cupo de preguntas al agente):
+            # en Farma cada consulta puede tardar decenas de segundos y las diez juntas eran la mitad del gate.
+            if record["affected_by_change"] and llm_used < llm_questions and not item.get("omit_from_numeric_gate"):
+                try:
+                    record["truth_numbers"] = truth_from_result(run_sql(sql))
+                except Exception as exc:  # noqa: BLE001 -si no se puede verificar, no se promueve solo
+                    record["sql_error"] = str(exc)[:300]
+                    if str(getattr(exc, "sqlstate", "") or "").startswith("42"):
+                        # Error determinista del propio SQL dorado (columna que cambió de tipo, vista renombrada): no depende del Data Map, así que
+                        # rechazaría a TODO candidato para siempre. Se informa como problema del banco (hace falta arreglarlo) sin bloquear.
+                        record["bank_problem"] = record["sql_error"]
+                    else:
+                        record["sql_ok"] = False       # caída de la base, timeout, permisos: no se pudo verificar
+        if record["truth_numbers"] and record["affected_by_change"] and llm_used < llm_questions and not item.get("omit_from_numeric_gate"):
             llm_used += 1
             record["llm_checked"] = True
-            max_missing = int(item.get("max_missing_numbers", DEFAULT_MAX_MISSING))
-            try:
-                for attempt in range(1, ANSWER_ATTEMPTS + 1):
-                    record["attempts"] = attempt
-                    answer = ask(item["pregunta"])
-                    record["answer"] = answer[:600]
-                    ok, missing = covers(record["truth_numbers"], answer, max_missing)
-                    record["numbers_ok"], record["missing_numbers"] = ok, missing
-                    if ok:
-                        break
-                if not record["numbers_ok"] and baseline_ask is not None:
-                    # Sin regresión: lo que el candidato no menciona pero el Data Map VIGENTE tampoco (denominadores que el SQL dorado cuenta
-                    # distinto, números de un banco armado cuando la tabla era más chica) no es culpa del candidato.
-                    baseline_missing = baseline_cache.get(item.get("id"))
-                    if baseline_missing is None:
-                        for _ in range(ANSWER_ATTEMPTS):
-                            _, missing_before = covers(record["truth_numbers"], baseline_ask(item["pregunta"]), max_missing)
-                            if baseline_missing is None or len(missing_before) < len(baseline_missing):
-                                baseline_missing = missing_before
-                            if not baseline_missing:
-                                break
-                        baseline_cache[item.get("id")] = baseline_missing   # el vigente no cambia: no se vuelve a preguntar
-                    record["baseline_missing"] = baseline_missing
-                    allowed = set(baseline_missing or [])
-                    if set(record["missing_numbers"]) <= allowed:
-                        record["numbers_ok"] = True
-                        record["regression"] = False
-                    else:
-                        # Un modelo no responde igual dos veces (medido en Tigo: el mismo Data Map omitió una cifra en 2 intentos seguidos).
-                        # Antes de llamarlo regresión, unos intentos más: basta que UNA respuesta no pierda nada que el vigente sí diera.
-                        for extra in range(1, REGRESSION_EXTRA_ATTEMPTS + 1):
-                            record["attempts"] += 1
-                            answer = ask(item["pregunta"])
-                            ok, missing = covers(record["truth_numbers"], answer, max_missing)
-                            if ok or set(missing) <= allowed:
-                                record["answer"], record["missing_numbers"] = answer[:600], missing
-                                record["numbers_ok"], record["regression"] = True, False
-                                break
-                        else:
-                            record["regression"] = True
-            except Exception as exc:  # noqa: BLE001
-                record["numbers_ok"] = False
-                record["error"] = str(exc)[:300]
+            to_check.append((item, record))
         records.append(record)
+
+    def positions(truth: list[str], missing: list[str]) -> list[int]:
+        """Qué números de la verdad faltan, por POSICIÓN y no por valor: los conteos cambian todos los días (la tabla crece), las posiciones no."""
+        return sorted({truth.index(token) for token in missing if token in truth})
+
+    def check_llm(item: dict, record: dict) -> None:
+        max_missing = int(item.get("max_missing_numbers", DEFAULT_MAX_MISSING))
+        try:
+            for attempt in range(1, ANSWER_ATTEMPTS + 1):
+                record["attempts"] = attempt
+                answer = ask(item["pregunta"])
+                record["answer"] = answer[:600]
+                ok, missing = covers(record["truth_numbers"], answer, max_missing)
+                record["numbers_ok"], record["missing_numbers"] = ok, missing
+                if ok:
+                    break
+            if not record["numbers_ok"] and baseline_ask is not None:
+                # Sin regresión: lo que el candidato no menciona pero el Data Map VIGENTE tampoco (denominadores que el SQL dorado cuenta
+                # distinto, números de un banco armado cuando la tabla era más chica) no es culpa del candidato.
+                truth = record["truth_numbers"]
+                baseline_missing = baseline_cache.get(item.get("id"))
+                # El caché guarda POSICIONES (enteros). Un caché con valores (formato viejo, números de otro día) no sirve: se vuelve a medir.
+                if not isinstance(baseline_missing, list) or any(not isinstance(i, int) for i in baseline_missing):
+                    baseline_missing = None
+                    for _ in range(ANSWER_ATTEMPTS):
+                        _, missing_before = covers(truth, baseline_ask(item["pregunta"]), max_missing)
+                        found = positions(truth, missing_before)
+                        if baseline_missing is None or len(found) < len(baseline_missing):
+                            baseline_missing = found
+                        if not baseline_missing:
+                            break
+                    baseline_cache[item.get("id")] = baseline_missing   # el vigente no cambia: no se vuelve a preguntar
+                record["baseline_missing"] = [truth[i] for i in baseline_missing if i < len(truth)]
+                allowed = set(baseline_missing)
+
+                def regression_free(missing: list[str]) -> bool:
+                    # Se tolera lo que el vigente tampoco mencionaba, más hasta `max_missing` números nuevos (por ejemplo, un denominador que el
+                    # candidato cuenta con otra base): perder DOS cifras que el vigente sí daba ya es una regresión.
+                    return len(set(positions(truth, missing)) - allowed) <= max_missing
+
+                if regression_free(record["missing_numbers"]):
+                    record["numbers_ok"] = True
+                    record["regression"] = False
+                else:
+                    # Un modelo no responde igual dos veces (medido en Tigo: el mismo Data Map omitió una cifra en 2 intentos seguidos).
+                    # Antes de llamarlo regresión, unos intentos más: basta que UNA respuesta no pierda nada que el vigente sí diera.
+                    for extra in range(1, REGRESSION_EXTRA_ATTEMPTS + 1):
+                        record["attempts"] += 1
+                        answer = ask(item["pregunta"])
+                        ok, missing = covers(record["truth_numbers"], answer, max_missing)
+                        if ok or regression_free(missing):
+                            record["answer"], record["missing_numbers"] = answer[:600], missing
+                            record["numbers_ok"], record["regression"] = True, False
+                            break
+                    else:
+                        record["regression"] = True
+        except Exception as exc:  # noqa: BLE001
+            record["numbers_ok"] = False
+            record["error"] = str(exc)[:300]
+
+    # Las preguntas al agente corren a la vez (cada una es una conversación independiente con Gemini; el SQL que hagan se serializa solo por el
+    # candado de la conexión). Antes iban una detrás de otra: 4 preguntas con varios intentos eran la mayor parte del gate.
+    if to_check:
+        with ThreadPoolExecutor(max_workers=len(to_check)) as pool:
+            list(pool.map(lambda pair: check_llm(*pair), to_check))
     passed = not structural and all(
         r["sql_ok"] and not r["dropped_fields"] and r["numbers_ok"] and r["error"] is None for r in records)
     return {"passed": passed, "structural_problems": structural, "questions": records, "footprint": {

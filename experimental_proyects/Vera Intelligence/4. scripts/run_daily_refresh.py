@@ -19,7 +19,7 @@ Códigos de salida: 0 todo bien (haya o no promociones) · 1 algún cliente requ
 sucio, pull) · 3 se promovió pero falló la publicación · 4 error inesperado del propio script (avisa por webhook).
 
 Uso (desde cualquier carpeta):  python "<repo>/experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py"
-Opciones: --clients a,b · --no-pull · --no-push · --gate v2|legacy · --timeout-minutes 60 · --retries 2 · --dry-run
+Opciones: --parallel 4 · --clients a,b · --no-pull · --no-push · --gate v2|legacy · --timeout-minutes 60 · --retries 2 · --dry-run
 Ejemplo de cron (05:30 de lunes a viernes):
   30 5 * * 1-5  cd /ruta/al/repo && /ruta/al/venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/run_daily_refresh.py" >> /var/log/vi_refresh.log 2>&1
 """
@@ -33,6 +33,7 @@ import subprocess
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -48,7 +49,8 @@ LOCK_PATH = RUNTIME / "daily_refresh.lock"
 UPDATER = SCRIPT_DIR / "data_map_auto_update.py"
 
 LOCK_STALE_SECONDS = 6 * 3600
-DEFAULT_TIMEOUT_MINUTES = 60
+DEFAULT_TIMEOUT_MINUTES = 15     # límite por cliente: uno lento no puede frenar a los demás (antes 60, con 2 reintentos = hasta 3 h)
+DEFAULT_PARALLEL = 4            # clientes corriendo a la vez (cada uno en su propio proceso)
 DEFAULT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 30
 NEEDS_HUMAN = {"gate_fallo_no_promovido", "error_regeneracion", "deriva_de_columnas_no_promovido", "reintentos_agotados",
@@ -120,6 +122,16 @@ def parse_summary(stdout: str) -> dict | None:
     return None
 
 
+def last_error_line(text: str) -> str:
+    """La línea de la excepción de un traceback (la última que menciona Error/Exception) o, si no hay, la última línea. El aviso de Slack
+    mostraba el INICIO del texto (`File ... line 173, in raise_for_response`) y no la causa, que está al final."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if "Error" in line or "Exception" in line:
+            return line[:400]
+    return lines[-1][:400] if lines else ""
+
+
 def run_client_process(client: str, *, gate: str, dry_run: bool, timeout_seconds: float,
                        runner: Callable[..., subprocess.CompletedProcess] | None = None) -> dict:
     cmd = [sys.executable, str(UPDATER), "--client", client, "--gate", gate] + (["--dry-run"] if dry_run else [])
@@ -127,11 +139,14 @@ def run_client_process(client: str, *, gate: str, dry_run: bool, timeout_seconds
         proc = (runner or subprocess.run)(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                           timeout=timeout_seconds, cwd=str(SCRIPT_DIR))
     except subprocess.TimeoutExpired:
-        return {"client_id": client, "status": PROCESS_ERROR, "error": f"timeout de {timeout_seconds / 60:.0f} min"}
+        # `timeout: True`: NO se reintenta (rehacer una regeneración que ya agotó el límite no suele cambiar nada y repite el gasto). El cambio de prompt
+        # sigue pendiente y se retoma en la corrida siguiente.
+        return {"client_id": client, "status": PROCESS_ERROR, "timeout": True, "error": f"timeout de {timeout_seconds / 60:.0f} min"}
     summary = parse_summary(proc.stdout or "")
     if summary is None or proc.returncode not in (0, 1):
-        tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-600:]
-        return {"client_id": client, "status": PROCESS_ERROR, "error": f"código {proc.returncode}: {tail}"}
+        full = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        return {"client_id": client, "status": PROCESS_ERROR,
+                "error": f"código {proc.returncode}: {last_error_line(full)} || final del log: {full[-500:]}"}
     summary.setdefault("client_id", client)
     return summary
 
@@ -141,7 +156,7 @@ def run_with_retries(client: str, *, retries: int, sleep: Callable[[float], None
     summary: dict = {}
     for attempt in range(retries + 1):
         summary = run_client_process(client, **kwargs)
-        if summary.get("status") != PROCESS_ERROR:
+        if summary.get("status") != PROCESS_ERROR or summary.get("timeout"):
             break
         if attempt < retries:
             sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
@@ -370,12 +385,15 @@ def run_daily(args: argparse.Namespace, *, git: Git | None = None, runner: Calla
             print(str(exc), file=sys.stderr)
             return EXIT_CANNOT_START
 
-        results: list[dict] = []
-        for client in clients:
+        def run_one(client: str) -> dict:
             summary = run_with_retries(client, retries=args.retries, sleep=sleep, gate=args.gate, dry_run=args.dry_run,
                                        timeout_seconds=args.timeout_minutes * 60, runner=runner)
-            results.append(summary)
             print(f"[{client}] {summary.get('status')}", flush=True)
+            return summary
+
+        # Varios clientes a la vez (procesos independientes: cada uno guarda su estado en su propia carpeta). El resultado conserva el orden de la lista.
+        with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
+            results: list[dict] = list(pool.map(run_one, clients))
 
         publication = None
         promoted = [r for r in results if r.get("status") == "promovido"]
@@ -407,7 +425,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-pull", dest="pull", action="store_false", help="No hacer git pull al empezar.")
     parser.add_argument("--no-push", dest="push", action="store_false", help="Commitear lo promovido pero no hacer push.")
     parser.add_argument("--gate", choices=("v2", "legacy"), default="v2")
-    parser.add_argument("--timeout-minutes", type=float, default=DEFAULT_TIMEOUT_MINUTES, help="Límite por cliente.")
+    parser.add_argument("--timeout-minutes", type=float, default=DEFAULT_TIMEOUT_MINUTES, help="Límite por cliente (un timeout no se reintenta).")
+    parser.add_argument("--parallel", type=int, default=DEFAULT_PARALLEL, help="Cuántos clientes se procesan a la vez.")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Reintentos ante fallas de proceso (no ante rechazos del gate).")
     parser.add_argument("--dry-run", action="store_true", help="Genera candidatas sin gate ni promoción ni publicación.")
     parser.add_argument("--test-notify", action="store_true", help="Manda un mensaje de prueba al webhook (VI_NOTIFY_WEBHOOK) y termina.")

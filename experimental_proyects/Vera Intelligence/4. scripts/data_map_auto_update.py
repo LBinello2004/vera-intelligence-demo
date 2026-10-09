@@ -64,6 +64,18 @@ CLIENTS_ROOT = PROJECT_ROOT / "2. clientes"
 
 MAX_GOLDEN_QUESTIONS = 10
 MAX_REGENERATION_TOOL_CALLS = 25
+# Presupuesto de la regeneración según qué cambió (2026-10-09). Medido: en Farma una regeneración con hasta 25 consultas SQL de verificación pasaba de
+# 15 minutos, y el refresco completo tardó 74. Si el prompt cambió solo en REGLAS (mismos campos de salida), el Data Map casi no cambia: pocas consultas y poco
+# tiempo. Si cambió la ESTRUCTURA (campos nuevos o quitados), más margen. Al agotarse el presupuesto o el tiempo no se falla: se le pide a Gemini que
+# devuelva ya el YAML con lo que alcanzó a verificar (el gate decide si sirve).
+# Causa raíz de Farma (2026-10-09, logs de la VM): el SDK de Gemini manda el timeout HTTP como plazo del servidor, y con 120 s una respuesta que
+# reescribe un Data Map de 76 KB (≈25 mil tokens de salida, más el razonamiento) vence siempre con `504 DEADLINE_EXCEEDED`. Se reintentaba la misma
+# llamada 6 veces por turno y el proceso entero 3 veces: 74 minutos para nada. Acá la regeneración tiene su propio plazo largo y razonamiento bajo
+# (la validación la hace el gate, no el razonamiento del modelo).
+REGEN_HTTP_TIMEOUT_MS = 600_000
+REGEN_THINKING_LEVEL = types.ThinkingLevel.LOW
+REGEN_RULES_TOOL_CALLS, REGEN_RULES_SECONDS = 4, 6 * 60
+REGEN_STRUCTURE_TOOL_CALLS, REGEN_STRUCTURE_SECONDS = 12, 10 * 60
 
 # Reintentos automáticos (2026-10-07). Hasta ahora un cambio rechazado por el gate quedaba olvidado (la foto de prompts se actualizaba al
 # detectarlo) y un humano tenía que "decirle que lo vuelva a ver". Ahora el cambio queda PENDIENTE hasta promoverse y se reintenta
@@ -235,6 +247,23 @@ def detect_pending_changes(
                     if (pending.get(c.key) or {}).get("new_version") == c.new_version and (pending.get(c.key) or {}).get("first_seen_at")
                     else now} for c in changes})
     return changes, current
+
+
+def _schema_keys(text: str | None) -> set[str]:
+    """Claves de salida que declara un prompt (las `"campo":` del JSON de respuesta): si no cambian, el cambio fue solo de redacción de reglas."""
+    return set(re.findall(r'"([A-Za-z][A-Za-z0-9_]{2,})"\s*:', text or ""))
+
+
+def structure_changed(changes: list[RulebookChange]) -> bool:
+    """True si algún prompt agregó o quitó campos de salida (o no hay texto viejo para saberlo: se asume que sí, por prudencia)."""
+    return any(c.old_text is None or _schema_keys(c.old_text) != _schema_keys(c.new_text) for c in changes)
+
+
+def regeneration_budget(changes: list[RulebookChange]) -> tuple[int, float]:
+    """(consultas SQL máximas, segundos antes de pedir el YAML final) para esta regeneración."""
+    if structure_changed(changes):
+        return REGEN_STRUCTURE_TOOL_CALLS, REGEN_STRUCTURE_SECONDS
+    return REGEN_RULES_TOOL_CALLS, REGEN_RULES_SECONDS
 
 
 def _squash(text: str) -> str:
@@ -415,7 +444,8 @@ def _repair_message(exc: Exception) -> str:
 
 def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChange], *, store=None,
                         client_folder: str | None = None, model: str | None = None,
-                        feedback: str | None = None) -> RegenerationResult:
+                        feedback: str | None = None, tool_budget: int | None = None,
+                        soft_deadline_seconds: float | None = None) -> RegenerationResult:
     if not changes:
         return RegenerationResult()
 
@@ -438,7 +468,7 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
         prev_version_number=prev_version_number,
         prev_version_label=prev_version_label,
         today=datetime.now(timezone.utc).date().isoformat(),
-        max_tool_calls=MAX_REGENERATION_TOOL_CALLS,
+        max_tool_calls=tool_budget or MAX_REGENERATION_TOOL_CALLS,
         prompt_diff=prompt_diff,
         current_data_map=current_path.read_text(encoding="utf-8"),
     )
@@ -448,7 +478,7 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
     # esta llamada esperando para siempre en vez de fallar y poder reintentarse.
     client = vi_agent.genai.Client(
         api_key=vi_agent.os.environ["VERA_AI_API_KEY"],
-        http_options=types.HttpOptions(timeout=vi_agent._GENAI_HTTP_TIMEOUT_MS),
+        http_options=types.HttpOptions(timeout=REGEN_HTTP_TIMEOUT_MS),
     )
     chat = client.chats.create(
         model=model or client_config.model,
@@ -456,6 +486,7 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
             system_instruction=system_instruction,
             tools=[vi_agent.run_readonly_sql],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            thinking_config=types.ThinkingConfig(thinking_level=REGEN_THINKING_LEVEL),
         ),
     )
 
@@ -466,9 +497,11 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
            if feedback else "")
     )
     tool_call_count = 0
+    started_at = time.time()
+    wrap_ups = 0
 
     repairs_left = REGENERATION_REPAIRS
-    for _ in range(MAX_REGENERATION_TOOL_CALLS + 5 + REGENERATION_REPAIRS):
+    for _ in range((tool_budget or MAX_REGENERATION_TOOL_CALLS) + 5 + REGENERATION_REPAIRS + 2):
         response = vi_agent._send_message_with_retry(chat, message, debug=False)
         function_calls = response.function_calls or []
         if not function_calls:
@@ -496,11 +529,19 @@ def regenerate_data_map(client_config: ClientConfig, changes: list[RulebookChang
                 tool_calls=tool_calls_log,
             )
 
-        if tool_call_count + len(function_calls) > MAX_REGENERATION_TOOL_CALLS:
-            return RegenerationResult(
-                tool_calls=tool_calls_log,
-                error="Se agotó el límite de llamadas a run_readonly_sql antes de terminar.",
-            )
+        out_of_budget = tool_call_count + len(function_calls) > (tool_budget or MAX_REGENERATION_TOOL_CALLS)
+        out_of_time = soft_deadline_seconds is not None and (time.time() - started_at) > soft_deadline_seconds
+        if out_of_budget or out_of_time:
+            # No se falla: se le dice a Gemini que ya no hay más consultas y que devuelva el YAML final con lo verificado.
+            wrap_ups += 1
+            if wrap_ups > 2:
+                return RegenerationResult(tool_calls=tool_calls_log,
+                                          error="Se agotó el presupuesto de consultas o de tiempo y Gemini siguió pidiendo consultas.")
+            reason = "el tiempo" if out_of_time else "las consultas"
+            message = [types.Part.from_function_response(
+                name=call.name, response={"error": f"Se agotaron {reason} disponibles: no se ejecutó. Devolvé AHORA el YAML final y el changelog, "
+                                                   "con lo que ya verificaste y sin llamar más herramientas."}) for call in function_calls]
+            continue
 
         function_responses = []
         for call in function_calls:
@@ -916,10 +957,13 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
     client_config = vi_agent.CLIENT_CONFIG
 
     bank_warnings = _lint_bank_for_client(client_folder)
+    timings: list[dict] = []   # cuánto tarda cada fase por intento (regeneración y gate), para saber dónde se va el tiempo
 
     def finish(summary: dict) -> dict:
         if bank_warnings:
             summary["golden_bank_relative_language_warnings"] = bank_warnings
+        if timings:
+            summary["timings"] = timings
         if rulebook_problems:
             summary["rulebook_problems"] = rulebook_problems
             if summary.get("status") == "sin_cambios" and any(p["needs_human"] for p in rulebook_problems):
@@ -965,7 +1009,12 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
     for _ in range(max(1, run_attempts)):
         attempt = store.add_attempt(client_id, signature)
         model = regen_model_for_attempt(client_config, attempt)
-        regeneration = regenerate_data_map(client_config, changes, store=store, client_folder=client_folder, model=model, feedback=feedback)
+        started_regen = time.time()
+        budget_calls, budget_seconds = regeneration_budget(changes)
+        regeneration = regenerate_data_map(client_config, changes, store=store, client_folder=client_folder, model=model, feedback=feedback,
+                                           tool_budget=budget_calls, soft_deadline_seconds=budget_seconds)
+        timing = {"attempt": attempt, "regeneration_seconds": round(time.time() - started_regen, 1), "sql_calls": len(regeneration.tool_calls)}
+        timings.append(timing)
         if regeneration.error:
             failure = {"status": "error_regeneracion", "changes": [c.key for c in changes], "error": regeneration.error,
                        "tool_calls": len(regeneration.tool_calls)}
@@ -973,7 +1022,9 @@ def _run_locked(client_id: str, *, dry_run: bool, gate: str, store, run_attempts
             return finish({"client_id": client_id, "status": "candidata_generada_sin_gate_dry_run",
                            "candidate_path": str(regeneration.candidate_path), "changelog": regeneration.changelog})
         else:
+            started_gate = time.time()
             outcome = _evaluate_candidate(client_config, regeneration, client_folder, gate)
+            timing["gate_seconds"] = round(time.time() - started_gate, 1)
             if outcome["passed"]:
                 summary = {"client_id": client_id, "changes": changes_summary, "candidate_path": str(regeneration.candidate_path),
                            "changelog": regeneration.changelog, "attempt": attempt, "regeneration_model": model,

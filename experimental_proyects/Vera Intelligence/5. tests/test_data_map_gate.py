@@ -239,6 +239,81 @@ class RunGateTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertTrue(report["questions"][0]["regression"])
 
+    def test_el_sql_dorado_solo_se_ejecuta_para_las_preguntas_que_se_van_a_usar(self) -> None:
+        questions = [{"id": f"q{i}", "pregunta": f"p{i}", "sql": SQL_TOTAL} for i in range(6)]
+        executed: list = []
+
+        def run_sql(sql):
+            executed.append(sql)
+            return result([[250804]])
+
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank={"preguntas": questions}, run_sql=run_sql,
+                                  ask=lambda q: "Hay 250.804.", llm_questions=2)
+        self.assertEqual((len(executed), report["llm_questions_checked"]), (2, 2))      # no se corrieron las 6: alcanzan las 2 que se preguntan
+
+    def test_si_el_cambio_no_afecta_a_nadie_no_se_ejecuta_ningun_sql_dorado(self) -> None:
+        new = data_map()
+        new["metadata"] = {"version": "9"}
+        executed: list = []
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=new, bank=self.bank(),
+                                  run_sql=lambda sql: executed.append(sql) or result([[1]]), ask=lambda q: "x")
+        self.assertEqual((executed, report["passed"]), ([], True))
+
+    def test_las_preguntas_al_agente_corren_a_la_vez(self) -> None:
+        import threading
+        import time as _time
+        active, peak, lock = [0], [0], threading.Lock()
+
+        def ask(question):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            _time.sleep(0.2)
+            with lock:
+                active[0] -= 1
+            return "Hay 250.804."
+
+        questions = [{"id": f"q{i}", "pregunta": f"p{i}", "sql": SQL_TOTAL} for i in range(4)]
+        report = gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank={"preguntas": questions},
+                                  run_sql=lambda sql: result([[250804]]), ask=ask)
+        self.assertTrue(report["passed"])
+        self.assertEqual(peak[0], 4)
+        self.assertEqual([r["id"] for r in report["questions"]], ["q0", "q1", "q2", "q3"])
+
+    def multi(self, answer, baseline, cache=None, truth=(100000, 2000, 120000), max_missing=1):
+        bank = {"preguntas": [{"id": "q1", "pregunta": "p", "sql": SQL_TOTAL, "max_missing_numbers": max_missing}]}
+        return gate.run_gate_v2(old_data_map=data_map(), new_data_map=changed_map(), bank=bank,
+                                run_sql=lambda sql: result([list(truth)], columns=("a", "b", "c")), ask=lambda q: answer,
+                                baseline_ask=lambda q: baseline, baseline_cache=cache if cache is not None else {})
+
+    def test_un_numero_nuevo_que_falta_se_tolera_pero_dos_son_regresion(self) -> None:
+        # El vigente da los tres números; el candidato omite uno (un denominador con otra base): pasa. Si omite dos, es regresión.
+        both = "Son 100.000 de 120.000, con 2.000 casos."
+        self.assertTrue(self.multi("Son 100.000 casos y 2.000 sin dato.", both)["passed"])
+        report = self.multi("Hay 100.000 casos.", both)
+        self.assertFalse(report["passed"])
+        self.assertTrue(report["questions"][0]["regression"])
+
+    def test_el_cache_del_vigente_se_guarda_por_posicion_y_sirve_aunque_los_numeros_cambien(self) -> None:
+        cache: dict = {}
+        self.multi("Hay 100.000 casos.", "Son 100.000 casos y 2.000 sin dato.", cache=cache)       # el vigente omite el tercer número
+        self.assertEqual(cache, {"q1": [2]})
+        calls: list = []
+        # al día siguiente la tabla creció: la verdad cambia, el caché por posición sigue valiendo y no se vuelve a preguntar al vigente
+        report = gate.run_gate_v2(
+            old_data_map=data_map(), new_data_map=changed_map(),
+            bank={"preguntas": [{"id": "q1", "pregunta": "p", "sql": SQL_TOTAL, "max_missing_numbers": 0}]},
+            run_sql=lambda sql: result([[101000, 2020, 121500]], columns=("a", "b", "c")),
+            ask=lambda q: "Hay 101.000 casos y 2.020 sin dato.", baseline_ask=lambda q: calls.append(q) or "x", baseline_cache=cache)
+        self.assertTrue(report["passed"])
+        self.assertEqual(calls, [])
+
+    def test_un_cache_en_el_formato_viejo_con_valores_se_vuelve_a_medir(self) -> None:
+        cache = {"q1": ["75791", "1904"]}                 # números de otro día: no sirven (causó un falso rechazo real en Maga)
+        report = self.multi("Hay 100.000 casos.", "Son 100.000 casos y 2.000 sin dato.", cache=cache)
+        self.assertEqual(cache["q1"], [2])
+        self.assertTrue(all(isinstance(i, int) for i in cache["q1"]))
+
     def test_el_contexto_de_mas_no_lo_rechaza(self) -> None:
         # El caso real de Farma 24 (17/9): la respuesta nueva agrega el total y el % de cobertura.
         report, _ = self.run_gate(answers=["Hay **250.804** analizables sobre 261.823 interacciones (95,8 % de cobertura)."])
