@@ -179,6 +179,17 @@ Sin `--to` vuelve a la versión anterior de la última promoción automática. R
 
 ---
 
+## 5.1 Promover a mano un candidato que el gate rechazó
+
+Cuando un cliente queda en revisión (`gate_fallo_no_promovido` o `reintentos_agotados`) y una persona revisa el candidato (el diff del Data Map y el detalle del gate) y lo considera bueno, no hace falta editar nada a mano:
+```bash
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/promote_data_map.py" --client maga_alto --list
+.venv/bin/python "experimental_proyects/Vera Intelligence/4. scripts/promote_data_map.py" --client maga_alto --reason "revisé el diff: solo cambia la descripción de X" --publish
+```
+Sin `--version` ni `--file` promueve el candidato más nuevo que la versión vigente. **No corre el gate con Gemini**: verifica solo que el candidato conserve la estructura del vigente y que todos sus campos existan en Postgres (`--skip-drift-check` omite esto último). Apunta `config.yaml` al candidato, marca como procesados los prompts pendientes (el refresco no vuelve a regenerar ese cambio), deja una entrada `promovido_manual` con la razón en `CAMBIOS_AUTOMATICOS` (con el comando para revertir) y, con `--publish`, hace commit y push. La razón es obligatoria. No borra ni pisa ninguna versión.
+
+---
+
 ## 6. Costo
 
 Medido el 2026-10-07 sobre el gate de los 19 clientes en su peor caso (todas las preguntas): US$1,09 en total, ≈US$0,06 por cliente (entre US$0,025 y US$0,10; Tigo US$0,20 por reintentos). Supone `gemini-3.7-flash` y tokens cacheados al 10 % del precio.

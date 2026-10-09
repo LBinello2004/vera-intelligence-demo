@@ -51,7 +51,7 @@ def current_version(clients_root: Path, client: str, project_root: Path) -> tupl
 def default_target(entries: list[dict], current: int, available: list[int]) -> int | None:
     """La versión anterior a la actual según el registro (la última promoción que dejó la actual); si no, la más alta menor que la actual."""
     for entry in reversed(entries):
-        if entry.get("tipo") == "promovido" and entry.get("version_nueva") == current and entry.get("version_anterior") is not None:
+        if entry.get("tipo") in ("promovido", "promovido_manual") and entry.get("version_nueva") == current and entry.get("version_anterior") is not None:
             return int(entry["version_anterior"])
     older = [v for v in available if v < current]
     return max(older) if older else None

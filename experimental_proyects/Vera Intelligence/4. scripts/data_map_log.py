@@ -72,7 +72,7 @@ def build_entry(*, tipo: str, client: str, old_version, new_version, old_file: s
                 gate: dict | None = None, model: str = "", attempts: int | None = None, reason: str = "",
                 now: datetime | None = None) -> dict:
     when = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    revert_to = old_version if tipo == "promovido" and old_version is not None else None
+    revert_to = old_version if tipo in ("promovido", "promovido_manual") and old_version is not None else None
     revert = (f'python "4. scripts/revert_data_map.py" --client {client} --to {revert_to}' if revert_to is not None else "")
     return {"fecha": when, "tipo": tipo, "cliente": client, "version_anterior": old_version, "version_nueva": new_version,
             "archivo_anterior": old_file, "archivo_nuevo": new_file, "prompts": prompts or [], "resumen": change_summary or {},
@@ -86,7 +86,7 @@ def _lines(label: str, mapping: dict) -> list[str]:
 
 
 def render_entry(entry: dict) -> str:
-    title = {"promovido": "Promovido", "revertido": "Revertido", "prompt_cosmetico": "Cambio de prompt cosmético (sin regenerar)"}.get(
+    title = {"promovido": "Promovido", "promovido_manual": "Promovido a mano", "revertido": "Revertido", "prompt_cosmetico": "Cambio de prompt cosmético (sin regenerar)"}.get(
         entry["tipo"], entry["tipo"])
     versions = ""
     if entry.get("version_anterior") is not None or entry.get("version_nueva") is not None:
