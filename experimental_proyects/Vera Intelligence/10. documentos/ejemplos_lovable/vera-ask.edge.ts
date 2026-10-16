@@ -8,6 +8,7 @@
 // Secretos a cargar en Supabase (Project Settings → Edge Functions → Secrets), nunca en el código ni en Lovable:
 //   VI_API_URL                   https://api.tu-dominio.com        (sin barra final)
 //   VI_API_KEY                   la clave de VI_API_KEYS de la API
+//   VI_ALLOWED_EMAILS            correos exactos permitidos, por ejemplo "management@tigo.com" (recomendado: solo esa cuenta)
 //   VI_ALLOWED_EMAIL_DOMAINS     opcional, por ejemplo "tigo.com.co,heyvera.ai"
 // SUPABASE_URL y SUPABASE_ANON_KEY ya los inyecta Supabase.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
@@ -15,6 +16,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 const API_URL = (Deno.env.get("VI_API_URL") ?? "").replace(/\/$/, "");
 const API_KEY = Deno.env.get("VI_API_KEY") ?? "";
 const ALLOWED = (Deno.env.get("VI_ALLOWED_EMAIL_DOMAINS") ?? "")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+const ALLOWED_EMAILS = (Deno.env.get("VI_ALLOWED_EMAILS") ?? "")
   .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 const cors = {
@@ -65,6 +69,8 @@ Deno.serve(async (req) => {
   if (error || !user) return json({ error: "unauthorized" }, 401);
 
   // 2) dominio permitido (opcional pero recomendado)
+  // Lista de correos exactos (p. ej. "management@tigo.com"): si está definida, SOLO esas cuentas pasan, aunque el dominio sea válido.
+  if (ALLOWED_EMAILS.length && !ALLOWED_EMAILS.includes((user.email ?? "").toLowerCase())) return json({ error: "forbidden" }, 403);
   const domain = (user.email ?? "").split("@")[1]?.toLowerCase() ?? "";
   if (ALLOWED.length && !ALLOWED.includes(domain)) return json({ error: "forbidden" }, 403);
 

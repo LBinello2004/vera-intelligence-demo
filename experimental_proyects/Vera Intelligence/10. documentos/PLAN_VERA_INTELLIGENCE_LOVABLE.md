@@ -18,9 +18,9 @@ Hay **tres capas, y solo la primera es el login que ya existe:** (1) sesión del
 
 | # | Decisión | Quién | Opciones / recomendación | Bloquea |
 |---|---|---|---|---|
-| D1 | Dónde corre la API | Lucas + Pedro | VM de Pedro (recomendada para el lunes: cero piezas nuevas) o servicio gestionado (aislado de la VM, un servicio más) | Fases 3 y 4b |
+| D1 | **DECIDIDO 2026-10-16: la VM de Pedro (Lucas tiene acceso).** Dónde corre la API | Lucas + Pedro | VM de Pedro (recomendada para el lunes: cero piezas nuevas) o servicio gestionado (aislado de la VM, un servicio más) | Fases 3 y 4b |
 | D2 | Cómo es el login del portal y cómo se identifica a un usuario de Tigo | Lucas (preguntarle a Lovable, solo lectura) | Prompt sugerido: "Explicame cómo funciona la autenticación de esta app, dónde se guardan los usuarios, si hay roles u organizaciones y cómo sé a qué cliente pertenece el usuario logueado. No cambies nada." | Fase 4c |
-| D3 | ¿El proyecto tiene backend (Lovable Cloud / Supabase) con secretos y funciones de servidor? | Lucas | Si no, activarlo; sin eso no hay dónde guardar la clave | Fase 4b |
+| D3 | **DECIDIDO: Supabase (lo confirmó Agus).** ¿El proyecto tiene backend (Lovable Cloud / Supabase) con secretos y funciones de servidor? | Lucas | Si no, activarlo; sin eso no hay dónde guardar la clave | Fase 4b |
 | D4 | Dirección HTTPS de la API (por ejemplo un subdominio de la empresa) y quién administra el DNS | Pedro | Con la VM: Caddy + dominio (certificado automático) o túnel de Cloudflare | Fase 3 |
 | D5 | Quiénes de Tigo lo ven el lunes y qué tope diario por usuario | Lucas | Lista corta de usuarios; 30 a 50 preguntas por usuario y día | Fase 2.2 |
 | D6 | Privacidad: confirmar que Tigo acepta que sus preguntas se procesen con Gemini y si se registran las preguntas | Lucas | Por defecto **no** se registra el texto de las preguntas (se puede encender) | Fase 2.3 |
@@ -142,3 +142,9 @@ Otros clientes (una instancia de la API por cliente, ver la guía), historial de
 2. **Claude:** terminar de revisar las 50 preguntas de Tigo y proponer la lista de correcciones (Fase 1.1).
 3. **Claude (si Lucas lo pide):** construir 2.1, 2.2 y 2.5 de la API (cambios chicos y bien delimitados) con sus tests.
 4. **Lucas/Agustin:** conseguir las 20 preguntas reales que Tigo hace hoy.
+
+
+## 12. Decisiones del 2026-10-16
+- Backend: Supabase. API: VM de Pedro (opción A). Acceso: solo `management@tigo.com` (secreto `VI_ALLOWED_EMAILS` en la Edge Function + opción de menú visible solo para esa cuenta). No se modifica nada más del portal.
+- Fuera de alcance por ahora: historial de conversaciones, gráficos guardados ("Gráficos autogenerados"), tablas nuevas en Supabase.
+- Siguiente camino crítico: Fase 3 en la VM (dependencias, `api.env`, `vi-api.service`, proxy HTTPS/dominio, D4) -> Fase 4b (función `vera-ask` + prompt B) -> prueba con `management@tigo.com`.

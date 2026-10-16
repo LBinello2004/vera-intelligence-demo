@@ -1,6 +1,6 @@
 # Conectar Vera Intelligence a Lovable (Tigo): API del agente + guía
 
-Estado al 2026-10-15. Pensado para leerlo con un LLM y ejecutarlo paso a paso.
+Estado al 2026-10-16. Pensado para leerlo con un LLM y ejecutarlo paso a paso.
 
 > El orden de trabajo, los responsables, los criterios de aceptación y los riesgos están en `PLAN_VERA_INTELLIGENCE_LOVABLE.md`.
 
@@ -13,9 +13,13 @@ Estado al 2026-10-15. Pensado para leerlo con un LLM y ejecutarlo paso a paso.
 - `10. documentos/ejemplos_lovable/`: función segura para Supabase (`vera-ask.edge.ts`), hook de React (`useVeraChat.ts`) y el prompt para Lovable (`PROMPT_PARA_LOVABLE.md`).
 - `4. scripts/requirements-api.txt`: dependencias extra (no se tocó el `requirements.txt` de Streamlit Cloud).
 
-**Falta decidir (hoy no se sabe):**
-1. **Qué proyecto de Lovable se usa** (el existente "Vera Insights Portal" u otro nuevo).
-2. **Dónde corre la API** (la VM de Pedro u otro servicio). Las dos opciones están descritas en la sección 5; el código es el mismo.
+**Decidido (2026-10-16):**
+1. El backend del portal es **Supabase** (confirmado por Agus). Proyecto: "Vera Insights Portal".
+2. La API corre en **la VM de Pedro** (Lucas ya tiene acceso). Pasos en la sección 5.
+3. **Solo la cuenta `management@tigo.com`** ve y usa la función; nada más del portal cambia. Control del lado servidor con el secreto `VI_ALLOWED_EMAILS`.
+4. **Sin historial** de conversaciones ni gráficos guardados por ahora (no hay tablas nuevas en Supabase).
+
+**Falta decidir:** dominio/HTTPS de la API (D4) y confirmar que el login es Supabase Auth con ese correo (D2).
 
 **Falta hacer cuando se decida (no está hecho):** desplegar, cargar los secretos, crear la función en Supabase, pegar el hook y el prompt en Lovable, y probar con un usuario de Tigo. Nada de esto se hizo.
 
@@ -70,7 +74,7 @@ python api_server.py          # escucha en 127.0.0.1:8080
 ```
 Sin `VI_API_KEYS` (o con claves de menos de 24 caracteres) la API **no arranca**: nunca se publica sin autenticación. Variables y valores por defecto: encabezado de `api_server.py` y `deploy_api/env.api.example`. Los tests: `python -m pytest "5. tests/test_api_server.py"`.
 
-## 5. Dónde correrla (decisión pendiente)
+## 5. Dónde correrla (decidido: la VM de Pedro, opción A)
 
 Requisitos comunes: Python 3.12, `pip install -r requirements.txt -r "experimental_proyects/Vera Intelligence/4. scripts/requirements-api.txt"`, **un solo proceso** (las sesiones y contadores viven en memoria), **HTTPS** hacia afuera, y los secretos fuera del repo.
 
@@ -88,15 +92,15 @@ Requisitos comunes: Python 3.12, `pip install -r requirements.txt -r "experiment
 
 **Opción B: servicio gestionado** (Cloud Run, Render, Fly, etc.) con el `Dockerfile` (instrucciones de construcción en su encabezado). Cargar los secretos en el panel del servicio, fijar **una sola instancia** y un **tiempo de espera de solicitud ≥ 60 s** (cada llamada de la API es corta; lo largo ocurre en segundo plano, pero una instancia que se apaga entre consulta y consulta pierde el pedido: configurar "al menos 1 instancia" o mínimo de CPU asignada). Ventaja: aislada de la VM. Costo: un servicio más que mantener.
 
-Recomendación: **A** para el lunes (menos piezas), y pasar a **B** si el uso crece.
+Decisión: **A** (la VM). La opción B queda solo como alternativa si el uso crece. Con un solo usuario (`management@tigo.com`) el tope de 50 preguntas por usuario y día y las 3 consultas simultáneas sobran.
 
 ## 6. Conectar Lovable (cuando se elija el proyecto)
 
-1. **Secretos en Supabase** (Project Settings → Edge Functions → Secrets): `VI_API_URL` (la URL HTTPS de la API, sin barra final), `VI_API_KEY` (una clave de `VI_API_KEYS`), y opcional `VI_ALLOWED_EMAIL_DOMAINS` (dominios de correo permitidos, por ejemplo los de Tigo y Vera).
+1. **Secretos en Supabase** (Project Settings → Edge Functions → Secrets): `VI_API_URL` (la URL HTTPS de la API, sin barra final), `VI_API_KEY` (una clave de `VI_API_KEYS`), y **`VI_ALLOWED_EMAILS=management@tigo.com`** (correos exactos permitidos; cualquier otra cuenta recibe 403). `VI_ALLOWED_EMAIL_DOMAINS` es opcional y queda como segunda barrera.
 2. **Crear la función** `vera-ask` con el código de `ejemplos_lovable/vera-ask.edge.ts` (desde el editor de Lovable o la CLI de Supabase). Mantener activa la verificación de JWT.
 3. **Pegar el hook** `useVeraChat.ts` en `src/hooks/` (ajustar la ruta del cliente de Supabase).
-4. **Pegar el prompt** de `PROMPT_PARA_LOVABLE.md` en el chat de Lovable para que arme la pantalla.
-5. **Probar** con un usuario de Tigo: pregunta simple, pregunta con gráfico, seguimiento ("¿y cuál de esas…?") y cancelar.
+4. **Pegar el prompt** de `ejemplos_lovable/PROMPT_PARA_LOVABLE.md` (versión vigente: prompts A y B, con la regla de tocar solo la cuenta de management) en el chat de Lovable.
+5. **Probar** con `management@tigo.com` (y confirmar que otra cuenta no ve la opción y la función le responde 403): pregunta simple, pregunta con gráfico, seguimiento ("¿y cuál de esas…?") y cancelar.
 6. Las credenciales de Lovable/Supabase **no se comparten por chat ni se guardan en el repo**; se cargan directamente en esos servicios.
 
 ## 7. Seguridad: lista de control

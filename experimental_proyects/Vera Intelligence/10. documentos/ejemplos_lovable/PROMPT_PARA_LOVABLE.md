@@ -1,4 +1,30 @@
-# Prompt para pegar en Lovable (pantalla de chat de Vera Intelligence para Tigo)
+# Prompt para Lovable: VERSIÓN VIGENTE (2026-10-16). Las versiones de abajo son anteriores y quedan solo como historial.
+
+Decisiones tomadas: el backend es Supabase (confirmado por Agus). La API corre en la VM de Pedro. **Solo la cuenta `management@tigo.com` ve y usa esta función; ninguna otra cuenta ni pantalla cambia.** No hay historial de conversaciones por ahora.
+
+Orden: (1) crear la Edge Function `vera-ask` y cargar sus secretos (ver `vera-ask.edge.ts`; incluye `VI_ALLOWED_EMAILS=management@tigo.com`), (2) pegar el prompt A para armar la pantalla con respuestas simuladas, (3) cuando la API esté en la VM, pegar el prompt B.
+
+## Prompt A (pantalla, respuestas simuladas)
+
+> REGLA PRINCIPAL: este cambio es SOLO para el usuario con el correo `management@tigo.com`. No modifiques nada más: ni el Dashboard, ni "Insights", ni los estilos, rutas, permisos, tablas, funciones o configuración existentes, ni lo que ven las demás cuentas. Para cualquier otra cuenta la aplicación debe quedar exactamente igual que hoy (la opción nueva ni siquiera aparece). Si algo de lo siguiente exigiera tocar otra cosa, no lo hagas y avisame.
+>
+> En el menú lateral (grupo "Principal"), debajo de "Insights Tigo", agregá una opción "Vera Intelligence" (ícono de chispa, mismo estilo que las otras), visible únicamente si el correo del usuario logueado es `management@tigo.com`, que lleve a la ruta `/vera-intelligence` dentro del mismo layout y con la misma protección de login. Si otra cuenta entra a esa ruta a mano, redirigila a la pantalla de inicio sin mostrar nada.
+>
+> Pantalla: encabezado "Vera Intelligence" con el subtítulo "Consultas en tiempo real de tu negocio" y un botón "+ Nueva" (reinicia la conversación). NO agregues botón "Historial" ni guardado de gráficos ni ninguna tabla nueva. Cuando el chat está vacío: ícono de chispa, título "Bienvenido a Vera Intelligence", el texto "Consultas en tiempo real de tu negocio. Hacé cualquier pregunta sobre tus datos, pedí gráficos, tablas y análisis." y 4 preguntas de ejemplo como tarjetas clicables: "¿Cuál es la tasa de compra por región?", "¿Cuáles son las principales causas de retiro de los clientes?", "¿Qué tiendas tienen mejor cumplimiento del protocolo?", "¿Qué trámites son los más frecuentes?". Abajo, un campo "Preguntale a Vera sobre tu negocio..." con botón de enviar (Enter envía).
+>
+> Mensajes del usuario a la derecha y respuestas a la izquierda. Mostrá cada respuesta como Markdown (negritas, listas, tablas) y los `charts` debajo con Recharts (`bar`/`hbar` con `labels` y `values`; `line`/`area`; `pie`/`donut`; `grouped_bar`/`stacked_bar` con `series` [{name, values}]; `scatter`/`bubble` con `x_values`, `values`, `sizes`). Las `suggestions` como chips clicables bajo la respuesta. Mientras responde: indicador con el texto de `progress` y botón "Cancelar" (una respuesta puede tardar hasta 4 minutos; no bloquees la pantalla). Errores con estilo de aviso y sin detalles técnicos. Solo consulta, sin edición ni borrado. Español, estilo de la app, bien en celular.
+>
+> Por ahora la respuesta es SIMULADA: todo el acceso al análisis va en un único archivo `src/lib/veraClient.ts` con `ask(question, sessionId?)` (devuelve `{jobId, sessionId}`), `status(jobId)` (devuelve `{status: "running"|"done"|"error"|"cancelled", progress, answer, charts, suggestions, message}`) y `cancel(jobId)`; que hoy devuelvan datos de ejemplo (3 segundos con el progreso "Consultando los datos", una respuesta en Markdown con una lista, un gráfico de barras y 3 sugerencias).
+
+## Prompt B (conectar de verdad, cuando la API ya corre en la VM)
+
+> Mismo alcance: solo `management@tigo.com`; no toques nada más. Reemplazá el contenido de `src/lib/veraClient.ts` para que `ask`, `status` y `cancel` llamen a la función `vera-ask` con `supabase.functions.invoke` (acciones `ask`, `status`, `cancel`; también existen `reset` y `feedback`), sin tocar el resto de la pantalla. Una respuesta que no es 2xx llega como `error` con la Response en `error.context`: leé ese cuerpo. Usá como referencia `useVeraChat.ts`.
+
+Los secretos (`VI_API_URL`, `VI_API_KEY`, `VI_ALLOWED_EMAILS`) los carga una persona en el panel de secretos de Supabase; no van por chat ni en el código. El control real de acceso es el de la Edge Function (403 para cualquier otra cuenta); ocultar el menú es solo comodidad.
+
+---
+
+# (Anterior) Prompt para pegar en Lovable (pantalla de chat de Vera Intelligence para Tigo)
 
 Antes de pegarlo: crear en Supabase la función `vera-ask` con el código de `vera-ask.edge.ts` y cargar sus secretos (ver ese archivo).
 El hook `useVeraChat.ts` de este directorio puede pegarse tal cual en `src/hooks/`.
