@@ -393,3 +393,74 @@ test("hook: con la clave del servidor mal cargada NO dice que la sesión venció
   assert.equal(hook.current.busy, false);
   await loadEdge();
 });
+
+// ================================================================ cliente de la pantalla de Tigo (veraTigoClient.ts) y lista de correos de la función
+let clientModule = 0;
+async function loadClient(supabase) {
+  globalThis.__supabase = supabase;
+  globalThis.__supabase_proxy = { functions: { invoke: (...a) => globalThis.__supabase.functions.invoke(...a) } };
+  let src = readFileSync(join(EJ, "veraTigoClient.ts"), "utf-8");
+  const orig = src;
+  src = src.replace(/import \{ supabase \} from "@\/integrations\/supabase\/client";[^\n]*/, "const supabase = globalThis.__supabase_proxy;");
+  assert.notEqual(src, orig);
+  const file = join(OUT, `cliente_${++clientModule}.ts`);
+  writeFileSync(file, src);
+  return import(pathToFileURL(file).href);
+}
+async function poll(client, jobId) {
+  for (let i = 0; i < 200; i++) {
+    const s = await client.status(jobId);
+    if (s.status !== "running") return s;
+    await sleep(30);
+  }
+  throw new Error("no terminó");
+}
+
+test("cliente de Tigo: ask + status devuelven respuesta, gráfico y sugerencias con la forma que usa la pantalla", async () => {
+  const s = session();
+  const client = await loadClient(makeSupabase(handler, s));
+  const { jobId, sessionId } = await client.ask("¿Cuántas conversaciones hubo por región?");
+  assert.ok(jobId && sessionId);
+  const done = await poll(client, jobId);
+  assert.equal(done.status, "done");
+  assert.match(done.answer, /^respuesta 1 a:/);
+  assert.equal(done.charts?.[0]?.type, "hbar");
+  assert.deepEqual(done.suggestions, ["¿Y por región?"]);
+  const next = await client.ask("seguimiento", sessionId);
+  assert.equal(next.sessionId, sessionId);
+  assert.match((await poll(client, next.jobId)).answer, /^respuesta 2 a: seguimiento/);
+});
+
+test("cliente de Tigo: una sesión vencida se reemplaza sin error y un error de la API sale como mensaje claro", async () => {
+  const s = session();
+  const client = await loadClient(makeSupabase(handler, s));
+  const { jobId } = await client.ask("con sesión inexistente", "sesion-que-no-existe-0000");
+  assert.match((await poll(client, jobId)).answer, /con sesión inexistente/);
+  await assert.rejects(client.status("job-que-no-existe"), /Se perdió esa consulta/);
+  for (let i = 0; i < 3; i++) await poll(client, (await client.ask(`p${i}`)).jobId);   // con la primera pregunta, 4 = el tope de la API de prueba
+  await assert.rejects(client.ask("una de más"), /tope diario/i);
+});
+
+test("cliente de Tigo: cancelar corta el pedido y la API lo registra como cancelado", async () => {
+  const s = session();
+  const client = await loadClient(makeSupabase(handler, s));
+  const { jobId } = await client.ask("hang");
+  await sleep(300);
+  await client.cancel(jobId);
+  const end = await poll(client, jobId);
+  assert.equal(end.status, "cancelled");
+});
+
+test("edge: con VI_ALLOWED_EMAILS solo pasa el correo exacto, aunque el dominio sea válido", async () => {
+  const strict = await loadEdge({ VI_ALLOWED_EMAILS: "management@tigo.com", VI_ALLOWED_EMAIL_DOMAINS: "" });
+  try {
+    const ok = await edgeRequest(strict, { action: "ask", question: "hola" }, session(newUser(), "Management@Tigo.com"));
+    assert.ok(ok.status >= 200 && ok.status < 300, `status ${ok.status}`);
+    for (const email of ["ana@tigo.com", "management@tigo.com.co", "management@heyvera.ai"]) {
+      const res = await edgeRequest(strict, { action: "ask", question: "hola" }, session(newUser(), email));
+      assert.equal(res.status, 403, email);
+    }
+  } finally {
+    env.VI_ALLOWED_EMAILS = "";   // no contamina las demás pruebas
+  }
+});
