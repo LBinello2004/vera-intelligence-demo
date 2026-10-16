@@ -138,3 +138,6 @@ Decisión: **A** (la VM). La opción B queda solo como alternativa si el uso cre
 
 ## 11. Búsqueda vectorial APAGADA (2026-10-16)
 Por decisión de Lucas la API de Tigo arranca **solo con SQL** (`VI_API_VECTOR_SEARCH=0` es el default). Las preguntas cualitativas se responden con SQL y reglas de negocio, sin ejemplos de conversaciones, y ya no hacen la espera de 2 a 4 minutos. Las menciones a la búsqueda encendida en las secciones 1, 8 y 9 describen el estado anterior. Para encenderla: `VI_API_VECTOR_SEARCH=1` en `api.env` y reiniciar. La app de Streamlit de Tigo no se tocó (`2. clientes/tigo_alto/config.yaml` sigue con la búsqueda configurada).
+
+## 12. Supabase está dentro de Lovable (2026-10-16)
+Agus confirmó que no hay un Supabase aparte: es el de Lovable Cloud. En la sección 6, "crear la función" y "cargar secretos en Supabase" se hacen desde Lovable (prompt 0 de `ejemplos_lovable/PROMPT_PARA_LOVABLE.md` y su formulario de secretos), no desde un panel externo.

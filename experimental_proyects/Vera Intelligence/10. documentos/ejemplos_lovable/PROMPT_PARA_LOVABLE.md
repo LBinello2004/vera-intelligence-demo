@@ -1,8 +1,19 @@
 # Prompt para Lovable: VERSIÓN VIGENTE (2026-10-16). Las versiones de abajo son anteriores y quedan solo como historial.
 
-Decisiones tomadas: el backend es Supabase (confirmado por Agus). La API corre en la VM de Pedro. **Solo la cuenta `management@tigo.com` ve y usa esta función; ninguna otra cuenta ni pantalla cambia.** No hay historial de conversaciones por ahora.
+Decisiones tomadas: el backend es el Supabase de Lovable Cloud (confirmado por Agus). La API corre en la VM de Pedro. **Solo la cuenta `management@tigo.com` ve y usa esta función; ninguna otra cuenta ni pantalla cambia.** No hay historial de conversaciones por ahora.
 
-Orden: (1) crear la Edge Function `vera-ask` y cargar sus secretos (ver `vera-ask.edge.ts`; incluye `VI_ALLOWED_EMAILS=management@tigo.com`), (2) pegar el prompt A para armar la pantalla con respuestas simuladas, (3) cuando la API esté en la VM, pegar el prompt B.
+Orden: (1) pegar el prompt A para armar la pantalla con respuestas simuladas (no necesita la API), (2) cuando haya URL HTTPS, pegar el prompt 0 (crea la función `vera-ask` y pide los secretos), (3) pegar el prompt B (conecta la pantalla a la función).
+
+## Aclaración (2026-10-16, Agus): no hay un Supabase aparte
+El Supabase del portal es el que viene dentro de Lovable (Lovable Cloud). No hay un panel externo al que dar acceso: la función y los secretos se crean desde Lovable.
+
+## Prompt 0 (crear la función `vera-ask` y pedir los secretos; se hace cuando ya hay URL HTTPS de la API)
+
+> Mismo alcance de siempre: solo `management@tigo.com`; no modifiques nada más. Creá una función de servidor (edge function) llamada `vera-ask` con exactamente el código que pego abajo (no lo reescribas ni "mejores"). Necesita tres secretos: `VI_API_URL`, `VI_API_KEY` y `VI_ALLOWED_EMAILS`. NO me pidas los valores en el chat: mostrame el formulario seguro de secretos de Lovable para que los escriba yo ahí. `VI_ALLOWED_EMAILS` va a ser `management@tigo.com`. Después decime cómo la invoco desde el frontend.
+>
+> (pegar acá el contenido completo de `vera-ask.edge.ts`)
+
+Los valores los tipea una persona en el formulario de secretos de Lovable (`VI_API_URL` = `https://SUBDOMINIO` sin barra final; `VI_API_KEY` = la clave de la API; `VI_ALLOWED_EMAILS` = `management@tigo.com`). Si Lovable no ofrece ese formulario, no pegar valores en el chat: pedir ayuda a Agus.
 
 ## Prompt A (pantalla, respuestas simuladas)
 
