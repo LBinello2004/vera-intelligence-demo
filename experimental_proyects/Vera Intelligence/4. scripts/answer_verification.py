@@ -522,6 +522,54 @@ def verify_answer(answer, store, *, current_ids=None, rulebook_texts=()):
     return verdict
 
 
+SALVAGE_NOTE = ("Nota: no pude respaldar con los datos las cifras de esta respuesta, así que las quité y te dejo solo la parte cualitativa. "
+                "Si necesitás un número puntual, pedime ese indicador por separado.")
+SALVAGE_MIN_CHARS = 280      # menos texto útil que esto no vale la pena mostrarlo: se vuelve al mensaje de siempre
+_LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
+_YEAR = re.compile(r"\b20[2-3]\d\b")
+_HEADING = re.compile(r"^\s*(?:#{1,6}\s|\*\*[^*]{1,80}\*\*\s*:?\s*$)")
+
+
+def salvage_qualitative(answer, store, *, current_ids=None, rulebook_texts=()):
+    """Rescate (2026-10-16) cuando la verificación de cifras agotó los reintentos: en vez de descartar TODA la respuesta (hallazgo real: una pregunta
+    de coaching, "¿qué hago cuando un cliente se quiere dar de baja?", terminó en un mensaje sin ningún consejo), se conserva la parte cualitativa
+    sin ninguna cifra. Quita bloques de evidencia, gráficos y sugerencias, las líneas con números (salvo los de las listas numeradas, las fechas y los
+    años), las tablas, las frases de certeza estadística y, dentro de los patrones de la búsqueda, el lenguaje de frecuencia; después quita los
+    encabezados que quedaron vacíos. El resultado vuelve a pasar por `verify_answer`: si todavía tiene errores, o quedó muy poco, devuelve None."""
+    text = OTHER_FENCES.sub("", answer or "")
+    kept: list[str] = []
+    in_patterns = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append("")
+            continue
+        if stripped.startswith("|") or set(stripped) <= set("-–—_ "):
+            continue
+        body = _YEAR.sub("", DATES.sub("", _LIST_MARKER.sub("", stripped)))
+        if NUMBER.search(body) or CONFIDENT.search(stripped):
+            continue
+        if PATTERNS_LABEL.search(stripped):
+            in_patterns = True
+        elif in_patterns and FREQUENCY.search(stripped):
+            continue
+        kept.append(line.rstrip())
+    out: list[str] = []
+    for i, line in enumerate(kept):
+        if _HEADING.match(line):
+            nxt = next((l for l in kept[i + 1:] if l.strip()), None)
+            if nxt is None or _HEADING.match(nxt):
+                continue
+        out.append(line)
+    body_text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    if len(re.sub(r"\s+", "", body_text)) < SALVAGE_MIN_CHARS:
+        return None
+    candidate = SALVAGE_NOTE + "\n\n" + body_text
+    if verify_answer(candidate, store, current_ids=current_ids, rulebook_texts=rulebook_texts).errors:
+        return None
+    return candidate
+
+
 def with_limitations(verdict):
     if not verdict.limitations:
         return verdict.answer

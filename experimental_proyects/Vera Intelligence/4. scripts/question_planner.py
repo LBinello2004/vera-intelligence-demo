@@ -59,7 +59,7 @@ venta", "de qué productos hablan", "mes por separado"). Una por ítem, en orden
 de la lista que la mide DIRECTAMENTE; o una LISTA de nombres exactos si la métrica se mide con VARIOS campos de la lista (ej. "los criterios del checklist" = los campos a01, a02...; "las conductas de riesgo" = los t01, t02...); o null>, "nota": <si campo es null: qué campo parecido existe y mide OTRA \
 cosa, o "ninguno">}}. Sólo campo si mide lo mismo; "promociones en general" NO mide "cuotas sin interés"; montos, \
 tickets, precios y diferencias de precio NO existen salvo que un campo lo diga; NPS puntaje no existe si sólo hay \
-indicadores de proceso. Los atributos para agrupar o filtrar que figuran en DIMENSIONES (asesor, tienda, región, sector...) existen: "por región", "por asesor" o "el mejor asesor" NO son una métrica faltante (la métrica es la tasa que corresponda; "mejor" = la tasa que nombre el usuario o, si no nombra ninguna, la tasa de cierre o compra). Lo CUALITATIVO ("qué dicen", "qué ofertas mencionan", "por qué") NO es una métrica faltante: \
+indicadores de proceso. Los atributos para agrupar o filtrar que figuran en DIMENSIONES (asesor, tienda, región, sector...) existen: "por región", "por asesor" o "el mejor asesor" NO son una métrica faltante (la métrica es la tasa que corresponda; "mejor" = la tasa que nombre el usuario o, si no nombra ninguna, la tasa de cierre o compra). Los CONTEOS de conversaciones ("cuántas", "volumen", "cantidad de atenciones" o de conversaciones, "movimiento") se miden con COUNT sobre las vistas: NO son una métrica faltante y no los listes como inexistentes; una afluencia física (personas que entraron, turnos) no existe, pero no la nombres si el usuario no la pidió. Lo CUALITATIVO ("qué dicen", "qué ofertas mencionan", "por qué") NO es una métrica faltante: \
 va en "partes" con usar_busqueda=true. Sólo listá métricas cuando la pregunta pide cuantificar.
 5. "alcance": {{"entidades": [{{"tipo": "tienda"|"vendedor"|"producto"|"otro", "texto": <como lo nombra>}}] \
 (nombres propios a buscar; si no aparecen, el agente lo dice y no sustituye), "periodo": <período pedido, \
@@ -104,7 +104,7 @@ puntual que sólo el usuario conoce; pedir un panorama usa el plural o "los/las"
   (b) INDICADOR AUSENTE EN UNA COMPARACIÓN O EVOLUCIÓN: pide comparar, ordenar o ver cómo cambió algo ("compará \
 enero con febrero", "¿mejoró?", "¿subió o bajó?", "cómo evolucionó") sin decir QUÉ medir ni sobre qué, y el contexto no \
 trae un indicador obvio. Si nombra el indicador ("la tasa de cierre", "las ventas perdidas", "las conversaciones") o \
-nombra los dos objetos a comparar con nombre propio, NO es crítico.
+nombra los dos objetos a comparar con nombre propio, NO es crítico. Una pregunta GENERAL de evolución sobre el negocio, sin un objeto particular ("¿estamos mejorando o empeorando?", "¿cómo venimos?"), tampoco es crítica: se responde con los indicadores principales (tasa de compra o de cierre y, si existe, la retención), el último mes contra el mes anterior, declarado.
   (c) INTERPRETACIONES DISTINTAS: hay dos lecturas que dan respuestas MUY diferentes y ninguna es la obvia.
 NUNCA es crítico (se responde con un valor por defecto sensato, declarado): un período faltante (todo el histórico, \
 declarado), un pedido de panorama general ("¿cómo está el negocio?", "dame un resumen de la semana", "¿cómo vienen los \
@@ -182,6 +182,23 @@ def build_field_catalog(data_map: dict, *, max_desc: int = 110) -> tuple[str, se
     return "\n".join(lines), names
 
 
+def _resolve_field(name: str, known_fields: set[str]) -> str | None:
+    """Nombre real de un campo que el planificador nombró, a veces recortado (`i22_dolor_o_molestia_principal` por `i22_dolor_o_molestia_principal_del_cliente`):
+    el nombre exacto, o el ÚNICO campo real del que es prefijo (o que es prefijo de él). None si no existe, es muy corto o es ambiguo."""
+    bare = str(name).split(".")[-1].strip().lower()
+    if bare in known_fields:
+        return bare
+    if len(bare) < 8:
+        return None
+    candidates = [k for k in known_fields if k.startswith(bare) or (len(k) >= 8 and bare.startswith(k))]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _with_source(original: str, real: str) -> str:
+    """Conserva el prefijo de fuente que haya puesto el planificador (`fuente.campo`)."""
+    return (str(original).rsplit(".", 1)[0] + "." + real) if "." in str(original) else real
+
+
 def ground_plan(plan: dict, known_fields: set[str]) -> dict:
     """Degrada a `campo: null` cualquier campo que el planificador nombre y no exista de verdad."""
     metricas = plan.get("metricas")
@@ -195,11 +212,13 @@ def ground_plan(plan: dict, known_fields: set[str]) -> dict:
         if campo is None:
             continue
         if isinstance(campo, list):                      # familia de campos: se conservan solo los que existen de verdad
-            real = [c for c in campo if isinstance(c, str) and str(c).split(".")[-1].strip().lower() in known_fields]
+            real = [_with_source(c, r) for c in campo if isinstance(c, str) and (r := _resolve_field(c, known_fields))]
             item["campo"] = None if not real else (real[0] if len(real) == 1 else real)
             continue
-        bare = str(campo).split(".")[-1].strip().lower()
-        if bare not in known_fields:
+        resolved = _resolve_field(campo, known_fields)
+        if resolved:
+            item["campo"] = _with_source(campo, resolved)
+        else:
             item["campo"] = None
             item["nota"] = f"el campo '{campo}' no existe; " + str(item.get("nota") or "")
     return plan

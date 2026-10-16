@@ -32,7 +32,25 @@ async function callApi(userId: string, path: string, init: RequestInit = {}) {
     headers: { ...(init.headers ?? {}), Authorization: `Bearer ${API_KEY}`, "X-VI-User": userId, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(20_000),
   });
-  return { status: res.status, body: await res.json().catch(() => ({ error: "bad_gateway" })) };
+  const body = await res.json().catch(() => ({ error: "bad_gateway" }));
+  // Un 401 de la API significa que la CLAVE del servidor (VI_API_KEY) es incorrecta o fue rotada: es un problema de configuración, no del usuario.
+  // Si se le pasara tal cual al navegador, el usuario vería "tu sesión venció" y volver a ingresar no arreglaría nada. Se registra para quien opera
+  // el servicio y al usuario se le devuelve un 502 genérico. Lo mismo si la API dice que falta el identificador del usuario (error nuestro).
+  if (res.status === 401 || body?.error === "user_required") {
+    console.error(`vera-ask: la API rechazó el pedido por configuración (${res.status} ${body?.error ?? ""}); revisar VI_API_KEY y el encabezado X-VI-User`);
+    return { status: 502, body: { error: "bad_gateway", message: "No pude comunicarme con el análisis. Intentá de nuevo en unos minutos." } };
+  }
+  return { status: res.status, body };
+}
+
+// Quién pregunta (tienda, asesor, rol), para que "mi tienda", "yo" o "mi equipo" se resuelvan sin repreguntar. Sale SIEMPRE de `app_metadata`, que solo
+// puede escribir el servidor (nunca el usuario), y jamás de lo que llega en el pedido: el navegador no puede fijarlo ni cambiarlo. Si el portal todavía
+// no guarda estos datos, no se manda nada y la API repregunta como antes. Nombres de los campos a confirmar con el portal real: store, employee_name, vi_role.
+function userContext(user: { app_metadata?: Record<string, unknown> }) {
+  const meta = user.app_metadata ?? {};
+  const pick = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 100) : undefined);
+  const ctx = { store: pick(meta.store), employee: pick(meta.employee_name), role: pick(meta.vi_role) };
+  return Object.values(ctx).some(Boolean) ? ctx : undefined;
 }
 
 Deno.serve(async (req) => {
@@ -59,7 +77,7 @@ Deno.serve(async (req) => {
       if (typeof body.question !== "string" || !body.question.trim()) return json({ error: "bad_request" }, 400);
       const r = await callApi(user.id, "/v1/ask", {
         method: "POST",
-        body: JSON.stringify({ question: body.question, session_id: body.session_id ?? undefined }),
+        body: JSON.stringify({ question: body.question, session_id: body.session_id ?? undefined, user_context: userContext(user) }),
       });
       return json(r.body, r.status);
     }

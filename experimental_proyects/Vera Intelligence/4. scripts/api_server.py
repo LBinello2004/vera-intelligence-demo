@@ -7,7 +7,7 @@ otra) que guarda la clave y manda el identificador del usuario. Guía completa: 
 Contrato (las rutas /v1 piden `Authorization: Bearer <clave>` o `X-API-Key`, y `X-VI-User: <id del usuario>` si VI_API_REQUIRE_USER=1):
     GET    /health                 sin autenticación: {"status", "client", "vector_search", "warm"}
     GET    /v1/status              estado del servicio (preguntas en curso, sesiones, Data Map vigente, tope del día)
-    POST   /v1/ask                 {"question", "session_id"?} -> 202 {"job_id", "session_id"}
+    POST   /v1/ask                 {"question", "session_id"?, "user_context"?: {"store", "employee", "role"}} -> 202 {"job_id", "session_id"}
     GET    /v1/jobs/{job_id}       {"status": queued|running|done|error|cancelled, "progress", "answer", "charts", "suggestions", ...}
     POST   /v1/jobs/{job_id}/cancel
     POST   /v1/feedback            {"job_id", "rating": "up"|"down", "comment"?}
@@ -267,6 +267,32 @@ class Job:
     control: object | None = None
 
 
+CONTEXT_FIELDS = (("store", "tienda"), ("employee", "asesor"), ("role", "rol"))
+
+
+def _clean_context_value(value, limit: int = 100) -> str | None:
+    """Un dato de contexto del usuario (tienda, asesor, rol): solo letras, números, espacios y puntuación simple; sin saltos de línea, comillas
+    ni corchetes (no puede escapar de la línea de contexto ni inyectar instrucciones); recortado a `limit` caracteres."""
+    if not isinstance(value, str):
+        return None
+    cleaned = "".join(c for c in value if c.isalnum() or c in " .,-_'/()&")
+    cleaned = " ".join(cleaned.split())[:limit].strip()
+    return cleaned or None
+
+
+def build_context_line(raw) -> str:
+    """Línea que se antepone a la pregunta con quién pregunta (tienda, asesor, rol), para resolver "mi tienda", "yo" o "mi equipo" sin repreguntar.
+    Estos datos los arma la función de Supabase desde datos del usuario que el usuario NO puede editar (`app_metadata`), nunca desde lo que escribe.
+    Devuelve "" si no hay nada usable."""
+    if not isinstance(raw, dict):
+        return ""
+    parts = [f"{label} «{value}»" for key, label in CONTEXT_FIELDS if (value := _clean_context_value(raw.get(key)))]
+    if not parts:
+        return ""
+    return ("[Datos de quien pregunta, tomados del sistema y no escritos por esa persona; usalos para resolver «mi tienda», «yo», «mi equipo» y similares: "
+            + "; ".join(parts) + ".]")
+
+
 def key_id(key: str) -> str:
     """Identificador estable y no reversible de una clave (contadores y registros; la clave nunca se registra)."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:10]
@@ -438,15 +464,15 @@ class ApiState:
             self.sessions[sid] = s
             return sid, s
 
-    def submit(self, question: str, sid: str, session: Session, owner: Owner) -> Job:
+    def submit(self, question: str, sid: str, session: Session, owner: Owner, context: str = "") -> Job:
         job = Job(job_id=uuid.uuid4().hex, session_id=sid, owner=owner, created=self.clock())
         with self.lock:
             self.jobs[job.job_id] = job
             self.questions[job.job_id] = question
-        self.pool.submit(self._run, job, session, question)
+        self.pool.submit(self._run, job, session, question, context)
         return job
 
-    def _run(self, job: Job, session: Session, question: str) -> None:
+    def _run(self, job: Job, session: Session, question: str, context: str = "") -> None:
         with session.lock:                              # una pregunta a la vez por sesión (el historial es de la sesión)
             if job.status == "cancelled":
                 self._finish(job)
@@ -459,7 +485,7 @@ class ApiState:
             timer.start()
             try:
                 answer, charts, suggestions = self.agent.ask(
-                    session.chat, question, session_id=job.session_id, interaction_id="api_" + job.job_id[:16],
+                    session.chat, (context + "\n" + question) if context else question, session_id=job.session_id, interaction_id="api_" + job.job_id[:16],
                     on_tool_call=lambda name: self._progress(job, name), control=control)
                 if job.status == "running":
                     job.answer, job.charts, job.suggestions, job.status = answer, charts, suggestions, "done"
@@ -669,6 +695,10 @@ def create_app(settings: Settings, agent: Agent, **state_kwargs) -> Starlette:
         session_id = body.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             return _error(400, "bad_request", "\"session_id\" debe ser texto.")
+        raw_context = body.get("user_context")
+        if raw_context is not None and not isinstance(raw_context, dict):
+            return _error(400, "bad_request", "\"user_context\" debe ser un objeto con store, employee y role (texto).")
+        context_line = build_context_line(raw_context)
         if state.draining:
             return _error(503, "restarting", "El servicio se está actualizando; reintentá en unos segundos.", {"Retry-After": "20"})
         if state.active_jobs() >= settings.max_queue:
@@ -685,7 +715,7 @@ def create_app(settings: Settings, agent: Agent, **state_kwargs) -> Starlette:
             return _error(429, "daily_limit" if denied == "key" else "user_daily_limit", "Se alcanzó el tope diario de preguntas.")
         if session is None:
             session_id, session = state.create_session(owner)
-        job = state.submit(question, session_id, session, owner)
+        job = state.submit(question, session_id, session, owner, context_line)
         log.info("ask job=%s key=%s user=%s%s", job.job_id[:8], owner[0], owner[1], f" q={question!r}" if settings.log_questions else "")
         return _json({"job_id": job.job_id, "session_id": session_id, "status": job.status}, 202)
 
