@@ -248,3 +248,28 @@ Si todo pasa, **Publicar** en Lovable.
 | "Hay muchas consultas en curso" | Tope de cola o de concurrencia: normal bajo carga |
 
 Para cortar el acceso rápido sin apagar nada: poner un correo inexistente en `VI_ALLOWED_EMAILS`. Para apagar la API: `systemctl --user stop vi-api` en la VM.
+
+## 5. Plan B si Emiliano no llega a tiempo: túnel rápido de Cloudflare (sin sudo, sin dominio, sin abrir puertos)
+
+Solo para salir del paso: **la dirección cambia cada vez que se reinicia el túnel o la VM** (hay que actualizar `VI_API_URL` en el formulario de secretos de Lovable) y el tráfico pasa por Cloudflare (ver la decisión de privacidad D6 del plan). La API sigue exigiendo su clave. Se hace desde el usuario de Lucas en la VM (descarga el programa oficial de Cloudflare a `~/bin`):
+
+```bash
+mkdir -p ~/bin && cd ~/bin && A=$(uname -m) && case "$A" in x86_64) F=cloudflared-linux-amd64;; aarch64) F=cloudflared-linux-arm64;; *) echo "arquitectura no soportada: $A"; false;; esac && curl -fsSL -o cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/$F" && chmod +x cloudflared && ./cloudflared --version
+```
+```bash
+cat > ~/.config/systemd/user/vi-tunnel.service <<'EOT'
+[Unit]
+Description=Tunel HTTPS de prueba hacia la API de Vera Intelligence
+After=vi-api.service
+
+[Service]
+ExecStart=%h/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOT
+systemctl --user daemon-reload && systemctl --user enable --now vi-tunnel && sleep 12 && journalctl --user -u vi-tunnel -n 40 --no-pager | grep -o "https://[a-z0-9-]*\.trycloudflare\.com" | tail -1
+```
+La dirección que imprime es el `VI_API_URL` (sin barra final). Probar desde la PC: `curl.exe -s https://LA-DIRECCION/health`. Cuando Emiliano publique el subdominio fijo, se cambia `VI_API_URL` y se apaga el túnel (`systemctl --user disable --now vi-tunnel`).
