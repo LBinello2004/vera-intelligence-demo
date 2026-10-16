@@ -149,11 +149,11 @@ class SettingsTests(unittest.TestCase):
                 api_server.Settings.from_env()
             os.environ["VI_API_KEYS"] = f"{KEY}, {OTHER}"
             s = api_server.Settings.from_env()
-            self.assertEqual((s.api_keys, s.client, s.vector_search, s.require_user), ((KEY, OTHER), "tigo_alto", True, True))
+            self.assertEqual((s.api_keys, s.client, s.vector_search, s.require_user), ((KEY, OTHER), "tigo_alto", False, True))
             self.assertEqual((s.daily_limit, s.user_daily_limit, s.user_max_concurrent, s.job_timeout_s), (200, 50, 2, 420))
-            os.environ["VI_API_VECTOR_SEARCH"], os.environ["VI_API_REQUIRE_USER"] = "0", "0"
+            os.environ["VI_API_VECTOR_SEARCH"], os.environ["VI_API_REQUIRE_USER"] = "1", "0"
             s = api_server.Settings.from_env()
-            self.assertEqual((s.vector_search, s.require_user), (False, False))
+            self.assertEqual((s.vector_search, s.require_user), (True, False))
         finally:
             for k, v in old.items():
                 os.environ.pop(k, None)

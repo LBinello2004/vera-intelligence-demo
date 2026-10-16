@@ -1,6 +1,6 @@
 """API HTTP del agente de Vera Intelligence para conectarlo a un front externo (Lovable, 2026-10-15).
 
-Un proceso atiende UN cliente (por defecto `tigo_alto`, con la búsqueda vectorial del cliente ENCENDIDA, como en la demo), igual que la
+Un proceso atiende UN cliente (por defecto `tigo_alto`, con la búsqueda vectorial APAGADA desde 2026-10-16: solo SQL; se enciende con VI_API_VECTOR_SEARCH=1), igual que la
 app de Streamlit. El front NUNCA llama a esta API desde el navegador: lo hace una función del lado servidor (Supabase Edge Function u
 otra) que guarda la clave y manda el identificador del usuario. Guía completa: `10. documentos/API_LOVABLE.md`; plan: `PLAN_VERA_INTELLIGENCE_LOVABLE.md`.
 
@@ -23,7 +23,7 @@ terminen las en curso y se cierra para que el supervisor (systemd Restart=always
 Variables de entorno (ninguna clave va en el repo):
     VI_API_KEYS              claves aceptadas, separadas por coma, de al menos 24 caracteres (obligatoria)
     VI_API_CLIENT            carpeta del cliente (default tigo_alto)
-    VI_API_VECTOR_SEARCH     "0" para apagar la búsqueda vectorial del cliente (default "1": encendida)
+    VI_API_VECTOR_SEARCH     "1" para encender la búsqueda vectorial del cliente (default "0": apagada, solo SQL)
     VI_API_REQUIRE_USER      "0" para no exigir X-VI-User (default "1": se exige)
     VI_API_MAX_CONCURRENT    preguntas procesándose a la vez en el servicio (default 3)
     VI_API_USER_MAX_CONCURRENT  preguntas en curso (en cola o corriendo) por usuario (default 2)
@@ -137,7 +137,7 @@ class Settings:
         return cls(
             api_keys=keys,
             client=(os.environ.get("VI_API_CLIENT") or "tigo_alto").strip(),
-            vector_search=_flag("VI_API_VECTOR_SEARCH", "1"),
+            vector_search=_flag("VI_API_VECTOR_SEARCH", "0"),
             require_user=_flag("VI_API_REQUIRE_USER", "1"),
             max_concurrent=max(1, _env_int("VI_API_MAX_CONCURRENT", 3)),
             user_max_concurrent=max(1, _env_int("VI_API_USER_MAX_CONCURRENT", 2)),
