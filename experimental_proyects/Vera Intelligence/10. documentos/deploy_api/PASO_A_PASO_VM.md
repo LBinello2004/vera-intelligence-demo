@@ -1,158 +1,94 @@
-# Paso a paso: la API de Vera Intelligence en la VM (2026-10-16)
+# Paso a paso: la API de Vera Intelligence en la VM (armado real, 2026-10-16)
 
-Para quien la arma (Lucas, con acceso a la VM de Pedro). Sirve también para dárselo a un LLM. **Nada de esto se probó todavía en Linux**: el código de la API sí se probó en Windows (39 tests y corridas reales contra Tigo). Antes de empezar, leer `../API_LOVABLE.md` (secciones 3, 5 y 7).
+Esto es lo que se hizo y funcionó en la VM de AWS (Ubuntu 24.04, Python 3.12, 2 CPU, 7,6 GB). Reemplaza a la versión anterior, que suponía un servicio de sistema con `sudo`. El repo es **público**: acá no van hostnames, usuarios ni claves.
 
-**Regla:** ningún valor secreto va en el repo ni en el chat. Se escriben a mano, en la VM, en `/etc/vera-intelligence/api.env`, y en el panel de secretos de Supabase.
+Estado: API corriendo como **servicio de usuario** (`systemctl --user`) con la búsqueda vectorial **apagada**, probada con una pregunta real (tasa de compra por región, ~25 s). Pendiente: HTTPS con dominio (Caddy) y conectar Supabase/Lovable.
 
-Qué se obtiene al final: `https://<dominio>/health` responde, la Edge Function `vera-ask` de Supabase llama a la API con una clave, y solo `management@tigo.com` puede usarla.
+**Regla:** ningún secreto en el repo ni en el chat. Se escriben a mano en la VM (`nano`) y en el panel de secretos de Supabase.
 
----
+## Contexto de la VM
+- Corre el ETL (usuario `ubuntu`, `~/etl-v2-mvp`, su propio `.venv`, refresca vistas materializadas cada ~15 min) y el refresco diario del Data Map. La API **no comparte** el clon ni el entorno de Python con ninguno de los dos.
+- El usuario que corre la API **no tiene sudo ni Docker**. Todo lo que sigue va en su carpeta personal.
+- Las conexiones del agente son de solo lectura (`default_transaction_read_only=on`), con tope de 180 s por consulta y sin transacciones abiertas (`autocommit`).
 
-## 0. Antes de tocar nada (5 min)
-
-Anotar estos datos (se usan abajo):
-- `RUTA` = carpeta del clon de la demo en la VM. La guía del refresco diario la llama `vera-demo` (`REFRESCO_DIARIO_VM.md`, paso 2). Si ya existe ese clon, **se reutiliza**: no se hace un segundo clon. Averiguarla con `ls ~` y `cd ~/vera-demo && git remote -v` (debe apuntar a `LBinello2004/vera-intelligence-demo`).
-- `USUARIO` = usuario Linux que corre el refresco (el servicio de abajo tiene `pedro` de ejemplo).
-- Si la VM tiene otra cosa escuchando en el puerto 8080: `ss -ltnp | grep 8080`. Si está ocupado, usar otro puerto (en `VI_API_PORT` y en el proxy).
-- Python: `RUTA/.venv/bin/python --version` (3.11 o 3.12 sirven).
-
-## 1. Código al día
-
+## 1. Una sola vez, con sudo (lo corre un administrador)
 ```bash
-cd RUTA
-git pull --ff-only
-git log --oneline -1          # debe mostrar el commit "Sincroniza: decisiones Lovable..." o uno posterior
+sudo loginctl enable-linger USUARIO && sudo apt-get install -y python3-venv git && loginctl show-user USUARIO -p Linger
 ```
-Si `git pull` se queja de cambios locales, no forzar: avisar a Pedro (el refresco diario hace commits desde esta VM).
+`enable-linger` hace que el servicio de usuario siga vivo sin sesión de SSH y arranque con la VM. Tiene que decir `Linger=yes`.
 
-## 2. Dependencias
-
+## 2. Clon y entorno propios (sin sudo)
 ```bash
-cd RUTA
-.venv/bin/pip install -r requirements.txt -r "experimental_proyects/Vera Intelligence/4. scripts/requirements-api.txt"
-.venv/bin/python -c "import starlette, uvicorn; print('ok')"
+cd ~ && git clone https://github.com/LBinello2004/vera-intelligence-demo.git vera-api && python3 -m venv ~/vi-venv
+~/vi-venv/bin/pip install -q -r ~/vera-api/requirements.txt -r "$HOME/vera-api/experimental_proyects/Vera Intelligence/4. scripts/requirements-api.txt"
+ln -sfn "$HOME/vera-api/experimental_proyects/Vera Intelligence/4. scripts" ~/vi-scripts
+~/vi-venv/bin/python -c "import starlette, uvicorn, psycopg, yaml; from google import genai; print('OK dependencias completas')"
 ```
+La instalación tarda unos minutos: no interrumpirla (un `Ctrl+C` la deja a medias). El enlace `~/vi-scripts` evita los espacios de la ruta en el servicio.
 
-## 3. Clave de la API y archivo de variables
-
-1. Generar la clave que usará Supabase (se muestra una sola vez; copiarla a un gestor de contraseñas, no al chat):
-   ```bash
-   RUTA/.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(32))"
-   ```
-2. Crear el archivo de variables fuera del repo:
-   ```bash
-   sudo mkdir -p /etc/vera-intelligence
-   sudo cp "RUTA/experimental_proyects/Vera Intelligence/10. documentos/deploy_api/env.api.example" /etc/vera-intelligence/api.env
-   sudo chmod 600 /etc/vera-intelligence/api.env
-   sudo nano /etc/vera-intelligence/api.env
-   ```
-3. En el editor completar **solo estos valores** (el resto de las líneas ya tienen buen valor por defecto):
-   - `VI_API_KEYS=` la clave del punto 1.
-   - `VERA_AI_API_KEY=` la clave de Gemini (la misma que usa el refresco; está en `RUTA/.env`, copiar el valor de ahí).
-   - `PGPASSWORD=` la contraseña de Postgres (idem).
-   - Opcional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` (también en `RUTA/.env`).
-   - Opcional pero recomendado: `VI_API_ALERT_WEBHOOK=` el mismo webhook de Slack del refresco (avisa arranques, reinicios y errores repetidos).
-   - Dejar `VI_API_CLIENT=tigo_alto`, `VI_API_VECTOR_SEARCH=1`, `VI_API_HOST=127.0.0.1`, `VI_API_REQUIRE_USER=1`.
-4. Comprobar que no quedó ningún marcador: `sudo grep -n "REEMPLAZAR" /etc/vera-intelligence/api.env` (no debe devolver nada).
-
-## 4. Servicio systemd
-
-1. Copiar y ajustar:
-   ```bash
-   sudo cp "RUTA/experimental_proyects/Vera Intelligence/10. documentos/deploy_api/vi-api.service" /etc/systemd/system/vi-api.service
-   sudo nano /etc/systemd/system/vi-api.service
-   ```
-   Cambiar en el servicio: `User=` por `USUARIO`, y las dos rutas (`WorkingDirectory=` y `ExecStart=`) por la real. **Ojo:** el archivo trae `/home/pedro/vera-intelligence-demo/...` de ejemplo; el clon real puede llamarse `vera-demo`. `WorkingDirectory` termina en `experimental_proyects/Vera Intelligence/4. scripts` (con espacios: systemd lo acepta tal cual en `WorkingDirectory`, pero en `ExecStart` solo va la ruta del python y `api_server.py`).
-2. Dejar `Restart=always`: sin eso la API **no** se levanta sola después de cerrarse por un Data Map nuevo.
-3. Arrancar:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now vi-api
-   systemctl status vi-api --no-pager
-   journalctl -u vi-api -n 50 --no-pager
-   ```
-   Esperado en el log: arranque sin traza de error y, si el calentamiento está activo, una pregunta de prueba corta (puede tardar ~1 min).
-4. Probar local en la VM:
-   ```bash
-   curl -s http://127.0.0.1:8080/health
-   # -> {"status":"ok","client":"tigo_alto","vector_search":true,"warm":...}
-   curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/v1/status
-   # -> 401 (sin clave)
-   ```
-
-## 5. Primera pregunta real, todavía sin internet de por medio
-
-El cuerpo se manda desde un archivo UTF-8 (en curl directo los acentos pueden romperse):
+## 3. Variables (fuera del repo)
 ```bash
-cat > /tmp/q.json <<'EOF'
+mkdir -p ~/.config/vera-intelligence && umask 077 && cp ~/vera-api/experimental_proyects/"Vera Intelligence"/"10. documentos"/deploy_api/env.api.example ~/.config/vera-intelligence/api.env
+K=$(~/vi-venv/bin/python -c "import secrets; print(secrets.token_urlsafe(32))") && sed -i "s|^VI_API_KEYS=.*|VI_API_KEYS=$K|" ~/.config/vera-intelligence/api.env && echo "$K"; unset K
+chmod 600 ~/.config/vera-intelligence/api.env && nano ~/.config/vera-intelligence/api.env
+```
+Completar a mano `VERA_AI_API_KEY` (clave de **Gemini**, no la de la API) y `PGPASSWORD` (Postgres de solo lectura). `VI_API_KEYS` es la clave de la API: la que va a Supabase como `VI_API_KEY`. Mostrar la clave una sola vez y guardarla en un gestor de contraseñas; si se vio en una pantalla compartida, rotarla antes de usarla (mismo comando `sed` desde una ventana privada y `systemctl --user restart vi-api`). `VI_API_VECTOR_SEARCH=0` (solo SQL) es el valor por defecto.
+
+## 4. Servicio de usuario
+```bash
+mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/vi-api.service <<'EOF'
+[Unit]
+Description=Vera Intelligence API (Tigo)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/vi-scripts
+EnvironmentFile=%h/.config/vera-intelligence/api.env
+ExecStart=%h/vi-venv/bin/python api_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload && systemctl --user enable --now vi-api && sleep 8 && systemctl --user status vi-api --no-pager | head -12 && curl -s http://127.0.0.1:8080/health
+```
+Esperado: `active (running)` y `{"status":"ok","client":"tigo_alto","vector_search":false,...}`. `Restart=always` es necesario: la API se cierra sola al detectar un Data Map nuevo. Logs: `journalctl --user -u vi-api -n 40 --no-pager`.
+
+## 5. Prueba real (sin imprimir la clave)
+```bash
+cd ~ && K=$(grep '^VI_API_KEYS=' ~/.config/vera-intelligence/api.env | cut -d= -f2 | cut -d, -f1) && cat > /tmp/q.json <<'EOF'
 {"question": "¿Cuál es la tasa de compra por región?"}
 EOF
-KEY='pegar-la-clave-aqui'          # solo en tu terminal, no en un archivo
-curl -s -X POST http://127.0.0.1:8080/v1/ask -H "Authorization: Bearer $KEY" -H "X-VI-User: prueba-vm" -H "Content-Type: application/json" --data-binary @/tmp/q.json
-# -> {"job_id":"...","session_id":"..."}
-curl -s http://127.0.0.1:8080/v1/jobs/<job_id> -H "Authorization: Bearer $KEY" -H "X-VI-User: prueba-vm"
+J=$(curl -s -X POST http://127.0.0.1:8080/v1/ask -H "Authorization: Bearer $K" -H "X-VI-User: prueba-vm" -H "Content-Type: application/json" --data-binary @/tmp/q.json | ~/vi-venv/bin/python -c "import sys,json; print(json.load(sys.stdin)['job_id'])") && for i in $(seq 1 60); do R=$(curl -s http://127.0.0.1:8080/v1/jobs/$J -H "Authorization: Bearer $K" -H "X-VI-User: prueba-vm"); S=$(echo "$R" | ~/vi-venv/bin/python -c "import sys,json; print(json.load(sys.stdin)['status'])"); echo "$i: $S"; [ "$S" = done ] || [ "$S" = error ] && break; sleep 5; done; echo "$R" | ~/vi-venv/bin/python -c "import sys,json; d=json.load(sys.stdin); print((d.get('answer') or d.get('message') or '')[:900])"; unset K; rm -f /tmp/q.json
 ```
-Repetir el segundo comando cada pocos segundos hasta `"status":"done"`. Comparar con lo conocido: regiones BOGOTA 18,34 % y SUR 14,42 % (sobre todo el histórico; los valores cambian un poco con el tiempo). Borrar `/tmp/q.json` y limpiar el historial del shell si la clave quedó ahí (`history -d` o `unset KEY`).
+Referencia (todo el histórico): BOGOTA 18,34 %, ORIENTE 18,23 %, COSTA 17,59 %, ANDINA 16,33 %, SUR 14,42 %.
 
-## 6. HTTPS (necesario: Supabase solo llama a URLs públicas con HTTPS)
-
-Elegir una opción. La API escucha solo en `127.0.0.1`: **no abrir el puerto 8080 al exterior**.
-
-**Opción 1: túnel de Cloudflare** (no abre puertos en la VM; hace falta una cuenta de Cloudflare y un dominio o subdominio en ella):
+## 6. Mantener el Data Map al día (cron, 4 veces al día)
 ```bash
-# instalar cloudflared según la guía oficial de Cloudflare para tu distribución, luego:
-cloudflared tunnel login
-cloudflared tunnel create vera-api
-cloudflared tunnel route dns vera-api api.<tu-dominio>
-# archivo ~/.cloudflared/config.yml con: tunnel: <id>, credentials-file: <ruta>, ingress: [{hostname: api.<tu-dominio>, service: http://127.0.0.1:8080}, {service: http_status:404}]
-sudo cloudflared service install
+( crontab -l 2>/dev/null | grep -v "vera-api.*git pull" ; echo '30 0,6,12,18 * * * cd $HOME/vera-api && flock -n /tmp/vi-pull.lock git pull --ff-only -q >> $HOME/.config/vera-intelligence/pull.log 2>&1' ) | crontab - && crontab -l
 ```
-**Opción 2: Caddy** (la VM debe ser alcanzable por internet en 80/443 y el dominio debe apuntar a su IP pública; certificado automático):
-```
-api.<tu-dominio> {
-    reverse_proxy 127.0.0.1:8080
-}
-```
-(en `/etc/caddy/Caddyfile`, luego `sudo systemctl reload caddy`; abrir solo 80 y 443 en el firewall.)
+Corre a las 00:30, 06:30, 12:30 y 18:30 (UTC), una hora después del refresco de las 05:30. Cuando entra un Data Map nuevo, la API espera a que terminen las preguntas en curso, se cierra y systemd la levanta con el nuevo. Un cambio de **código** no reinicia la API: `systemctl --user restart vi-api` a mano.
 
-Si no hay dominio todavía (D4), pedirle a Pedro un subdominio. Comprobar desde tu PC (no desde la VM):
-```
-curl -s https://api.<tu-dominio>/health
-```
+## 7. HTTPS (pendiente; lo hacen administradores)
+Supabase solo llama a URLs públicas con HTTPS. Opción elegida: **Caddy** con un subdominio. Requiere (a) abrir TCP 80 y 443 en el security group de AWS, (b) un registro DNS `A` hacia la IP pública (mejor una Elastic IP), (c) con sudo: instalar Caddy y un `Caddyfile` con `SUBDOMINIO { reverse_proxy 127.0.0.1:8080 }`. La API sigue escuchando solo en `127.0.0.1`. Alternativas descartadas por ahora: túnel rápido de Cloudflare (la dirección cambia en cada reinicio) y servicio gestionado con el `Dockerfile` de esta carpeta.
 
-## 7. Supabase (lo hace una persona, en el panel)
+## 8. Supabase / Lovable
+Ver `../API_LOVABLE.md` (sección 6) y `../ejemplos_lovable/PROMPT_PARA_LOVABLE.md`. Secretos de la Edge Function: `VI_API_URL` (`https://SUBDOMINIO`, sin barra final), `VI_API_KEY` (la clave del paso 3) y `VI_ALLOWED_EMAILS=management@tigo.com`.
 
-1. Edge Function `vera-ask`: crearla con el contenido de `ejemplos_lovable/vera-ask.edge.ts` (verificación de JWT activada).
-2. Secretos (Project Settings → Edge Functions → Secrets), escritos a mano:
-   - `VI_API_URL` = `https://api.<tu-dominio>` (sin barra final).
-   - `VI_API_KEY` = la clave del paso 3.
-   - `VI_ALLOWED_EMAILS` = `management@tigo.com`.
-3. Después seguir con el prompt B de `ejemplos_lovable/PROMPT_PARA_LOVABLE.md`.
-
-## 8. Pruebas de aceptación (cuando todo está conectado)
-
-1. Con `management@tigo.com`: una pregunta simple (segundos), una con gráfico, un seguimiento ("¿y cuál de esas…?") y Cancelar.
-2. Con otra cuenta cualquiera: no aparece el menú y, si se llama a la función, responde 403.
-3. Reinicio: `sudo systemctl restart vi-api` y volver a preguntar (la sesión anterior puede vencer: el front debe seguir en una nueva sin mostrar error).
-4. Una pregunta cualitativa (causas de retiro) tarda 2 a 4 minutos: es lo esperado hoy (la tabla de embeddings no tiene índice).
-5. Mirar `journalctl -u vi-api -f` mientras se prueba.
-
-## 9. Operación diaria
-
-- **Actualizar el código:** el refresco hace `git pull` solo; cuando traiga código nuevo de la API hay que reiniciar a mano: `sudo systemctl restart vi-api`. Cuando el cambio es solo de Data Map, la API se cierra sola y systemd la levanta.
-- **Ver el estado:** `curl -s https://api.<tu-dominio>/health` y, con clave, `/v1/status`.
-- **Rotar la clave:** generar una nueva, editar `api.env`, `sudo systemctl restart vi-api`, actualizar `VI_API_KEY` en Supabase. Hasta actualizarla, la función responderá "No pude comunicarme con el análisis".
-- **Apagar de emergencia:** `sudo systemctl stop vi-api` (el portal muestra un aviso amistoso y el resto de la aplicación no se afecta). Para cortar solo el acceso sin apagar la API, poner un correo inexistente en el secreto `VI_ALLOWED_EMAILS`.
-- **Carga:** la VM también corre el refresco diario (05:30 días hábiles). Si una pregunta pesada coincide, puede tardar más; ver `uptime` y el log.
+## 9. Operación
+- **Estado:** `systemctl --user status vi-api`; `curl -s http://127.0.0.1:8080/health`.
+- **Reiniciar:** `systemctl --user restart vi-api`. **Apagar:** `systemctl --user stop vi-api`.
+- **Rotar la clave:** nueva `VI_API_KEYS` en `api.env`, `restart`, y actualizar `VI_API_KEY` en Supabase (hasta entonces el portal dice "No pude comunicarme con el análisis").
+- **Corte de acceso sin apagar la API:** poner un correo inexistente en `VI_ALLOWED_EMAILS`.
+- **Encender la búsqueda vectorial:** `VI_API_VECTOR_SEARCH=1` en `api.env` y reiniciar (las cualitativas tardan 2 a 4 min).
 
 ## 10. Si algo falla
-
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| El servicio no arranca, "no hay claves" | `VI_API_KEYS` vacía o de menos de 24 caracteres | Corregir `api.env`; restart |
-| `ModuleNotFoundError` | Dependencias en otro entorno virtual | Usar el `.venv` del clon en `ExecStart`; repetir paso 2 |
-| Error de Postgres / Gemini al preguntar | Falta `PGPASSWORD` o `VERA_AI_API_KEY` en `api.env` | Completar y reiniciar |
-| `/health` local bien, `https` no | Túnel/Caddy mal configurado o DNS sin propagar | Revisar su log; probar de nuevo en unos minutos |
-| El portal dice "No pude comunicarme" | `VI_API_URL` o `VI_API_KEY` mal en Supabase (la función registra el motivo en sus logs) | Revisar los secretos y los logs de la función |
-| Cada reinicio tarda y la primera pregunta es lenta | Calentamiento al arrancar | Normal; se puede apagar con `VI_API_WARMUP=0` |
-| 503 `busy` / 429 | Topes de cola o por usuario | Normal bajo carga; ajustar `VI_API_MAX_*` solo si hace falta |
+| `python3 -m venv` falla (ensurepip) | Falta `python3-venv` | Paso 1 (administrador) |
+| `ModuleNotFoundError` | Instalación cortada con Ctrl+C | Repetir el `pip install` del paso 2 completo |
+| La API se cae al cerrar SSH | Sin linger | Paso 1 |
+| Error al preguntar | `VERA_AI_API_KEY` o `PGPASSWORD` mal copiadas | Corregir `api.env`, `restart` |
+| `/health` local bien y `https` no | DNS sin propagar o 80/443 cerrados | Revisar el security group y `sudo journalctl -u caddy -n 30` |
+| El portal dice "No pude comunicarme" | `VI_API_URL` o `VI_API_KEY` mal en Supabase | Revisar secretos y los logs de la función |
