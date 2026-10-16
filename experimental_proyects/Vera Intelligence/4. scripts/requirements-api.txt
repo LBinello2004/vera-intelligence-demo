@@ -1,0 +1,5 @@
+# Dependencias EXTRA de la API HTTP (api_server.py). Se instalan junto a las del agente:
+#   pip install -r requirements.txt -r "experimental_proyects/Vera Intelligence/4. scripts/requirements-api.txt"
+# No se agregan al requirements.txt de la raíz para no tocar el despliegue de Streamlit Cloud.
+starlette>=1.0.0
+uvicorn>=0.30.0

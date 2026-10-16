@@ -1,0 +1,26 @@
+# systemd para la VM Linux (ajustar usuario y rutas). Instalación:
+#   sudo cp vi-api.service /etc/systemd/system/vi-api.service
+#   sudo mkdir -p /etc/vera-intelligence && sudo cp env.api.example /etc/vera-intelligence/api.env
+#   sudo chmod 600 /etc/vera-intelligence/api.env && sudo nano /etc/vera-intelligence/api.env   # completar los secretos
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vi-api && systemctl status vi-api
+# La API escucha solo en 127.0.0.1:8080; HTTPS lo pone un proxy delante (Caddy/nginx/Cloudflare Tunnel), ver API_LOVABLE.md.
+[Unit]
+Description=Vera Intelligence API (Tigo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pedro
+WorkingDirectory=/home/pedro/vera-intelligence-demo/experimental_proyects/Vera Intelligence/4. scripts
+EnvironmentFile=/etc/vera-intelligence/api.env
+ExecStart=/home/pedro/vera-intelligence-demo/.venv/bin/python api_server.py
+# Restart=always (no solo ante fallas): la API se cierra sola y limpia al detectar un Data Map nuevo tras el refresco diario; así la levanta con el nuevo.
+# (En systemd un comentario nunca va en la misma línea que un valor.)
+Restart=always
+RestartSec=5
+# endurecimiento básico
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
