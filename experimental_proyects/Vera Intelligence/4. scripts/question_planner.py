@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from google.genai import types
 
 import search_determinism as sd
+from data_map_fields import source_fields
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,10 @@ Devolvé SÓLO un JSON con exactamente estas secciones:
 3. "partes": lista de TODAS las cosas que la pregunta pide explícitamente (ej. "cuántos", "qué pasa con la \
 venta", "de qué productos hablan", "mes por separado"). Una por ítem, en orden.
 4. "metricas": lista de {{"pedida": <métrica con las palabras del usuario>, "campo": <nombre EXACTO de un campo \
-de la lista que la mide DIRECTAMENTE, o null>, "nota": <si campo es null: qué campo parecido existe y mide OTRA \
+de la lista que la mide DIRECTAMENTE; o una LISTA de nombres exactos si la métrica se mide con VARIOS campos de la lista (ej. "los criterios del checklist" = los campos a01, a02...; "las conductas de riesgo" = los t01, t02...); o null>, "nota": <si campo es null: qué campo parecido existe y mide OTRA \
 cosa, o "ninguno">}}. Sólo campo si mide lo mismo; "promociones en general" NO mide "cuotas sin interés"; montos, \
 tickets, precios y diferencias de precio NO existen salvo que un campo lo diga; NPS puntaje no existe si sólo hay \
-indicadores de proceso. Lo CUALITATIVO ("qué dicen", "qué ofertas mencionan", "por qué") NO es una métrica faltante: \
+indicadores de proceso. Los atributos para agrupar o filtrar que figuran en DIMENSIONES (asesor, tienda, región, sector...) existen: "por región", "por asesor" o "el mejor asesor" NO son una métrica faltante (la métrica es la tasa que corresponda; "mejor" = la tasa que nombre el usuario o, si no nombra ninguna, la tasa de cierre o compra). Lo CUALITATIVO ("qué dicen", "qué ofertas mencionan", "por qué") NO es una métrica faltante: \
 va en "partes" con usar_busqueda=true. Sólo listá métricas cuando la pregunta pide cuantificar.
 5. "alcance": {{"entidades": [{{"tipo": "tienda"|"vendedor"|"producto"|"otro", "texto": <como lo nombra>}}] \
 (nombres propios a buscar; si no aparecen, el agente lo dice y no sustituye), "periodo": <período pedido, \
@@ -161,15 +162,23 @@ def build_field_catalog(data_map: dict, *, max_desc: int = 110) -> tuple[str, se
     for source_key, source in sources.items():
         if not isinstance(source, dict):
             continue
-        fields = source.get("fields") or {}
-        if not isinstance(fields, dict):
-            continue
+        fields = source_fields(source)      # `fields` + grupos `fields_*` (Tigo/performance: 63 campos que antes no se veían)
         for field_name, spec in fields.items():
             names.add(str(field_name).lower())
             desc = ""
             if isinstance(spec, dict):
                 desc = " ".join(str(spec.get("description") or "").split())[:max_desc]
             lines.append(f"{source_key}.{field_name}: {desc}")
+    dims: list[str] = []
+    for profile in ((data_map or {}).get("profiles") or {}).values():
+        if isinstance(profile, dict):
+            for key in ("required_dimensions", "optional_dimensions"):
+                for dim in profile.get(key) or []:
+                    if isinstance(dim, str) and dim not in dims:
+                        dims.append(dim)
+    if dims:
+        lines.append("DIMENSIONES PARA AGRUPAR O FILTRAR (columnas de las vistas; NO son métricas; sirven para alcance.desagregacion, "
+                     "por ejemplo asesor = employee_full_name, tienda = store_name): " + ", ".join(dims))
     return "\n".join(lines), names
 
 
@@ -184,6 +193,10 @@ def ground_plan(plan: dict, known_fields: set[str]) -> dict:
             continue
         campo = item.get("campo")
         if campo is None:
+            continue
+        if isinstance(campo, list):                      # familia de campos: se conservan solo los que existen de verdad
+            real = [c for c in campo if isinstance(c, str) and str(c).split(".")[-1].strip().lower() in known_fields]
+            item["campo"] = None if not real else (real[0] if len(real) == 1 else real)
             continue
         bare = str(campo).split(".")[-1].strip().lower()
         if bare not in known_fields:
@@ -290,7 +303,10 @@ def render_plan(plan: dict) -> str:
     for m in plan.get("metricas") or []:
         if not isinstance(m, dict) or not m.get("pedida"):
             continue
-        if m.get("campo"):
+        if isinstance(m.get("campo"), list) and m["campo"]:
+            met.append(f"«{m['pedida']}»: existe, se mide con VARIOS campos: {', '.join(str(c) for c in m['campo'])}. Calculá cada uno "
+                       "por separado (o los que la pregunta necesite) y compará; no la declares como no medida.")
+        elif m.get("campo"):
             met.append(f"«{m['pedida']}»: existe, medila con el campo {m['campo']}.")
         else:
             met.append(
@@ -351,7 +367,7 @@ def render_plan(plan: dict) -> str:
             if spec.get(key):
                 partes_b.append(f"{key}=«{spec[key]}»")
         if spec.get("queries_extra"):
-            partes_b.append("queries_extra=[" + "; ".join(f"«{q}»" for q in spec["queries_extra"]) + "]")
+            partes_b.append("queries_extra=" + json.dumps(list(spec["queries_extra"]), ensure_ascii=False) + " (lista de textos)")
         sections.append(_section("10. BÚSQUEDA SEMÁNTICA FIJADA", [
             "Para la parte cualitativa llamá search_conversations con " + ", ".join(partes_b) + " TAL CUAL (están fijados "
             "para que la misma pregunta dé siempre la misma búsqueda). Si otra regla exige criterio/resultado o "

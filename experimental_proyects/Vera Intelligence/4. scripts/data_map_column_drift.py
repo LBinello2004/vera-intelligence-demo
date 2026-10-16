@@ -22,6 +22,8 @@ from pathlib import Path
 
 import yaml
 
+from data_map_fields import source_fields
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = PROJECT_ROOT.parents[1]
@@ -49,7 +51,7 @@ def find_drift(data_map: dict, columns_by_view: dict[str, set[str]]) -> list[dic
             continue
         real = columns_by_view[view]
         missing = []
-        for field_name, spec in ((source or {}).get("fields") or {}).items():
+        for field_name, spec in source_fields(source).items():
             if isinstance(spec, dict) and "campos" in spec:
                 continue
             if field_name not in real:

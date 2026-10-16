@@ -77,7 +77,7 @@ class CleanExtraQueriesTests(unittest.TestCase):
         self.assertEqual(out, [ANGULO_1])
 
     def test_none_and_empty_mean_no_angles(self) -> None:
-        for empty in (None, "", []):
+        for empty in (None, "", [], {}):
             self.assertEqual(vector_search._clean_extra_queries(empty, []), [])
 
     def test_a_non_list_is_an_explicit_error(self) -> None:
@@ -231,7 +231,7 @@ class PlannerAnglesTests(unittest.TestCase):
         plan = {"objetivo": "x", "tipo": "cualitativa", "usar_busqueda": True,
                 "busqueda": dict(self.BASE, queries_extra=[ANGULO_1, ANGULO_2])}
         text = question_planner.render_plan(plan)
-        self.assertIn("queries_extra=[«" + ANGULO_1 + "»; «" + ANGULO_2 + "»]", text)
+        self.assertIn("queries_extra=" + json.dumps([ANGULO_1, ANGULO_2], ensure_ascii=False), text)
         self.assertIn("TAL CUAL", text)
 
 

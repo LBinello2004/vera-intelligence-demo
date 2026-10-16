@@ -32,6 +32,7 @@ from typing import Callable
 
 from sqlglot import exp, parse
 
+from data_map_fields import non_field_content, source_fields
 from numeric_text import NUMBER_SPAN_RE, close_enough, is_float, normalize_number
 
 MAX_TRUTH_ROWS = 3          # resultados más largos que esto no se usan como verdad numérica (una respuesta no los lista completos)
@@ -52,7 +53,7 @@ def declared_fields(data_map: dict) -> dict[str, set[str]]:
         if "." not in view:
             continue
         names = out.setdefault(view, set())
-        for field_name, spec in (source.get("fields") or {}).items():
+        for field_name, spec in source_fields(source).items():
             names.add(str(field_name).lower())
             if isinstance(spec, dict) and isinstance(spec.get("campos"), dict):
                 names.update(str(inner).lower() for inner in spec["campos"])
@@ -82,14 +83,14 @@ def change_footprint(old: dict, new: dict) -> dict:
         if not isinstance(before, dict) or not isinstance(after, dict):
             touched.add("*")
             continue
-        fields_before, fields_after = before.get("fields") or {}, after.get("fields") or {}
+        fields_before, fields_after = source_fields(before), source_fields(after)
         for field_name in set(fields_before) | set(fields_after):
             if _canon(fields_before.get(field_name)) != _canon(fields_after.get(field_name)):
                 touched.add(str(field_name).lower())
                 for spec in (fields_before.get(field_name), fields_after.get(field_name)):
                     if isinstance(spec, dict) and isinstance(spec.get("campos"), dict):
                         touched.update(str(inner).lower() for inner in spec["campos"])
-        if _canon({k: v for k, v in before.items() if k != "fields"}) != _canon({k: v for k, v in after.items() if k != "fields"}):
+        if _canon(non_field_content(before)) != _canon(non_field_content(after)):
             touched.add("*")
     skipped = {"metadata", "sources", "limitations"}
     global_changed = any(_canon(old.get(k)) != _canon(new.get(k)) for k in (set(old) | set(new)) - skipped)

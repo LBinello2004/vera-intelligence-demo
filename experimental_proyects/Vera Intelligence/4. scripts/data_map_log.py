@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+
+from data_map_fields import source_fields
 from pathlib import Path
 
 MD_NAME = "CAMBIOS_AUTOMATICOS.md"
@@ -32,7 +34,7 @@ def log_paths(clients_root: Path, client: str) -> tuple[Path, Path]:
 
 # --------------------------------------------------------------------------------------------- resumen de qué cambió
 def _fields(source: dict) -> dict[str, dict]:
-    fields = (source or {}).get("fields") or {}
+    fields = source_fields(source)
     return {str(k): (v if isinstance(v, dict) else {"value": v}) for k, v in fields.items()}
 
 

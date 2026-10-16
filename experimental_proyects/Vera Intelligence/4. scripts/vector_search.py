@@ -437,7 +437,7 @@ _EXTRA_QUERY_MAX_CHARS = 400
 def _clean_extra_queries(raw: object, exclude: list[str]) -> list[str]:
     """Valida `queries_extra`: lista de textos; se descartan los vacíos, los fuera de rango, los repetidos y los iguales a la
     consulta principal o a la alternativa; máximo `_MAX_EXTRA_QUERIES`. Un valor que no es lista es un error explícito."""
-    if raw in (None, "", []):
+    if raw in (None, "", [], {}):          # el modelo manda {} cuando no tiene ángulos: es "sin ángulos", no un error
         return []
     if not isinstance(raw, (list, tuple)):
         raise ValueError("queries_extra debe ser una lista de textos (formulaciones de la misma pregunta).")
