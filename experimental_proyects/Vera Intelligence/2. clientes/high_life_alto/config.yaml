@@ -2,7 +2,7 @@ client_id: high_life
 display_name: "High Life"
 tenant: "High Life"
 model: gemini-3.7-flash
-data_map: "2. clientes/high_life_alto/data_map/VI Data Map High Life V5.yaml"
+data_map: "2. clientes/high_life_alto/data_map/VI Data Map High Life V6.yaml"
 
 sources:
   dashboard_v2.vw_high_life_demografia:

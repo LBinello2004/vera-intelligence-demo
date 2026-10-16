@@ -2,7 +2,7 @@ client_id: boggi
 display_name: "Boggi"
 tenant: "Boggi"
 model: gemini-3.7-flash
-data_map: "2. clientes/boggi_alto/data_map/VI Data Map Boggi V2.yaml"
+data_map: "2. clientes/boggi_alto/data_map/VI Data Map Boggi V3.yaml"
 
 # Cada fuente declara el campo que debe contener el tenant autorizado. El
 # validador SQL exige el filtro de forma deterministica antes de ejecutar.
