@@ -9,7 +9,7 @@ Estado al 2026-10-16. Pensado para leerlo con un LLM y ejecutarlo paso a paso.
 **Armado y probado (no depende de ninguna decisión):**
 - `4. scripts/api_server.py`: API HTTP del agente (Starlette). Un proceso atiende un cliente (por defecto `tigo_alto`) con la **búsqueda vectorial encendida**, igual que la demo (se apaga con `VI_API_VECTOR_SEARCH=0`). 34 tests (`5. tests/test_api_server.py`, con un agente falso, sin Gemini ni base).
 - Probada en vivo en local contra el agente real de Tigo (primero con la búsqueda apagada y luego con el default nuevo, encendida; ver la sección 9): `/health`, rechazo sin clave (401), una pregunta real de punta a punta (26 s, números iguales a la consulta directa a la base, gráfico y sugerencias) y una pregunta de seguimiento en la misma sesión (21 s, entendió "esas regiones").
-- `10. documentos/deploy_api/`: `Dockerfile`, servicio `systemd` para la VM Linux y plantilla de variables (`env.api.example`, sin valores reales).
+- `10. documentos/deploy_api/` (incluye `PASO_A_PASO_VM.md`): `Dockerfile`, servicio `systemd` para la VM Linux y plantilla de variables (`env.api.example`, sin valores reales).
 - `10. documentos/ejemplos_lovable/`: función segura para Supabase (`vera-ask.edge.ts`), hook de React (`useVeraChat.ts`) y el prompt para Lovable (`PROMPT_PARA_LOVABLE.md`).
 - `4. scripts/requirements-api.txt`: dependencias extra (no se tocó el `requirements.txt` de Streamlit Cloud).
 
